@@ -121,14 +121,16 @@ workflow.config.example          Sample config file.
 
 templates/
 ├── CLAUDE.md                    Lightweight CLAUDE.md template; links to docs/.
-└── docs/                        Stub project-doc structure to copy as your docs/.
+└── example_docs/                Project-doc structure to copy as your docs/.
+    │                            Each file ships with EXAMPLE content (not
+    │                            TODO placeholders) demonstrating the format.
     ├── README.md                Format + how the workflow uses each file.
-    ├── best-practices.md        Scenario + rule conventions.
-    ├── architecture.md          Components + invariants.
-    ├── security.md              Threat model + sensitive-op rules.
-    ├── testing.md               Where each test category lives.
-    ├── api-conventions.md       (Delete if no API surface.)
-    └── TODO.md                  Backlog.
+    ├── best-practices.md        Scenario + rule conventions (3 worked examples).
+    ├── architecture.md          Components + invariants (task-tracker example).
+    ├── security.md              Threat model + sensitive-op rules (web-app example).
+    ├── testing.md               Test categories + when to add tests.
+    ├── api-conventions.md       REST API conventions (delete if no API surface).
+    └── TODO.md                  Backlog with worked PROMPT and non-PROMPT examples.
 
 docs/
 └── inter-agent-comms.md         Protocol writeup for the comms layer.
@@ -232,10 +234,10 @@ Saves you switching panes to broadcast the news manually.
 
 ## Project documentation structure
 
-The workflow skills (especially `/base-pr` and `/base-test`) work best when the project ships a small, scenario-shaped docs tree. The `templates/docs/` directory in this repo is a starter you can copy into your project as `docs/`:
+The workflow skills (especially `/base-pr` and `/base-test`) work best when the project ships a small, scenario-shaped docs tree. The `templates/example_docs/` directory in this repo is a starter you can copy into your project as `docs/`. **Each file is filled in with real-looking example content**, not TODO placeholders — read the examples to internalize the format before replacing them with your own.
 
 ```bash
-cp -r /path/to/claude-workflow/templates/docs /path/to/your-project/docs
+cp -r /path/to/claude-workflow/templates/example_docs /path/to/your-project/docs
 cp /path/to/claude-workflow/templates/CLAUDE.md /path/to/your-project/CLAUDE.md
 ```
 
@@ -243,7 +245,7 @@ The template encodes one strong convention: **docs are scenario + rule + how-to-
 
 `CLAUDE.md` is intentionally light — a one-paragraph intro, links to each `docs/*.md`, and a handful of hard rules. The detailed material lives in `docs/`, where it doesn't bloat every session's context window.
 
-See `templates/docs/README.md` for the format spec and how each skill uses each file.
+See `templates/example_docs/README.md` for the format spec and how each skill uses each file.
 
 ## Configuration
 
