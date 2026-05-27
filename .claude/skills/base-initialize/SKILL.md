@@ -34,14 +34,43 @@ Verify the user is inside `tmux` (we'll need to spawn panes):
 
 ## Phase 1: Project metadata
 
-Use `AskUserQuestion` to collect:
+Use `AskUserQuestion` to collect, in this order:
 
 | Field | Default | Notes |
 |---|---|---|
 | Project name | `basename $(pwd)` | Becomes the H1 in CLAUDE.md; also the prefix for worktree directory names. |
 | Description | `(empty)` | One-paragraph; goes into CLAUDE.md after the heading. |
 | Base branch | `main` | Becomes `WORKFLOW_BASE_BRANCH`. |
-| Tech stack hint | — | One-line summary (e.g. "TypeScript backend + React frontend", "Python CLI", "Rust library"). Used later in the docs interview. |
+| Tech stack | — | Free-form one-line answer: language(s) + framework(s) + project shape (e.g. "TypeScript backend + React frontend", "Python CLI", "Rust library", "Go service"). Used as a hint for the setup-command guess below AND informs the docs interview later. |
+| Setup command | inferred from stack | "What command installs dependencies?" Suggest one based on the tech stack (see mapping below). User can accept the suggestion, type their own, or say "none" if the project has no dependency-install step. Becomes `WORKFLOW_WORKTREE_SETUP_CMD`. |
+
+### Setup command guessing
+
+When asking for the setup command, use the tech-stack answer to suggest a sensible default. Show the suggestion in the question so the user can hit Enter to accept. If they say "I don't know", offer the suggestion explicitly and explain what it does.
+
+| If the stack mentions … | Suggest |
+|---|---|
+| pnpm, or TypeScript/JavaScript without a clear package manager | `pnpm install --frozen-lockfile` |
+| npm specifically | `npm ci` |
+| yarn specifically | `yarn install --frozen-lockfile` |
+| bun | `bun install --frozen-lockfile` |
+| Python + poetry | `poetry install --no-root` |
+| Python + uv | `uv sync` |
+| Python + pip / requirements.txt | `pip install -r requirements.txt` |
+| Python + pipenv | `pipenv install --deploy` |
+| Rust / Cargo | `cargo fetch` |
+| Go | `go mod download` |
+| Ruby | `bundle install --frozen` |
+| Java / Maven | `mvn install -DskipTests` |
+| Java / Gradle | `./gradlew build -x test` |
+| Elixir / Mix | `mix deps.get` |
+| Haskell / Cabal | `cabal build --dependencies-only` |
+| Swift Package Manager | `swift package resolve` |
+| PHP / Composer | `composer install --no-dev` |
+| C++ / CMake | `cmake -S . -B build && cmake --build build --target deps` (often project-specific; ask the user to override) |
+| Unknown / mixed | leave blank; ask the user to fill it in later |
+
+If the user explicitly answers "none" or leaves it blank: don't set `WORKFLOW_WORKTREE_SETUP_CMD` — the line stays commented in the config and `/add-worktree` runs no setup. The user can edit `.claude/workflow.config` later.
 
 Then **confirm** before proceeding:
 
@@ -73,7 +102,16 @@ rm CLAUDE.md.bak
 
 # Workflow config
 cp workflow.config.example .claude/workflow.config
+
+# Set the base branch
 sed -i.bak "s|WORKFLOW_BASE_BRANCH=\"main\"|WORKFLOW_BASE_BRANCH=\"$BASE_BRANCH\"|" .claude/workflow.config
+
+# Set the setup command if the user provided one (or accepted a guess).
+# The template ships the line commented as a hint; uncomment + replace.
+if [ -n "$SETUP_CMD" ]; then
+  sed -i.bak "s|^# WORKFLOW_WORKTREE_SETUP_CMD=.*|WORKFLOW_WORKTREE_SETUP_CMD=\"$SETUP_CMD\"|" .claude/workflow.config
+fi
+
 rm .claude/workflow.config.bak
 
 # Remove now-redundant template files
@@ -114,6 +152,8 @@ For each worktree name, invoke `/add-worktree <name>`:
 - Path lands at `$(dirname $(pwd))/$(basename $(pwd))-<name>`
 - Branch `<name>` is created from the current (just-initialized) base branch — the initial-commit SHA
 - No `WORKFLOW_WORKTREE_SETUP_CMD` runs yet (the user hasn't configured it), so this is purely the `git worktree add`
+
+If `WORKFLOW_WORKTREE_SETUP_CMD` was configured in Phase 3, each `/add-worktree` invocation will run it inside the new worktree — so dependencies get installed automatically as each worktree comes up. Streaming the install output to the user makes it visible; failures are surfaced but don't abort the worktree (it stays half-set-up so the user can debug).
 
 After all worktrees are created, summarize the layout.
 
@@ -204,7 +244,7 @@ Tell the user:
 ## What this skill will NOT do
 
 - Push anything to a remote (the project doesn't have a remote yet anyway).
-- Install dependencies — that's `WORKFLOW_WORKTREE_SETUP_CMD`'s job, run by `/add-worktree`. The user should configure this in `.claude/workflow.config` BEFORE running `/base-initialize` if they want install-on-create.
+- Install dependencies directly. The setup command is captured in Phase 1, written into `.claude/workflow.config` in Phase 3, and run by `/add-worktree` in Phase 6 — so dependencies install once per worktree at creation, not by this skill itself.
 - Set up CI, deployment, or any project infrastructure.
 - Re-run safely. **This is a one-time bootstrap.** Running it again on an already-initialized project will reset `.git/` and lose your history. Refuse if `docs/` already exists and doesn't look like the example template.
 
