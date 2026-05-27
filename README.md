@@ -113,7 +113,11 @@ To test inter-agent comms, open a SECOND tmux pane and start another `claude` in
 │   │                             merge_into_branch_transient helper).
 │   ├── base-merge/              Local-only sync of <base>.
 │   ├── base-pr/                 Review pending state on <base>; promote.
-│   └── base-test/               Merge local <base>, run all gates, report.
+│   ├── base-test/               Merge local <base>, run all gates, report.
+│   └── todo/                    Full-lifecycle todo manager. Loads docs/
+│                                during planning, runs doc-drift after commit,
+│                                stops for review. /todo continue handles
+│                                push → notify tester → cleanup.
 ├── settings.json.example        Project-level settings (deny + SessionEnd).
 └── settings-user-level.json.example   SessionStart hook for ~/.claude/.
 

@@ -135,18 +135,18 @@ Append a new `## ` header section to `docs/TODO.md`.
 
 **Triggers:** `/todo continue`, "continue the todo", "finalize the todo", "review is done", "promote"
 
-Assumes the user has driven the review handoff and (if needed) addressed feedback. This mode runs the cleanup + push + tester notification flow.
+Assumes the user has driven the review handoff and (if needed) addressed feedback. This mode runs in this order so the TODO entry tracks the work's true state — the item stays in the list until the work is actually shipped AND the tester has been notified:
 
-1. **Cleanup first** — delete the plan file from `docs/todo_plans/<slug>.md` AND remove the todo's section from `docs/TODO.md`. Commit the cleanup. (Doing cleanup BEFORE the push means the push includes it — the TODO removal ships with the work in one shot.)
-2. **Push the base branch** — invoke the `/base-push` skill. This pushes the current feature branch + advances `$WORKFLOW_BASE_BRANCH` to include the work.
-3. **Notify the testing agent** — ASK the user for the testing agent's name (or use `WORKFLOW_TESTING_AGENT` from `.claude/workflow.config` if set). Then dispatch:
+1. **Push the base branch** — invoke the `/base-push` skill. This pushes the current feature branch + advances `$WORKFLOW_BASE_BRANCH` to include the work.
+2. **Notify the testing agent** — ASK the user for the testing agent's name (or use `WORKFLOW_TESTING_AGENT` from `.claude/workflow.config` if set). Then dispatch:
    ```bash
    "$(git rev-parse --show-toplevel)/.claude/scripts/agent-send.sh" <tester> \
      "Please /base-test on origin/$WORKFLOW_BASE_BRANCH at <merge-sha>. Reply with results."
    ```
+3. **Cleanup (only AFTER notify)** — delete the plan file from `docs/todo_plans/<slug>.md` AND remove the todo's section from `docs/TODO.md`. Commit the cleanup as `chore(todo): finalize <todo title>`. The cleanup commit lives locally on the feature branch; it'll ship with the next push (no extra push needed — the TODO removal is housekeeping).
 4. **Report** — confirm push, tester notification, and cleanup. Testing is asynchronous; the tester will reply via `/agent-msg` when done.
 
-If the user opted out with "skip notify" / "no tester", step 3 is omitted.
+If the user opted out with "skip notify" / "no tester", step 2 is omitted but the cleanup in step 3 STILL runs after the push.
 
 ## How to determine mode
 
@@ -196,19 +196,19 @@ Then steps 4–10 from Execute Next above.
    - Exactly one plan file → use it.
    - Multiple → ask the user which slug.
    - None → error: "No in-flight todo to continue."
-2. **Read the plan file** to recover the todo title (for the commit message + tester notification text).
-3. **Cleanup**:
-   a. Delete the plan file: `rm docs/todo_plans/<slug>.md`.
-   b. Remove the todo's section from `docs/TODO.md`.
-   c. Commit with message `chore(todo): finalize <todo title>`.
-4. **Push the base branch**: invoke the `/base-push` skill (or run the equivalent commands directly). This pushes the current branch + advances `$WORKFLOW_BASE_BRANCH`. Surface any push errors.
-5. **Notify the testing agent**: ask the user for the testing agent's name (or read `WORKFLOW_TESTING_AGENT` from `.claude/workflow.config` if set). Then run:
+2. **Read the plan file** to recover the todo title (for the tester notification text + cleanup commit message).
+3. **Push the base branch**: invoke the `/base-push` skill (or run the equivalent commands directly). This pushes the current feature branch + advances `$WORKFLOW_BASE_BRANCH`. Surface any push errors and STOP on failure (don't cleanup yet — the work isn't shipped).
+4. **Notify the testing agent**: ask the user for the testing agent's name (or read `WORKFLOW_TESTING_AGENT` from `.claude/workflow.config` if set). Then run:
    ```bash
    "$(git rev-parse --show-toplevel)/.claude/scripts/agent-send.sh" <tester> \
      "Please /base-test the latest origin/$WORKFLOW_BASE_BRANCH (merge commit <hash>) — work from todo '<title>'. Reply with results."
    ```
-   If the user said "skip notify" / "no tester", omit this step.
-6. **Report**: confirm push + notify + cleanup. Note testing is async — the tester replies via `/agent-msg` when done.
+   If the user said "skip notify" / "no tester", omit this step but still continue to cleanup.
+5. **Cleanup** — ONLY after push + notify both completed:
+   a. Delete the plan file: `rm docs/todo_plans/<slug>.md`.
+   b. Remove the todo's section from `docs/TODO.md`.
+   c. Commit the cleanup with message `chore(todo): finalize <todo title>`. (Local-only; ships with the next push.)
+6. **Report**: confirm push + notify + cleanup. Note testing is async — the tester replies via `/agent-msg` when done. Mention that the cleanup commit is local; ships with the next push.
 
 ## Implementation: Add todo
 
@@ -306,7 +306,7 @@ After implementing any todo, you MUST:
 - The reviewer (a peer agent, or the user themselves later) can read the plan to understand intent.
 - Re-running the skill in the middle of review doesn't lose state.
 
-When Mode 4 runs, BOTH steps happen as one commit BEFORE `/base-push` so the push ships the cleanup alongside the implementation.
+When Mode 4 runs, cleanup is the LAST step — AFTER the push and tester notification — so the TODO entry tracks the work's true state: it stays in the list until the work is shipped AND the tester has been notified. The cleanup commit is local; ships with the next push.
 
 ## PROMPT prefix convention
 
@@ -431,11 +431,6 @@ User: /todo continue
 Claude: Found in-flight todo: "Add unit tests for auth module"
 Plan file: docs/todo_plans/add-unit-tests-for-auth-module.md
 
-Cleanup first (so the push ships the TODO removal too):
-  ✓ Deleted docs/todo_plans/add-unit-tests-for-auth-module.md
-  ✓ Removed todo section from docs/TODO.md
-  ✓ Committed: chore(todo): finalize "Add unit tests for auth module"
-
 Pushing via /base-push...
   ✓ <branch> → origin/<branch>
   ✓ Merged into origin/<base> at commit <merge-hash>
@@ -447,11 +442,17 @@ User: tester
 Claude: Sent notification to tester via /agent-send. They'll reply when
 they've run the gates.
 
+Cleaning up (after push + notify):
+  ✓ Deleted docs/todo_plans/add-unit-tests-for-auth-module.md
+  ✓ Removed todo section from docs/TODO.md
+  ✓ Committed: chore(todo): finalize "Add unit tests for auth module"
+    (commit is local; ships with your next push)
+
 Done. The todo is fully closed:
   - Implementation pushed
   - origin/<base> includes the work
   - Testing agent notified (will reply asynchronously)
-  - Plan file deleted, TODO entry removed
+  - Plan file deleted, TODO entry removed locally
 
 Would you like me to start the next todo? (or wait for testing results first)
 ```
@@ -474,8 +475,8 @@ Claude: Executing "PROMPT: ..." directly (skip plan acknowledged).
 | `/todo do next`                          | Same                                                                                                                                                                                            |
 | `/todo do the next todo, skip plan`      | Execute directly → **Verify** → **Commit** → **Doc-drift** → **STOP for review**                                                                                                                |
 | `/todo do the <keyword> todo`            | Search → Load docs → Plan → Execute → **Verify** → **Commit** → **Doc-drift** → **STOP for review**                                                                                             |
-| `/todo continue`                         | Cleanup (plan + TODO entry) → Commit → `/base-push` → Notify tester (ask which agent) → Report                                                                                                  |
-| `/todo continue, skip notify`            | Same but no tester notification                                                                                                                                                                 |
+| `/todo continue`                         | `/base-push` → Notify tester (ask which agent) → Cleanup (plan + TODO entry) → Commit cleanup (local; ships with next push) → Report                                                            |
+| `/todo continue, skip notify`            | `/base-push` → Cleanup → Commit cleanup → Report (no tester notification)                                                                                                                       |
 | `/todo <text>`                           | Add as new todo header                                                                                                                                                                          |
 
 ## Parsing tips
