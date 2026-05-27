@@ -8,6 +8,40 @@ A drop-in `.claude/` for Claude Code projects that adds:
 
 The base branch name is configurable per-project via `.claude/workflow.config`. Default is `main`.
 
+## Quick start: use this repo as a project starter
+
+The fastest path from "clean slate" to "running multi-agent workflow":
+
+```bash
+# 1. Clone this repo and rename it to your project
+git clone https://example.com/your-fork-of-claude-workflow my-project
+cd my-project
+
+# 2. Start a Claude session inside a tmux pane
+tmux new-session
+claude
+
+# 3. Run the initializer
+> /base-initialize
+```
+
+`/base-initialize` will:
+
+1. Ask for your project's name, description, base branch, and tech stack
+2. Reset `.git/` and reinitialize (the workflow's history is irrelevant to your project)
+3. Install the example docs from `templates/example_docs/` as your real `docs/` (you'll customize in the interview at the end)
+4. Install the lightweight `CLAUDE.md` template, substituting your project metadata
+5. Write `.claude/workflow.config` with your chosen base branch
+6. Remove `templates/`, the workflow's `README.md`, and `workflow.config.example` — they're no longer needed
+7. Ask how many feature / PR review / test agents you want
+8. Create that many worktrees (each on its own branch)
+9. Open a tmux pane (or window) for each, `cd` into it, and start `claude`
+10. Interview you about the project and fill in `docs/architecture.md`, `docs/best-practices.md`, `docs/security.md`, `docs/testing.md`
+
+After this you have: a fresh project repo, a tmux layout with one agent per worktree, and starting documentation. The doc-drift loop in `/todo` will grow `docs/best-practices.md` organically as you ship work.
+
+Before running `/base-initialize`, make sure you've completed the install steps below (especially the user-level `SessionStart` hook in step 4) so the spawned agents auto-register.
+
 ## Prerequisites
 
 - **Claude Code CLI** — this is a Claude Code skill package; it has no value without it.
@@ -114,10 +148,17 @@ To test inter-agent comms, open a SECOND tmux pane and start another `claude` in
 │   ├── base-merge/              Local-only sync of <base>.
 │   ├── base-pr/                 Review pending state on <base>; promote.
 │   ├── base-test/               Merge local <base>, run all gates, report.
-│   └── todo/                    Full-lifecycle todo manager. Loads docs/
-│                                during planning, runs doc-drift after commit,
-│                                stops for review. /todo continue handles
-│                                push → notify tester → cleanup.
+│   ├── todo/                    Full-lifecycle todo manager. Loads docs/
+│   │                            during planning, runs doc-drift after commit,
+│   │                            stops for review. /todo continue handles
+│   │                            push → notify tester → cleanup.
+│   ├── add-worktree/            git worktree add wrapper + env-copy + setup.
+│   ├── remove-worktree/         git worktree remove with confirmation.
+│   ├── list-worktrees/          Annotated list of all worktrees.
+│   └── base-initialize/         One-time bootstrap: reset .git, install
+│                                docs from templates, create worktrees,
+│                                open tmux panes, start agents, interview
+│                                the user to fill in docs.
 ├── settings.json.example        Project-level settings (deny + SessionEnd).
 └── settings-user-level.json.example   SessionStart hook for ~/.claude/.
 
@@ -153,6 +194,10 @@ docs/
 | **`/agent-msg <sender> <filename> [reply]`** | Inbound-message handler. Invoked AUTOMATICALLY when a peer agent's `tmux send-keys` lands `/agent-msg ...` in your prompt buffer. Reads + deletes the message file, prints a visible banner, then either processes (request) or integrates (reply). You never type this yourself. |
 | **`/agent-rename <new-name>`** | Rename this agent everywhere: registry file in `~/.claude/running-agents/`, persistent base-branch file in `~/.claude/agents/`, tmux pane title, tmux window name, Claude session label (via the built-in `/rename`), and the local git branch (`git branch -m`). |
 | **`/todo <verb-or-text>`** | Full-lifecycle todo manager. Drives a todo through plan (informed by `docs/best-practices.md` and the rest of the doc corpus) → execute → verify → commit → doc-drift check → STOP for review → `/todo continue` → push base + notify tester → cleanup. Four modes: add, execute next, execute by keyword, continue (post-review). The doc-drift check after every implementation is the loop that keeps `docs/best-practices.md` growing scenarios as the project evolves. |
+| **`/add-worktree <name>`** | Create a new git worktree at `<parent>/<repo>-<name>`. Optionally on a new branch (default), an existing branch (`--branch <name>`), or from a non-default ref (`--from <ref>`). Optionally copies env files (`WORKFLOW_WORKTREE_COPY_FILES`) and runs a setup command (`WORKFLOW_WORKTREE_SETUP_CMD`) from config. |
+| **`/remove-worktree <name>`** | Tear down a worktree. Confirms first (unless `--force`). `--delete-branch` also removes the local branch. Refuses if the worktree has uncommitted changes (override with `--force`). |
+| **`/list-worktrees`** | Show all worktrees of the current repo: path, branch, last commit, dirty status, and a `(current)` marker for the one you're calling from. |
+| **`/base-initialize`** | **Run once, at project start.** Bootstraps a fresh project from a `claude-workflow` clone: resets `.git/`, installs `docs/` from `templates/example_docs/`, installs `CLAUDE.md`, writes `.claude/workflow.config`, removes the now-redundant templates and workflow README, asks how many feature/PR/test agents you want, creates that many worktrees, opens tmux panes for each, starts `claude` in each, then interviews you about the project to fill in the docs. See the Quick start above. |
 
 ### Deep-audit skills (third-party, bundled as-is)
 

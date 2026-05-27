@@ -58,3 +58,27 @@ WORKFLOW_BASE_BRANCH="main"
 # match the recorded base. Useful in single-branch projects where
 # the warning is noise.
 # WORKFLOW_AGENT_SKIP_BRANCH_WARN=""
+
+# Name of the agent that should run /base-test after a /todo continue.
+# The todo skill's Mode 4 will dispatch the test notification to this
+# agent unless the user overrides per-invocation.
+# WORKFLOW_TESTING_AGENT=""
+
+# =====================================================================
+# Worktree workflow (/add-worktree, /remove-worktree, /list-worktrees)
+# =====================================================================
+
+# Parent directory for new worktrees. Default: parent directory of the
+# current git toplevel. So if your repo is at ~/code/myproject, new
+# worktrees land at ~/code/myproject-<name>. Set this to override.
+# WORKFLOW_WORKTREE_PARENT="$HOME/code"
+
+# Files to copy from the main clone to each new worktree at creation
+# time. Useful for env files that are gitignored. Shell array.
+# WORKFLOW_WORKTREE_COPY_FILES=(".env" ".env.local" ".envrc")
+
+# Command to run inside each new worktree after creation (e.g. install
+# deps). Default: no setup command. The /base-initialize skill does NOT
+# run this by default — it's typically meaningful only after the user
+# has configured their stack.
+# WORKFLOW_WORKTREE_SETUP_CMD="pnpm install --frozen-lockfile"
