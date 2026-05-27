@@ -95,34 +95,145 @@ To test inter-agent comms, open a SECOND tmux pane and start another `claude` in
 ```
 .claude/
 ├── hooks/
-│   ├── register-agent.sh        Idempotent registration script. Installed as
+│   ├── register-agent.sh        Idempotent registration. Installed as
 │   │                             SessionStart (user-level) + invoked as
 │   │                             self-heal prelude by agent-send/rename.
 │   └── unregister-agent.sh      SessionEnd hook (project-level).
 ├── scripts/
-│   ├── _config.sh               Sourceable config loader. Reads
-│   │                             .claude/workflow.config; exports
-│   │                             $WORKFLOW_BASE_BRANCH + $WORKFLOW_MAIN_PATH.
+│   ├── _config.sh               Sourceable config loader.
 │   ├── agent-send.sh            Backing script for /agent-send.
 │   └── agent-rename.sh          Backing script for /agent-rename.
 ├── skills/
 │   ├── agent-msg/               Inbound-message handler.
 │   ├── agent-send/              Send to a peer agent.
-│   ├── agent-rename/            Rename this agent (registry + tmux + claude session + git branch).
+│   ├── agent-rename/            Rename this agent everywhere.
 │   ├── base-pull/               Merge origin/<base> INTO current branch.
-│   ├── base-push/               Push current branch + advance LOCAL <base> + push to origin.
-│   │                             Defines merge_into_branch_transient helper.
-│   ├── base-merge/              Local-only sync of <base> (no fetch, no push).
-│   └── base-pr/                 Review pending state on <base> in a sandbox;
-│                                 optionally promote via the helper.
-├── settings.json.example        Project-level settings (deny rules + SessionEnd hook).
-└── settings-user-level.json.example   The SessionStart hook for ~/.claude/settings.json.
+│   ├── base-push/               Push current branch + advance LOCAL <base>
+│   │                             + push to origin (defines the
+│   │                             merge_into_branch_transient helper).
+│   ├── base-merge/              Local-only sync of <base>.
+│   ├── base-pr/                 Review pending state on <base>; promote.
+│   └── base-test/               Merge local <base>, run all gates, report.
+├── settings.json.example        Project-level settings (deny + SessionEnd).
+└── settings-user-level.json.example   SessionStart hook for ~/.claude/.
 
-workflow.config.example          Sample config file with $WORKFLOW_BASE_BRANCH etc.
+workflow.config.example          Sample config file.
+
+templates/
+├── CLAUDE.md                    Lightweight CLAUDE.md template; links to docs/.
+└── docs/                        Stub project-doc structure to copy as your docs/.
+    ├── README.md                Format + how the workflow uses each file.
+    ├── best-practices.md        Scenario + rule conventions.
+    ├── architecture.md          Components + invariants.
+    ├── security.md              Threat model + sensitive-op rules.
+    ├── testing.md               Where each test category lives.
+    ├── api-conventions.md       (Delete if no API surface.)
+    └── TODO.md                  Backlog.
 
 docs/
-└── inter-agent-comms.md         Protocol writeup for /agent-msg / /agent-send.
+└── inter-agent-comms.md         Protocol writeup for the comms layer.
 ```
+
+## Skills reference
+
+| Skill | What it does |
+|---|---|
+| **`/base-pull`** | Merge `origin/$WORKFLOW_BASE_BRANCH` into the current feature branch (without checking the base out anywhere). Pushes the feature first as a backup, then merges. Doesn't auto-push the merge — your call when to publish. |
+| **`/base-push`** | Push the current feature branch to origin, then advance LOCAL `$WORKFLOW_BASE_BRANCH` to include those changes via a transient worktree, then push local to origin. Local and origin always end in lockstep. Defines `merge_into_branch_transient` (the helper the other base-* skills call). |
+| **`/base-merge`** | Local-only sync (no fetch, no push). Two modes: `down` (merge locally-cached `origin/<base>` into current) and `up` (advance local `<base>` from current). Used when you want refs aligned without publishing. |
+| **`/base-pr`** | Review what's pending on the base branch in a dedicated sandbox worktree. Runs project gates against the sandboxed state; optionally promotes to origin via the helper after gates pass. Reads `docs/best-practices.md` / `docs/architecture.md` / `docs/security.md` during review to flag rule violations. |
+| **`/base-test`** | Merge LOCAL `$WORKFLOW_BASE_BRANCH` into the current branch, then run every project quality gate against the merged result. Operates in place — no sandbox, no commit, no push. Reports failures together (doesn't stop at the first). |
+| **`/agent-send <target> "<body>" [--reply]`** | Send a message to another Claude session running in another tmux pane on this machine. Self-heals the registry before sending. Body is staged in `~/.claude/agent-inbox/`; delivery is a one-line slash command into the target's prompt. `--reply` distinguishes replies (don't auto-respond) from requests. |
+| **`/agent-msg <sender> <filename> [reply]`** | Inbound-message handler. Invoked AUTOMATICALLY when a peer agent's `tmux send-keys` lands `/agent-msg ...` in your prompt buffer. Reads + deletes the message file, prints a visible banner, then either processes (request) or integrates (reply). You never type this yourself. |
+| **`/agent-rename <new-name>`** | Rename this agent everywhere: registry file in `~/.claude/running-agents/`, persistent base-branch file in `~/.claude/agents/`, tmux pane title, tmux window name, Claude session label (via the built-in `/rename`), and the local git branch (`git branch -m`). |
+
+## Practical examples
+
+### Multi-agent PR review
+
+Open two tmux panes, start a `claude` session in each (in different worktrees of the same repo). Agent A is the implementer; Agent B is the reviewer.
+
+```text
+Pane A (worktree on feat/foo)              Pane B (worktree on review-sandbox)
+─────────────────────────────────────      ─────────────────────────────────────
+$ claude
+agent-A> <implements a feature, commits>
+agent-A> /base-test                         (runs all gates locally)
+agent-A> /agent-send review-sandbox \
+        "Please /base-pr review my work
+         on feat/foo. Push back any
+         findings via --reply."
+
+                                            agent-B receives /agent-msg, banner
+                                            shows the request, processes it.
+                                            agent-B> /base-pr --base feat/foo
+                                            (runs the review against feat/foo
+                                             in the sandbox, consulting
+                                             docs/best-practices.md, etc.)
+                                            agent-B> /agent-send feat-foo \
+                                                    "Found 3 issues:
+                                                     1. ...
+                                                     2. ...
+                                                     3. ..." --reply
+
+agent-A receives the reply, banner
+shows "REPLY from review-sandbox",
+addresses each finding, commits, then:
+agent-A> /agent-send review-sandbox \
+        "Re-review please; addressed
+         all 3 findings."
+                                            <iterate>
+
+agent-A> /base-push  (once review-sandbox approves)
+```
+
+This pattern keeps the implementer and reviewer in separate contexts, prevents the implementer's bias from colouring the review, and naturally records the review trail in the conversation transcripts on both sides.
+
+### Dispatching a sub-task
+
+```text
+You> /agent-send researcher \
+     "Find every file that calls deprecated function X.
+      Reply with a list of file:line locations."
+
+         (researcher agent, in a different worktree,
+          gets the request, grep-walks the codebase,
+          replies via --reply with a numbered list)
+
+You receive the reply, decide what to do with it.
+```
+
+Useful when you want a context-window-isolated sub-task to run in parallel with your main work.
+
+### Aligning multiple worktrees after a base advance
+
+```text
+After you /base-push from one worktree, every other live agent should
+/base-pull to pick up the change. The two-line ritual:
+
+You> /agent-send <peer-name> \
+     "origin/<base> just advanced to <sha>. Please /base-pull."
+
+   (peer agent runs /base-pull, replies with confirmation +
+    any conflicts encountered)
+```
+
+Saves you switching panes to broadcast the news manually.
+
+## Project documentation structure
+
+The workflow skills (especially `/base-pr` and `/base-test`) work best when the project ships a small, scenario-shaped docs tree. The `templates/docs/` directory in this repo is a starter you can copy into your project as `docs/`:
+
+```bash
+cp -r /path/to/claude-workflow/templates/docs /path/to/your-project/docs
+cp /path/to/claude-workflow/templates/CLAUDE.md /path/to/your-project/CLAUDE.md
+```
+
+The template encodes one strong convention: **docs are scenario + rule + how-to-apply, not topic + paragraph**. A scenario describes a real bug or near-miss; a rule distills the lesson in one imperative sentence; a how-to-apply line tells future readers when the rule kicks in. Scenarios are load-bearing — they survive refactors that would otherwise let topic-shaped docs rot.
+
+`CLAUDE.md` is intentionally light — a one-paragraph intro, links to each `docs/*.md`, and a handful of hard rules. The detailed material lives in `docs/`, where it doesn't bloat every session's context window.
+
+See `templates/docs/README.md` for the format spec and how each skill uses each file.
 
 ## Configuration
 
