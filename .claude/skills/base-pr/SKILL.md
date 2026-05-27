@@ -54,7 +54,7 @@ Before walking the diff, load the project-doc corpus into context so the review 
 cat docs/best-practices.md docs/architecture.md docs/security.md docs/testing.md docs/api-conventions.md 2>/dev/null
 ```
 
-Skip files that don't exist for the project; the corpus is whatever shipped in `templates/docs/` from the `claude-workflow` repo (see this project's `docs/README.md` for what's there). Treat each doc's rules as constraints the diff must respect.
+Skip files that don't exist for the project; the corpus shipped in `templates/example_docs/` from the `claude-workflow` repo (see this project's `docs/README.md` for what's there). Treat each doc's rules as constraints the diff must respect.
 
 ### 4. Walk the diff against the doc corpus
 
