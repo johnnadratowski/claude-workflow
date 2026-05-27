@@ -43,6 +43,8 @@ Use `AskUserQuestion` to collect, in this order:
 | Base branch | `main` | Becomes `WORKFLOW_BASE_BRANCH`. |
 | Tech stack | — | Free-form one-line answer: language(s) + framework(s) + project shape (e.g. "TypeScript backend + React frontend", "Python CLI", "Rust library", "Go service"). Used as a hint for the setup-command guess below AND informs the docs interview later. |
 | Setup command | inferred from stack | "What command installs dependencies?" Suggest one based on the tech stack (see mapping below). User can accept the suggestion, type their own, or say "none" if the project has no dependency-install step. Becomes `WORKFLOW_WORKTREE_SETUP_CMD`. |
+| Env files to copy per worktree | `(none)` | "Are there any env-shaped files (`.env`, `.env.local`, `.envrc`, etc.) you want copied into each new worktree at creation? They're typically gitignored but each worktree needs its own copy." Comma-separated list, or blank for none. Becomes `WORKFLOW_WORKTREE_COPY_FILES`. Skip the question entirely if the user's stack obviously doesn't have env files (e.g. a pure CLI tool). |
+| Git remote URL | `(none)` | "Do you have a remote you want to push to?" If yes, captured as a URL string and applied in Phase 2 via `git remote add origin <url>`. If no, skip — the user can add a remote later. |
 
 ### Setup command guessing
 
@@ -83,9 +85,16 @@ Hard-stop if the user declines.
 ```bash
 rm -rf .git
 git init -b "$BASE_BRANCH"
+
+# Optionally wire the remote captured in Phase 1.
+if [ -n "$REMOTE_URL" ]; then
+  git remote add origin "$REMOTE_URL"
+fi
 ```
 
 If the user has `~/.gitconfig` set, the init picks up their identity. If they don't, leave it for them to configure later.
+
+If a remote was added, the first push will be `git push -u origin <base>` — `/base-push` from a feature worktree handles that automatically.
 
 ## Phase 3: Install docs + CLAUDE.md + config
 
@@ -112,7 +121,16 @@ if [ -n "$SETUP_CMD" ]; then
   sed -i.bak "s|^# WORKFLOW_WORKTREE_SETUP_CMD=.*|WORKFLOW_WORKTREE_SETUP_CMD=\"$SETUP_CMD\"|" .claude/workflow.config
 fi
 
-rm .claude/workflow.config.bak
+# Set the env-files-to-copy list if the user named any.
+# Convert the comma-separated answer into a shell array literal.
+if [ -n "$COPY_FILES_LIST" ]; then
+  copy_files_array=$(printf '%s' "$COPY_FILES_LIST" | awk -F, '{
+    out=""; for (i=1;i<=NF;i++) { gsub(/^ +| +$/, "", $i); out = out (i>1?" ":"") "\"" $i "\""; } print out
+  }')
+  sed -i.bak "s|^# WORKFLOW_WORKTREE_COPY_FILES=.*|WORKFLOW_WORKTREE_COPY_FILES=($copy_files_array)|" .claude/workflow.config
+fi
+
+rm -f .claude/workflow.config.bak
 
 # Remove now-redundant template files
 rm -rf templates/
@@ -144,6 +162,17 @@ Compute the worktree names from these counts:
 - `test-1`, `test-2`, ... up to test count
 
 Total worktrees = sum of the three counts. If 0, skip phase 6+ entirely (user can run `/add-worktree` later).
+
+**Auto-derive the testing agent** from the answer. If `test count >= 1`, set `WORKFLOW_TESTING_AGENT="test-1"` so `/todo` Mode 4 dispatches there by default:
+
+```bash
+if [ "$TEST_COUNT" -ge 1 ]; then
+  sed -i.bak "s|^# WORKFLOW_TESTING_AGENT=.*|WORKFLOW_TESTING_AGENT=\"test-1\"|" .claude/workflow.config
+  rm -f .claude/workflow.config.bak
+fi
+```
+
+This change isn't committed yet — it'll be picked up by the final commit in Phase 9 along with the docs-interview output. If the user creates zero test agents, `WORKFLOW_TESTING_AGENT` stays blank and `/todo continue` will ask the user for the target each time.
 
 ## Phase 6: Create worktrees
 
