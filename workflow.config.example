@@ -1,0 +1,60 @@
+# Copy this file to .claude/workflow.config in your project and edit it.
+# Scripts under .claude/hooks and .claude/scripts read it via
+# .claude/scripts/_config.sh — what you put here is just shell.
+
+# =====================================================================
+# Base-branch workflow (/base-pull, /base-push, /base-merge, /base-pr)
+# =====================================================================
+
+# The shared "trunk" branch other branches merge into and pull from.
+# Common choices: main, master, trunk, develop.
+WORKFLOW_BASE_BRANCH="main"
+
+# Path to the canonical clone of the repo. Used by the transient-worktree
+# helper to anchor the temporary worktrees it creates. Default is the
+# current git toplevel — only set this if your "main clone" is somewhere
+# different from the worktree you're calling skills from.
+# WORKFLOW_MAIN_PATH="$HOME/code/myproject"
+
+# =====================================================================
+# Agent workflow (/agent-send, /agent-msg, /agent-rename) — all optional
+# =====================================================================
+
+# Pin an agent's identity in config. When set, fresh sessions in this
+# project register under this name (overriding the current git branch),
+# AND the recorded base branch is forced to this value — so the mismatch
+# warning fires if the worktree is on a different branch.
+#
+# Precedence:
+#   1. Session file's `name` field (from `/agent-rename` or `/rename`)
+#   2. WORKFLOW_AGENT_DEFAULT_BRANCH (this knob)
+#   3. Current git branch (sanitized)
+#   4. cwd basename
+#
+# Example: "feature/foo" makes the agent name "feature-foo" (after the
+# sanitization that turns / into -), regardless of which branch is
+# checked out at startup.
+# WORKFLOW_AGENT_DEFAULT_BRANCH=""
+
+# Prepended to every auto-derived agent name. Useful when agents from
+# multiple projects share one host and you want them prefixed by team
+# or project. Example: "frontend-" → agent becomes "frontend-main".
+# Applied AFTER the transform/sanitization steps below.
+# WORKFLOW_AGENT_NAME_PREFIX=""
+
+# Sed expression applied to the derived name BEFORE sanitization.
+# Useful for stripping conventional branch prefixes.
+# Example: "s|^feature/||" turns "feature/foo" into "foo".
+# WORKFLOW_AGENT_NAME_TRANSFORM=""
+
+# Set to "1" to skip the /rename keystroke that the SessionStart hook
+# fires into the prompt buffer. The keystroke updates Claude's own
+# session label (visible in the prompt box and the /resume picker) to
+# match the registered agent name. Some users find that intrusive.
+# WORKFLOW_AGENT_SKIP_RENAME=""
+
+# Set to "1" to suppress the "you're on the wrong branch" warning
+# the SessionStart hook emits when the worktree's branch doesn't
+# match the recorded base. Useful in single-branch projects where
+# the warning is noise.
+# WORKFLOW_AGENT_SKIP_BRANCH_WARN=""
