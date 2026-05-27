@@ -148,6 +148,7 @@ docs/
 | **`/agent-send <target> "<body>" [--reply]`** | Send a message to another Claude session running in another tmux pane on this machine. Self-heals the registry before sending. Body is staged in `~/.claude/agent-inbox/`; delivery is a one-line slash command into the target's prompt. `--reply` distinguishes replies (don't auto-respond) from requests. |
 | **`/agent-msg <sender> <filename> [reply]`** | Inbound-message handler. Invoked AUTOMATICALLY when a peer agent's `tmux send-keys` lands `/agent-msg ...` in your prompt buffer. Reads + deletes the message file, prints a visible banner, then either processes (request) or integrates (reply). You never type this yourself. |
 | **`/agent-rename <new-name>`** | Rename this agent everywhere: registry file in `~/.claude/running-agents/`, persistent base-branch file in `~/.claude/agents/`, tmux pane title, tmux window name, Claude session label (via the built-in `/rename`), and the local git branch (`git branch -m`). |
+| **`/todo <verb-or-text>`** | Full-lifecycle todo manager. Drives a todo through plan (informed by `docs/best-practices.md` and the rest of the doc corpus) → execute → verify → commit → doc-drift check → STOP for review → `/todo continue` → push base + notify tester → cleanup. Four modes: add, execute next, execute by keyword, continue (post-review). The doc-drift check after every implementation is the loop that keeps `docs/best-practices.md` growing scenarios as the project evolves. |
 
 ### Deep-audit skills (third-party, bundled as-is)
 
