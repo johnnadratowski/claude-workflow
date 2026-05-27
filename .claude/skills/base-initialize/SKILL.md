@@ -45,6 +45,18 @@ Use `AskUserQuestion` to collect, in this order:
 | Setup command | inferred from stack | "What command installs dependencies?" Suggest one based on the tech stack (see mapping below). User can accept the suggestion, type their own, or say "none" if the project has no dependency-install step. Becomes `WORKFLOW_WORKTREE_SETUP_CMD`. |
 | Env files to copy per worktree | `(none)` | "Are there any env-shaped files (`.env`, `.env.local`, `.envrc`, etc.) you want copied into each new worktree at creation? They're typically gitignored but each worktree needs its own copy." Comma-separated list, or blank for none. Becomes `WORKFLOW_WORKTREE_COPY_FILES`. Skip the question entirely if the user's stack obviously doesn't have env files (e.g. a pure CLI tool). |
 | Git remote URL | `(none)` | "Do you have a remote you want to push to?" If yes, captured as a URL string and applied in Phase 2 via `git remote add origin <url>`. If no, skip — the user can add a remote later. |
+| Agent name prefix | (asks) | "Multiple projects share `~/.claude/running-agents/`, so prefixing agent names is recommended if you'll run agents from more than one project at a time." Four-option `AskUserQuestion` (see below). Becomes `WORKFLOW_AGENT_NAME_PREFIX`. |
+
+### Agent prefix — four options
+
+Use `AskUserQuestion` with these choices:
+
+1. **Use the project name** — `WORKFLOW_AGENT_NAME_PREFIX="<project-name>-"` (e.g. agents become `myproj-feat-1`, `myproj-test-1`). **Recommended** if the project name is distinctive.
+2. **Use the current folder name** — `WORKFLOW_AGENT_NAME_PREFIX="$(basename $(pwd))-"`. Useful when the project name differs from the folder, and the folder name is the better disambiguator.
+3. **Custom prefix** — follow-up question: "Enter prefix" (string). Append a trailing dash if the user didn't include one. Becomes `WORKFLOW_AGENT_NAME_PREFIX="<their-string>-"`.
+4. **No prefix** — leave `WORKFLOW_AGENT_NAME_PREFIX` commented out in the config. Agents use their branch name directly (`feat-1`, `pr-1`, etc.).
+
+The chosen prefix is sanitized the same way `register-agent.sh` sanitizes names: lowercase alnum / dash / underscore only. The hook also runs its own sanitization, so don't worry about edge cases here — pass the user's literal answer in.
 
 ### Setup command guessing
 
@@ -130,6 +142,12 @@ if [ -n "$COPY_FILES_LIST" ]; then
   sed -i.bak "s|^# WORKFLOW_WORKTREE_COPY_FILES=.*|WORKFLOW_WORKTREE_COPY_FILES=($copy_files_array)|" .claude/workflow.config
 fi
 
+# Set the agent name prefix if the user chose one (options 1–3).
+# Empty $AGENT_PREFIX = "no prefix" = leave commented.
+if [ -n "$AGENT_PREFIX" ]; then
+  sed -i.bak "s|^# WORKFLOW_AGENT_NAME_PREFIX=.*|WORKFLOW_AGENT_NAME_PREFIX=\"$AGENT_PREFIX\"|" .claude/workflow.config
+fi
+
 rm -f .claude/workflow.config.bak
 
 # Remove now-redundant template files
@@ -163,11 +181,12 @@ Compute the worktree names from these counts:
 
 Total worktrees = sum of the three counts. If 0, skip phase 6+ entirely (user can run `/add-worktree` later).
 
-**Auto-derive the testing agent** from the answer. If `test count >= 1`, set `WORKFLOW_TESTING_AGENT="test-1"` so `/todo` Mode 4 dispatches there by default:
+**Auto-derive the testing agent** from the answer. If `test count >= 1`, set `WORKFLOW_TESTING_AGENT` to the name of the first test agent — which **includes the prefix** from Phase 1 if one was chosen, since that's what the agent actually registers as:
 
 ```bash
 if [ "$TEST_COUNT" -ge 1 ]; then
-  sed -i.bak "s|^# WORKFLOW_TESTING_AGENT=.*|WORKFLOW_TESTING_AGENT=\"test-1\"|" .claude/workflow.config
+  full_tester_name="${AGENT_PREFIX}test-1"   # e.g. "myproj-test-1" or just "test-1"
+  sed -i.bak "s|^# WORKFLOW_TESTING_AGENT=.*|WORKFLOW_TESTING_AGENT=\"$full_tester_name\"|" .claude/workflow.config
   rm -f .claude/workflow.config.bak
 fi
 ```
