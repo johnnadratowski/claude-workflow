@@ -80,9 +80,19 @@ Collect findings, don't stop at the first. Group by severity (blocking / fix-bef
 
 ### 6. (Optional) Deep audit on high-risk surfaces
 
-If your project ships a deep-audit / adversarial-audit skill (something that traces multi-step bug sequences across the diff rather than the line-by-line walk above), invoke it here — scoped to the changed files — when the diff touches a high-risk surface (e.g. authentication, authorization, state machines with coupled fields, financial calculations, anything that handles user data). Skip for docs-only / config-only / test-only diffs where the line-by-line walk already exhausts the review surface.
+When the diff touches a **high-risk surface**, escalate to the bundled `nemesis-auditor` skill (which itself runs `feynman-auditor` and `state-inconsistency-auditor` in a feedback loop). Scope the run to the changed files/functions named in the diff — it's an iterative, PoC-writing audit, so don't point it at the whole repo.
 
-This skill template does NOT ship a deep-audit skill itself; if your project doesn't have one, omit this step.
+High-risk surfaces typically include:
+
+- Authentication, authorization, session, token-handling code
+- State machines with coupled fields (mutating A without mutating B)
+- Arithmetic on values that affect access decisions or stored balances
+- Anything that crosses a trust boundary (user input → privileged operation)
+- Code paths that previously had bugs in the same general area
+
+Skip the deep audit for docs-only / config-only / test-only diffs — the line-by-line walk above already exhausts the review surface there.
+
+Fold every verified finding from the deep audit into your "blocking" findings list with its identifier. Note in the report whether the deep audit ran or was skipped, and why.
 
 ### 7. Doc-drift check
 

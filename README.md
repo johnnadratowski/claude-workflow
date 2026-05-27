@@ -147,6 +147,16 @@ docs/
 | **`/agent-msg <sender> <filename> [reply]`** | Inbound-message handler. Invoked AUTOMATICALLY when a peer agent's `tmux send-keys` lands `/agent-msg ...` in your prompt buffer. Reads + deletes the message file, prints a visible banner, then either processes (request) or integrates (reply). You never type this yourself. |
 | **`/agent-rename <new-name>`** | Rename this agent everywhere: registry file in `~/.claude/running-agents/`, persistent base-branch file in `~/.claude/agents/`, tmux pane title, tmux window name, Claude session label (via the built-in `/rename`), and the local git branch (`git branch -m`). |
 
+### Deep-audit skills (third-party, bundled as-is)
+
+These are language-agnostic deep-audit skills wired into `/base-pr`'s step 6 when the diff touches a high-risk surface. They predate `claude-workflow` and ship as authored (Solidity examples remain; the techniques themselves apply to any language).
+
+| Skill | What it does |
+|---|---|
+| **`/nemesis-auditor`** | Entry point. Runs `feynman-auditor` (deep logic bug finder) and `state-inconsistency-auditor` (coupled-state bug finder) as primary passes, then fuses their outputs in a feedback loop to find bugs at the intersection. Writes verified findings to disk. Designed to be scoped to a specific diff or changed-file set, not the whole repo. |
+| **`/feynman-auditor`** | Stand-alone deep logic-bug finder using the Feynman technique. Questions every line, ordering, guard presence/absence, and implicit assumption. Used as Stage 1 by `nemesis-auditor`. |
+| **`/state-inconsistency-auditor`** | Finds bugs where an operation mutates one piece of coupled state without updating its dependent counterpart. Used as Stage 2 by `nemesis-auditor`. |
+
 ## Practical examples
 
 ### Multi-agent PR review
