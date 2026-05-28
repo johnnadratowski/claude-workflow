@@ -1,6 +1,6 @@
 ---
 name: base-merge
-description: Local-only sync of the configured base branch — no network. Either merge the locally-cached `origin/<base>` into the current branch (`down`), or advance the local base ref to include the current branch's commits via a transient worktree (`up`). Use when you want refs aligned without publishing.
+description: Local-only sync of the configured base branch — no network. Either merge the LOCAL `<base>` ref into the current branch (`down`), or advance the local base ref to include the current branch's commits via a transient worktree (`up`). Use when you want refs aligned without publishing.
 ---
 
 # base-merge — local-only base-branch sync
@@ -9,7 +9,7 @@ Sync the **local** base-branch ref with the caller's current branch — **no net
 
 Two modes:
 
-- **down**: merge the locally-cached `origin/$WORKFLOW_BASE_BRANCH` into the current branch.
+- **down**: merge the local `$WORKFLOW_BASE_BRANCH` ref into the current branch.
 - **up**: advance the local `$WORKFLOW_BASE_BRANCH` ref to include the current branch's commits, via a transient worktree (the `merge_into_branch_transient` helper from `base-push`, with the push step removed).
 
 ## When to Use
@@ -26,15 +26,15 @@ Two modes:
 
 ```bash
 /base-merge              # default: both directions (down then up)
-/base-merge down         # merge origin/<base> (locally-cached) into current branch only
+/base-merge down         # merge local <base> into current branch only
 /base-merge up           # advance local <base> from current branch only
 ```
 
 ## Caveats — staleness
 
-Because this skill never fetches, the "latest `origin/<base>`" it merges down is whatever your local cache last saw — possibly hours or days stale. Because it never pushes, your local `<base>` will silently diverge from `origin/<base>`.
+Because this skill never fetches, the local `<base>` it merges down is only as fresh as the last `base-pull` / `base-push` / explicit `git fetch` advanced it. Because it never pushes, your local `<base>` will silently diverge from `origin/<base>`.
 
-The skill **refuses the up-merge** when local `<base>` is behind `origin/<base>` (cached) unless `--allow-stale` is passed.
+The skill **refuses the up-merge** when local `<base>` is behind the cached `origin/<base>` unless `--allow-stale` is passed — advancing local `<base>` from a starting point that's already behind origin would compound the divergence.
 
 ## Execution Steps
 
@@ -64,13 +64,14 @@ These are read-only — no refs are modified yet. The drift line in the final re
 ### 3. Down (if requested)
 
 ```bash
-git merge --no-ff "origin/$WORKFLOW_BASE_BRANCH" -m "Merge branch '$WORKFLOW_BASE_BRANCH' into $ORIGINAL_BRANCH (local sync)"
+git merge --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH" -m "Merge branch '$WORKFLOW_BASE_BRANCH' into $ORIGINAL_BRANCH (local sync)"
 ```
 
-Two important details:
+We merge the local `$WORKFLOW_BASE_BRANCH` ref — not `origin/$WORKFLOW_BASE_BRANCH`. This is the whole point of the skill: a local-to-local sync that picks up commits other agents on this machine have advanced local `<base>` with (via prior `base-push` / `base-merge up`), without involving the network.
 
-- We merge `origin/$WORKFLOW_BASE_BRANCH` (the locally-cached remote ref), not local `$WORKFLOW_BASE_BRANCH`. Reason: `origin/<base>` is the "last known good" published state; local `<base>` may have unpublished commits already.
-- On conflict — stop. The caller's working tree has conflict markers; the user resolves manually (`git add`, `git commit`) or `git merge --abort`. **Do not** proceed to the up-merge if down conflicted — local `<base>` shouldn't be advanced from a half-merged state.
+The ref form `refs/heads/$WORKFLOW_BASE_BRANCH` resolves cleanly even when `$WORKFLOW_BASE_BRANCH` is checked out in another worktree — git allows merging from a branch checked out elsewhere; it only blocks *checkout* of it.
+
+On conflict — stop. The caller's working tree has conflict markers; the user resolves manually (`git add`, `git commit`) or `git merge --abort`. **Do not** proceed to the up-merge if down conflicted — local `<base>` shouldn't be advanced from a half-merged state.
 
 ### 4. Up (if requested)
 
