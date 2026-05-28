@@ -179,7 +179,7 @@ Compute the worktree names from these counts:
 - `pr-1`, `pr-2`, ... up to PR count
 - `test-1`, `test-2`, ... up to test count
 
-Total worktrees = sum of the three counts. If 0, skip phase 6+ entirely (user can run `/add-worktree` later).
+Total worktrees = sum of the three counts. If 0, skip phase 6+ entirely (user can run `/add-worktree` later) — including the hook check in Phase 6, since no agents will be spawned.
 
 **Auto-derive the testing agent** from the answer. If `test count >= 1`, set `WORKFLOW_TESTING_AGENT` to the name of the first test agent — which **includes the prefix** from Phase 1 if one was chosen, since that's what the agent actually registers as:
 
@@ -191,9 +191,58 @@ if [ "$TEST_COUNT" -ge 1 ]; then
 fi
 ```
 
-This change isn't committed yet — it'll be picked up by the final commit in Phase 9 along with the docs-interview output. If the user creates zero test agents, `WORKFLOW_TESTING_AGENT` stays blank and `/todo continue` will ask the user for the target each time.
+This change isn't committed yet — it'll be picked up by the final commit in Phase 10 along with the docs-interview output. If the user creates zero test agents, `WORKFLOW_TESTING_AGENT` stays blank and `/todo continue` will ask the user for the target each time.
 
-## Phase 6: Create worktrees
+## Phase 6: Verify the user-level SessionStart hook
+
+**Runs before worktree creation** so the user can install the hook before any agents spin up — the moment a worktree's pane fires `claude` (Phase 8), the `SessionStart` hook needs to be in place or the agent won't auto-register/auto-rename.
+
+```bash
+has_hook=0
+if [ -f "$HOME/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
+  has_hook=$(jq -r '
+    [.hooks.SessionStart[]?.hooks[]?.command // empty]
+    | map(select(test("register-agent.sh")))
+    | length
+  ' "$HOME/.claude/settings.json" 2>/dev/null)
+fi
+```
+
+If `has_hook` is `0`, show the user the exact JSON to merge into `~/.claude/settings.json` — the same payload that ships in `.claude/settings-user-level.json.example`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'r=$(git -C \"${CLAUDE_PROJECT_DIR:-$PWD}\" rev-parse --show-toplevel 2>/dev/null) || exit 0; [ -x \"$r/.claude/hooks/register-agent.sh\" ] || exit 0; exec bash \"$r/.claude/hooks/register-agent.sh\" sessionstart'"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Things to call out:
+
+- The file is `~/.claude/settings.json` (user-level), **not** the project's `.claude/settings.json`. `SessionStart` hooks fire before project settings load, so Claude Code rejects them at the project level.
+- If `~/.claude/settings.json` already has a `hooks.SessionStart` array, **append** the new entry rather than replacing it.
+- The same snippet is also at `.claude/settings-user-level.json.example` in this project directory — they can `cat` it or open it directly.
+
+Then ask via `AskUserQuestion`:
+
+- **"Installed — continue"** (recommended) — proceed to worktree creation.
+- **"Skip the hook — continue without auto-rename"** — proceed, but warn that each spawned agent will need a manual `/agent-rename <name>` after startup.
+- **"Stop, I'll install and re-run"** — hard stop. The user installs, then re-runs `/base-initialize`. The skill is idempotent up to this point only insofar as the user hasn't already let it run Phase 2's `git init`; if Phase 2–5 already ran, document where they ended up so they can resume manually.
+
+If `jq` isn't available, skip the automated check (don't block on a missing dependency) but still print the snippet and the same three-option question.
+
+## Phase 7: Create worktrees
 
 For each worktree name, invoke `/add-worktree <name>`:
 
@@ -205,7 +254,7 @@ If `WORKFLOW_WORKTREE_SETUP_CMD` was configured in Phase 3, each `/add-worktree`
 
 After all worktrees are created, summarize the layout.
 
-## Phase 7: Open tmux panes
+## Phase 8: Open tmux panes
 
 For each worktree:
 
@@ -214,11 +263,11 @@ tmux new-window -n "$NAME" -c "$WORKTREE_PATH"
 tmux send-keys -t "$NAME" "claude" Enter
 ```
 
-Each new claude session auto-registers via the `SessionStart` hook (if you installed it at user level per the README). The agent name comes from its branch (i.e., the worktree name).
+Each new claude session auto-registers via the user-level `SessionStart` hook verified back in Phase 6. The agent name comes from its branch (i.e., the worktree name).
 
 Alternative if the user prefers splits over windows: ask them via `AskUserQuestion` "New windows or splits?" before this phase.
 
-## Phase 8: Documentation interview
+## Phase 9: Documentation interview
 
 The worktrees are up; the panes are running. Now drive an interview to replace the example content in `docs/` with project-specific content.
 
@@ -261,14 +310,14 @@ Build the "Test categories" section from the answers. Add the gate-runner notes 
 - "Is there any work already queued up that should go in TODO.md?" Add as `##` headers.
 - If nothing, leave the example template-strip in place so the user has a format example.
 
-## Phase 9: Final commit
+## Phase 10: Final commit
 
 ```bash
 git add -A
 git commit -m "docs: project-specific content from initialize interview"
 ```
 
-## Phase 10: Report
+## Phase 11: Report
 
 Tell the user:
 
@@ -287,12 +336,12 @@ Tell the user:
 - **`git init` or any sed fails**: stop and report — the user's repo state could be partial; tell them which file to inspect.
 - **`/add-worktree` fails for one or more worktrees**: continue with the rest; report which failed at the end. The user can re-run `/add-worktree` manually for the missed ones.
 - **`tmux new-window` fails**: skip that pane; report. The user can `cd <worktree>` and `claude` manually.
-- **Documentation interview can be skipped**: if the user says "skip docs interview" anywhere in phase 8, stop the interview, leave the example docs in place, and proceed to phase 9.
+- **Documentation interview can be skipped**: if the user says "skip docs interview" anywhere in phase 9, stop the interview, leave the example docs in place, and proceed to phase 10.
 
 ## What this skill will NOT do
 
 - Push anything to a remote (the project doesn't have a remote yet anyway).
-- Install dependencies directly. The setup command is captured in Phase 1, written into `.claude/workflow.config` in Phase 3, and run by `/add-worktree` in Phase 6 — so dependencies install once per worktree at creation, not by this skill itself.
+- Install dependencies directly. The setup command is captured in Phase 1, written into `.claude/workflow.config` in Phase 3, and run by `/add-worktree` in Phase 7 — so dependencies install once per worktree at creation, not by this skill itself.
 - Set up CI, deployment, or any project infrastructure.
 - Re-run safely. **This is a one-time bootstrap.** Running it again on an already-initialized project will reset `.git/` and lose your history. Refuse if `docs/` already exists and doesn't look like the example template.
 
