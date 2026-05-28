@@ -1,6 +1,6 @@
 ---
 name: base-initialize
-description: Bootstrap a new project from a `claude-workflow` clone. Runs once at project start. Resets `.git` (the workflow's history is irrelevant to the new project), installs `docs/` from `templates/example_docs`, installs `CLAUDE.md` from the template, writes `.claude/workflow.config`, asks how many feature / PR / test agents to spin up, creates that many worktrees, opens tmux panes for each, starts `claude` in each, then interviews the user to fill in `docs/best-practices.md` / `architecture.md` / `security.md` / `testing.md` with initial real content.
+description: Bootstrap a new project from a `claude-workflow` clone. Runs once at project start. Resets `.git` (the workflow's history is irrelevant to the new project), installs `docs/` from `templates/example_docs`, installs `CLAUDE.md` from the template, writes `.claude/workflow.config`, asks how many feature / PR / test agents to spin up, auto-installs the user-level `SessionStart` hook into `~/.claude/settings.json` (with backup) so spawned agents auto-rename, creates that many worktrees, opens tmux panes for each, starts `claude` in each, then interviews the user to fill in `docs/best-practices.md` / `architecture.md` / `security.md` / `testing.md` with initial real content.
 ---
 
 # base-initialize
@@ -193,22 +193,81 @@ fi
 
 This change isn't committed yet — it'll be picked up by the final commit in Phase 10 along with the docs-interview output. If the user creates zero test agents, `WORKFLOW_TESTING_AGENT` stays blank and `/todo continue` will ask the user for the target each time.
 
-## Phase 6: Verify the user-level SessionStart hook
+## Phase 6: Install the user-level SessionStart hook
 
-**Runs before worktree creation** so the user can install the hook before any agents spin up — the moment a worktree's pane fires `claude` (Phase 8), the `SessionStart` hook needs to be in place or the agent won't auto-register/auto-rename.
+**Runs before worktree creation** because the moment a worktree's pane fires `claude` (Phase 8), the `SessionStart` hook needs to already be in place — otherwise the agent won't auto-register/auto-rename.
+
+This phase **mutates `~/.claude/settings.json` directly** (with a timestamped backup) rather than asking the user to do it themselves, then reports exactly what changed. `SessionStart` hooks have to live at user level — Claude Code rejects them in project settings because they fire before project settings load.
+
+### Install logic
 
 ```bash
-has_hook=0
-if [ -f "$HOME/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
-  has_hook=$(jq -r '
+SETTINGS="$HOME/.claude/settings.json"
+mkdir -p "$(dirname "$SETTINGS")"
+
+# 1. Detect whether the register-agent.sh hook is already wired up.
+already_installed=0
+if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+  already_installed=$(jq -r '
     [.hooks.SessionStart[]?.hooks[]?.command // empty]
     | map(select(test("register-agent.sh")))
     | length
-  ' "$HOME/.claude/settings.json" 2>/dev/null)
+  ' "$SETTINGS" 2>/dev/null || echo 0)
+fi
+
+# 2. Choose a path: skip / merge / fallback-to-manual.
+if [ "${already_installed:-0}" -gt 0 ]; then
+  install_result="skipped"
+  install_msg="SessionStart hook for register-agent.sh already present in $SETTINGS — no changes."
+elif command -v jq >/dev/null 2>&1; then
+  # Back up any pre-existing file before we touch it.
+  if [ -f "$SETTINGS" ]; then
+    backup="$SETTINGS.bak.$(date +%Y%m%d-%H%M%S)"
+    cp "$SETTINGS" "$backup"
+  else
+    echo '{}' > "$SETTINGS"
+    backup=""
+  fi
+
+  # The literal command we want to install. Single-quoted in shell so the
+  # nested ${CLAUDE_PROJECT_DIR:-$PWD} survives untouched into the JSON.
+  HOOK_CMD='bash -c '\''r=$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null) || exit 0; [ -x "$r/.claude/hooks/register-agent.sh" ] || exit 0; exec bash "$r/.claude/hooks/register-agent.sh" sessionstart'\'''
+
+  tmp=$(mktemp)
+  if jq --arg cmd "$HOOK_CMD" '
+    .hooks //= {} |
+    .hooks.SessionStart //= [] |
+    .hooks.SessionStart += [{matcher: "", hooks: [{type: "command", command: $cmd}]}]
+  ' "$SETTINGS" > "$tmp" && [ -s "$tmp" ]; then
+    mv "$tmp" "$SETTINGS"
+    install_result="installed"
+    if [ -n "$backup" ]; then
+      install_msg="Installed SessionStart hook → $SETTINGS (backup: $backup)"
+    else
+      install_msg="Created $SETTINGS with SessionStart hook (no prior file to back up)"
+    fi
+  else
+    rm -f "$tmp"
+    install_result="failed"
+    install_msg="jq merge into $SETTINGS failed — settings unchanged. Falling back to manual install instructions."
+  fi
+else
+  install_result="no-jq"
+  install_msg="jq not installed; can't safely auto-merge $SETTINGS. Falling back to manual install instructions."
 fi
 ```
 
-If `has_hook` is `0`, show the user the exact JSON to merge into `~/.claude/settings.json` — the same payload that ships in `.claude/settings-user-level.json.example`:
+### Report what happened
+
+Print `install_msg` to the user immediately so they see exactly what happened to their home-dir settings. Examples of what they should see:
+
+- `Installed SessionStart hook → /Users/you/.claude/settings.json (backup: /Users/you/.claude/settings.json.bak.20260528-143012)`
+- `Created /Users/you/.claude/settings.json with SessionStart hook (no prior file to back up)`
+- `SessionStart hook for register-agent.sh already present in /Users/you/.claude/settings.json — no changes.`
+
+### Fallback (`install_result` = `failed` or `no-jq`)
+
+Print the literal snippet so the user can merge it manually, then continue (don't hard-stop — they can finish bootstrap and wire the hook later; spawned agents will just need a one-time `/agent-rename <name>` per pane until they do):
 
 ```json
 {
@@ -228,19 +287,9 @@ If `has_hook` is `0`, show the user the exact JSON to merge into `~/.claude/sett
 }
 ```
 
-Things to call out:
+The same snippet ships at `.claude/settings-user-level.json.example` in this project — point the user there too.
 
-- The file is `~/.claude/settings.json` (user-level), **not** the project's `.claude/settings.json`. `SessionStart` hooks fire before project settings load, so Claude Code rejects them at the project level.
-- If `~/.claude/settings.json` already has a `hooks.SessionStart` array, **append** the new entry rather than replacing it.
-- The same snippet is also at `.claude/settings-user-level.json.example` in this project directory — they can `cat` it or open it directly.
-
-Then ask via `AskUserQuestion`:
-
-- **"Installed — continue"** (recommended) — proceed to worktree creation.
-- **"Skip the hook — continue without auto-rename"** — proceed, but warn that each spawned agent will need a manual `/agent-rename <name>` after startup.
-- **"Stop, I'll install and re-run"** — hard stop. The user installs, then re-runs `/base-initialize`. The skill is idempotent up to this point only insofar as the user hasn't already let it run Phase 2's `git init`; if Phase 2–5 already ran, document where they ended up so they can resume manually.
-
-If `jq` isn't available, skip the automated check (don't block on a missing dependency) but still print the snippet and the same three-option question.
+Capture `install_result` so Phase 11 (report) can echo it back as part of the final summary.
 
 ## Phase 7: Create worktrees
 
@@ -326,6 +375,7 @@ Tell the user:
 - Worktrees created: list each path
 - Agents started: list each pane / window name
 - Docs populated: which docs were customized; which (if any) are still using the example content
+- SessionStart hook: echo back the `install_msg` captured in Phase 6 so the user has a permanent record of what happened to `~/.claude/settings.json` (installed + backup path, created fresh, already-present, or failed/no-jq with the manual-merge reminder)
 - **Next step**: add your first todo with `/todo Add my first feature` (or similar), then `/todo do next`.
 - **Workflow reminder**: the doc-drift loop (in `/todo`) will keep growing `docs/best-practices.md` as the project evolves — don't pre-fill it.
 
