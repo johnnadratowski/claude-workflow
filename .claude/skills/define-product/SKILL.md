@@ -42,23 +42,25 @@ Free-form reply. From it, draft the opening sections of `docs/product.md`:
 
 Confirm each section with the user before continuing. If anything in the user's reply is vague (e.g., "small businesses" — which kind? what size?), challenge it before writing it down.
 
-### Phase B: drill loop
+### Phase B: drill loop — two-level control
 
-After the intro is locked, loop. Each turn:
+The user controls **how deep** to go on each area AND **which areas** to cover. The loop has two nested levels:
 
-1. Look at what's been written so far. Pick the **single most underspecified area** — the one a developer reading the doc would have the most questions about.
-2. Ask 2–4 targeted questions about that area via `AskUserQuestion`. Mix multi-choice and free-form-with-AskUserQuestion-as-"Other".
-3. Update `docs/product.md` (or a split doc) with the new content. Show the diff to the user.
-4. Ask: "Continue with more questions, or are you done?"
+**Inner loop — depth on a single area.** Pick an area. Drill into it with `AskUserQuestion` (2–4 questions per turn). Update the docs. Ask: "Want to go deeper here, or have we covered this enough?" If "deeper", surface the most underspecified follow-up and continue. If "enough", exit the inner loop.
 
-Examples of "drill" subjects to walk through over the loop, ordered roughly coarsest to finest:
+**Outer loop — area coverage.** Once an area is "enough", surface the next area. Two ways to pick it:
+1. **Suggest one** — pick from the area list below based on what's least defined relative to the product so far, framed as a recommendation.
+2. **Let the user choose** — show the area list (collapsed to category headings, not every sub-bullet) and ask via `AskUserQuestion` which to tackle next.
 
-- Core user journeys (numbered, each one a sentence)
-- The handful of "must-work" scenarios — the ones that, if broken, make the product worthless
-- Edge cases the user has thought about (and the ones they haven't — propose them)
-- Non-functional requirements that are user-visible (latency budget, offline behavior, data retention, deletion semantics — but only as the user *perceives* them, not how they're implemented)
-- Failure modes the user is OK with vs not OK with
-- What the product explicitly does NOT do (this is load-bearing; revisit it whenever scope creeps)
+After each area, the user can say "I want to move on" to exit the outer loop and proceed to Phase C/D. **Areas not covered are not failures** — record them as `## Open questions` entries (one bullet per skipped area, naming the area) in `docs/product.md` so a future `/define-product` re-entry surfaces them as natural starting points.
+
+The whole skill exits when the user says "done overall" (or equivalent). If they've only covered the intro from Phase A and one area, that's fine — they can re-enter later with more information.
+
+### What you should never do in this skill
+
+- Ask anything about **technology choices** — frameworks, languages, libraries, hosting, databases, storage formats, performance optimization techniques. Redirect every such answer: "we'll cover that in the architect stage; for now, what's the user-visible behavior?"
+- Force coverage of areas the user isn't ready for. Park them as `## Open questions` and move on.
+- Treat the area list as a checklist. It's a menu; the user orders from it.
 
 ### Your role: critical reviewer
 
@@ -72,15 +74,93 @@ For every user answer, before you write it down, ask yourself:
 
 Don't write the answer down until it passes these checks.
 
-### Suggestions you should proactively make
+### Be proactive — don't just be a stenographer
 
-Don't be a stenographer. While drilling, also propose:
+While drilling, also propose:
 
 - Features the user hasn't mentioned but a product like this typically has (e.g., for a SaaS — onboarding flow, account deletion, export, audit log)
 - Failure modes that need a defined behavior (e.g., what happens when the user goes offline mid-action?)
 - Conflicts with their stated principles (e.g., "you said data privacy is a top priority, but you also want analytics — let's spec exactly what's tracked")
 
 Frame as suggestions, not demands. The user can dismiss.
+
+### The area list
+
+**★** marks the **essentials** — areas that are load-bearing for almost any product; aim to at least *surface* these even if the user defers a deep dive. **§** marks **business-scope** areas — they look optional but often quietly determine what gets built and what doesn't; raise them early so they're not retrofitted.
+
+Areas tagged `(originally covered)` were the only ones the prior version of this skill named; the rest are new. Everything here is asked at the **user-visible-behavior** level — never at the implementation level.
+
+#### Users — who specifically
+
+- **★ Personas** — the *specific* user, not "small businesses". Roles? Power vs casual? Multiple user types with different needs?
+- **Existing alternatives** — what are they using today, and what's wrong with it? Tells you the migration story + the differentiation bar.
+- **Anti-personas** — who is this *not* for? Useful for scope discipline.
+
+#### First touch + return
+
+- **★ Onboarding / first-run** — what does minute 1 look like? Account required? Sample data? Tutorial vs throw-them-in?
+- **★ Empty states** — what does the product look like with zero data in it? Major UX cliff if left undefined.
+- **Cold start vs returning user** — first-time vs someone who's been gone 6 months; different experiences?
+
+#### Object model — the nouns of the product
+
+- **★ First-class objects** — what are the things the user creates / owns / acts on? Each one probably becomes its own spec. (Originally covered as "user journeys", but the noun-list is often the better starting point.)
+- **★ Data lifecycle** — create → update → archive → delete. Soft vs hard delete? Retention windows?
+- **Versioning / history** — does the user expect to see "what did this look like yesterday?"
+- **★ Undo + safety nets** — destructive actions: undo window? Confirmation? Trash bin?
+
+#### Multi-user dynamics
+
+- **★ Permissions** — who can see / edit / share / delete what. Role-based? Per-resource?
+- **Sharing / collaboration** — solo product, or do users invite others? Sync (real-time) vs async (comments, mentions)?
+- **Multi-tenancy** — workspaces / orgs / teams? Cross-tenant boundaries?
+- **Audit / accountability** — does the user need to see "who changed this and when"?
+
+#### Operations at scale
+
+- **Search / discovery** — how does the user find a thing when they have lots of them?
+- **Bulk operations** — they'll inevitably want to act on many at once; what's in / out of scope?
+- **Quotas + limits** — per-user / per-team caps on storage, items, API calls
+- **★ Defaults** — when the user doesn't configure something, what happens? (A product decision people forget is one.)
+
+#### Reach + interop
+
+- **Form factor(s)** — web / mobile / desktop / CLI / API. Same features per platform, or different?
+- **★ Notifications** — when does the product proactively reach out? Email / push / in-app / none?
+- **★ Integrations** — what other products does this read from / write to? OAuth providers? Webhooks?
+- **Import / migration** — coming from a competitor, how does their data get in?
+- **Export / portability** — can the user get their data *out*, and in what format?
+
+#### Cross-cutting non-functional (user-visible only)
+
+- **Accessibility** — target conformance level, keyboard nav, screen reader scope
+- **Localization** — languages, date / currency formats, RTL
+- **Time** — does the product care about time zones / recurrence / scheduling?
+- **Offline behavior** — what works without a network, what doesn't, what does the user *see* (originally covered as part of NFRs)
+- **Latency / responsiveness** — what's the user-visible perception target, NOT the implementation budget (originally covered)
+
+#### Business + scope (often skipped, often important — §)
+
+- **§ Business model** — free / trial / paid / per-seat / usage. Drives gating + rate-limit decisions.
+- **§ The 60-second demo** — the *one* thing you'd show to convince someone. Forces clarity on the core value.
+- **§ Time horizon** — MVP-in-90-days vs platform-for-5-years. Ruthlessly clarifies scope.
+- **§ Success criteria** — how will the *user* know they got value? How will the *team* know it worked?
+- **§ Anti-features** — things you explicitly will not build, even if asked. Most product docs are missing this section.
+- **★ "Must-work" scenarios** — the handful that, if broken, make the product worthless (originally covered)
+- **★ Out of scope** — what the product explicitly does NOT do; revisit whenever scope creeps (originally covered)
+
+#### Failure + edge
+
+- **★ Failure modes** — what the user is OK with vs not OK with when things go wrong (originally covered)
+- **Edge cases** — the ones the user has thought about, and the ones they haven't (propose them) (originally covered)
+
+### How to surface the list to the user
+
+Don't dump the whole tree at once. When asking the user "which area next?":
+
+1. If you have a strong recommendation (essentials they haven't touched), lead with: "I'd suggest <area> next — <one-sentence why>."
+2. Show the **category headings** as `AskUserQuestion` options plus an "Other" / free-form fallback. Once they pick a category, list the bullets *inside* that category for the next selection (or just pick the most essential one inside it and ask if they want that or something else).
+3. Always offer "I'm done overall" as an option in the outer loop.
 
 ## Phase C: splitting product.md
 
@@ -177,11 +257,14 @@ Return control to `define-project`.
 
 When `mode="update"`, instead of running Phase A → F linearly:
 
-1. Ask "what do you want to change?" (intro / specific feature / add new feature / restructure / other)
-2. Jump into the relevant phase
-3. Always end with Phase E (subagent review of the *changed* docs only) + Phase F (signoff)
+1. **Scan `docs/product.md` (and any split docs) for `## Open questions`** — every bullet there is an area the user previously deferred. Surface these *first* as natural starting points: "Last time you parked these — want to tackle any now? <list>". They map directly back to the Phase B area list.
+2. If none are pending, ask the broader "what do you want to change?" (intro / a specific area from Phase B's list / a specific spec / add new feature / restructure / other).
+3. Jump into the relevant phase. For an area drill, re-enter Phase B's two-level loop scoped to that one area.
+4. Always end with Phase E (subagent review of the *changed* docs only) + Phase F (signoff).
 
 Existing specs are **never renumbered** in update mode. New specs are appended at the next number.
+
+This re-entry behavior is why Phase B records skipped areas as `## Open questions` instead of leaving them unmentioned — they become the breadcrumb trail for the next session.
 
 ## What this skill will NOT do
 
