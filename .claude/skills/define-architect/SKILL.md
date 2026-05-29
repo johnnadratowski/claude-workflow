@@ -173,6 +173,52 @@ Walk every config variable mentioned in `docs/architecture.md`. For each: name, 
 
 If the user wants conventional-commits enforcement, sign-off requirements, or pre-commit gates, set them up here. Otherwise leave them out — don't add ceremony the user didn't ask for.
 
+### Write workflow.config values that depend on the stack
+
+Two `.claude/workflow.config` knobs were intentionally left commented by `/base-initialize` Phase 3 because the right values weren't knowable until the stack landed. Now they are — fill them in.
+
+**`WORKFLOW_WORKTREE_SETUP_CMD`** — the command `/add-worktree` runs inside each new worktree to install dependencies. Derive from the package manifest you just wrote:
+
+| Manifest written | Set the command to |
+|---|---|
+| `package.json` + pnpm-lock.yaml / pnpm config | `pnpm install --frozen-lockfile` |
+| `package.json` + npm | `npm ci` |
+| `package.json` + yarn.lock | `yarn install --frozen-lockfile` |
+| `package.json` + bun.lockb | `bun install --frozen-lockfile` |
+| `pyproject.toml` + Poetry | `poetry install --no-root` |
+| `pyproject.toml` + uv | `uv sync` |
+| `pyproject.toml` + hatch | `hatch env create` |
+| `requirements.txt` | `pip install -r requirements.txt` |
+| `Pipfile` | `pipenv install --deploy` |
+| `Cargo.toml` | `cargo fetch` |
+| `go.mod` | `go mod download` |
+| `Gemfile` | `bundle install --frozen` |
+| `pom.xml` | `mvn install -DskipTests` |
+| `build.gradle*` | `./gradlew build -x test` |
+| `mix.exs` | `mix deps.get` |
+| `*.cabal` / `cabal.project` | `cabal build --dependencies-only` |
+| `Package.swift` | `swift package resolve` |
+| `composer.json` | `composer install --no-dev` |
+| (no manifest needed, e.g. pure CLI shell scripts) | leave commented |
+
+Write it in:
+
+```bash
+sed -i.bak "s|^# WORKFLOW_WORKTREE_SETUP_CMD=.*|WORKFLOW_WORKTREE_SETUP_CMD=\"<chosen command>\"|" .claude/workflow.config
+rm -f .claude/workflow.config.bak
+```
+
+If the project is a polyglot (e.g. backend + frontend) and one install command can't cover both, write a chained command (`pnpm install && cd backend && uv sync`) or a make target (`make deps`). Ask the user first.
+
+**`WORKFLOW_WORKTREE_COPY_FILES`** — env-shaped files that each new worktree needs but that are gitignored. Start from the `.env.example` you just wrote: the corresponding `.env` (and any siblings like `.env.local`, `.envrc`, `.env.development`) typically need copying into each worktree. Confirm the list with the user before writing:
+
+```bash
+sed -i.bak "s|^# WORKFLOW_WORKTREE_COPY_FILES=.*|WORKFLOW_WORKTREE_COPY_FILES=(\".env\" \".env.local\")|" .claude/workflow.config
+rm -f .claude/workflow.config.bak
+```
+
+If the project has no gitignored env files (pure CLI tool, library with no runtime config), leave the line commented.
+
 ### Summary to user
 
 After the scaffold is written, print a summary:

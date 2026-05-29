@@ -36,6 +36,8 @@ Verify the user is inside `tmux` (we'll need to spawn panes):
 
 ## Phase 1: Project metadata
 
+Identity-only questions — nothing about the tech stack, dependency-install command, or env files. Those are owned by `/define-architect` in Phase 7 (and it writes them into `.claude/workflow.config` itself). Keeping Phase 1 minimal means the user doesn't answer the same question twice.
+
 Use `AskUserQuestion` to collect, in this order:
 
 | Field | Default | Notes |
@@ -43,9 +45,6 @@ Use `AskUserQuestion` to collect, in this order:
 | Project name | `basename $(pwd)` | Becomes the H1 in CLAUDE.md; also the prefix for worktree directory names. |
 | Description | `(empty)` | One-paragraph; goes into CLAUDE.md after the heading. |
 | Base branch | `main` | Becomes `WORKFLOW_BASE_BRANCH`. |
-| Tech stack | — | Free-form one-line answer: language(s) + framework(s) + project shape (e.g. "TypeScript backend + React frontend", "Python CLI", "Rust library", "Go service"). Used as a hint for the setup-command guess below AND informs the docs interview later. |
-| Setup command | inferred from stack | "What command installs dependencies?" Suggest one based on the tech stack (see mapping below). User can accept the suggestion, type their own, or say "none" if the project has no dependency-install step. Becomes `WORKFLOW_WORKTREE_SETUP_CMD`. |
-| Env files to copy per worktree | `(none)` | "Are there any env-shaped files (`.env`, `.env.local`, `.envrc`, etc.) you want copied into each new worktree at creation? They're typically gitignored but each worktree needs its own copy." Comma-separated list, or blank for none. Becomes `WORKFLOW_WORKTREE_COPY_FILES`. Skip the question entirely if the user's stack obviously doesn't have env files (e.g. a pure CLI tool). |
 | Git remote URL | `(none)` | "Do you have a remote you want to push to?" If yes, captured as a URL string and applied in Phase 2 via `git remote add origin <url>`. If no, skip — the user can add a remote later. |
 | Agent name prefix | (asks) | "Multiple projects share `~/.claude/running-agents/`, so prefixing agent names is recommended if you'll run agents from more than one project at a time." Four-option `AskUserQuestion` (see below). Becomes `WORKFLOW_AGENT_NAME_PREFIX`. |
 
@@ -59,34 +58,6 @@ Use `AskUserQuestion` with these choices:
 4. **No prefix** — leave `WORKFLOW_AGENT_NAME_PREFIX` commented out in the config. Agents use their branch name directly (`feat-1`, `pr-1`, etc.).
 
 The chosen prefix is sanitized the same way `register-agent.sh` sanitizes names: lowercase alnum / dash / underscore only. The hook also runs its own sanitization, so don't worry about edge cases here — pass the user's literal answer in.
-
-### Setup command guessing
-
-When asking for the setup command, use the tech-stack answer to suggest a sensible default. Show the suggestion in the question so the user can hit Enter to accept. If they say "I don't know", offer the suggestion explicitly and explain what it does.
-
-| If the stack mentions … | Suggest |
-|---|---|
-| pnpm, or TypeScript/JavaScript without a clear package manager | `pnpm install --frozen-lockfile` |
-| npm specifically | `npm ci` |
-| yarn specifically | `yarn install --frozen-lockfile` |
-| bun | `bun install --frozen-lockfile` |
-| Python + poetry | `poetry install --no-root` |
-| Python + uv | `uv sync` |
-| Python + pip / requirements.txt | `pip install -r requirements.txt` |
-| Python + pipenv | `pipenv install --deploy` |
-| Rust / Cargo | `cargo fetch` |
-| Go | `go mod download` |
-| Ruby | `bundle install --frozen` |
-| Java / Maven | `mvn install -DskipTests` |
-| Java / Gradle | `./gradlew build -x test` |
-| Elixir / Mix | `mix deps.get` |
-| Haskell / Cabal | `cabal build --dependencies-only` |
-| Swift Package Manager | `swift package resolve` |
-| PHP / Composer | `composer install --no-dev` |
-| C++ / CMake | `cmake -S . -B build && cmake --build build --target deps` (often project-specific; ask the user to override) |
-| Unknown / mixed | leave blank; ask the user to fill it in later |
-
-If the user explicitly answers "none" or leaves it blank: don't set `WORKFLOW_WORKTREE_SETUP_CMD` — the line stays commented in the config and `/add-worktree` runs no setup. The user can edit `.claude/workflow.config` later.
 
 Then **confirm** before proceeding:
 
@@ -129,26 +100,16 @@ cp workflow.config.example .claude/workflow.config
 # Set the base branch
 sed -i.bak "s|WORKFLOW_BASE_BRANCH=\"main\"|WORKFLOW_BASE_BRANCH=\"$BASE_BRANCH\"|" .claude/workflow.config
 
-# Set the setup command if the user provided one (or accepted a guess).
-# The template ships the line commented as a hint; uncomment + replace.
-if [ -n "$SETUP_CMD" ]; then
-  sed -i.bak "s|^# WORKFLOW_WORKTREE_SETUP_CMD=.*|WORKFLOW_WORKTREE_SETUP_CMD=\"$SETUP_CMD\"|" .claude/workflow.config
-fi
-
-# Set the env-files-to-copy list if the user named any.
-# Convert the comma-separated answer into a shell array literal.
-if [ -n "$COPY_FILES_LIST" ]; then
-  copy_files_array=$(printf '%s' "$COPY_FILES_LIST" | awk -F, '{
-    out=""; for (i=1;i<=NF;i++) { gsub(/^ +| +$/, "", $i); out = out (i>1?" ":"") "\"" $i "\""; } print out
-  }')
-  sed -i.bak "s|^# WORKFLOW_WORKTREE_COPY_FILES=.*|WORKFLOW_WORKTREE_COPY_FILES=($copy_files_array)|" .claude/workflow.config
-fi
-
 # Set the agent name prefix if the user chose one (options 1–3).
 # Empty $AGENT_PREFIX = "no prefix" = leave commented.
 if [ -n "$AGENT_PREFIX" ]; then
   sed -i.bak "s|^# WORKFLOW_AGENT_NAME_PREFIX=.*|WORKFLOW_AGENT_NAME_PREFIX=\"$AGENT_PREFIX\"|" .claude/workflow.config
 fi
+
+# WORKFLOW_WORKTREE_SETUP_CMD and WORKFLOW_WORKTREE_COPY_FILES are
+# intentionally left commented at this point — /define-architect (Phase 7)
+# fills them in once the user has locked the stack, since it's the skill
+# that actually knows the install command and the env-file shape.
 
 rm -f .claude/workflow.config.bak
 
@@ -330,7 +291,7 @@ For each worktree name from Phase 5, invoke `/add-worktree <name>`:
 
 - Path lands at `$(dirname $(pwd))/$(basename $(pwd))-<name>`
 - Branch `<name>` is created from the current base branch — which now points at the Phase 8 commit, so the worktree's initial state already contains all the docs + scaffold + generated skills from `define-project`
-- If `WORKFLOW_WORKTREE_SETUP_CMD` was configured in Phase 3 (and `define-architect` may have updated it during scaffold generation if the stack changed it), each `/add-worktree` invocation runs it inside the new worktree — so dependencies install automatically as each worktree comes up. Stream the install output; surface failures but don't abort the worktree (it stays half-set-up so the user can debug).
+- If `WORKFLOW_WORKTREE_SETUP_CMD` was set by `/define-architect` in Phase 7 (it writes the install command into `.claude/workflow.config` once the user locks the stack), each `/add-worktree` invocation runs it inside the new worktree — so dependencies install automatically as each worktree comes up. Stream the install output; surface failures but don't abort the worktree (it stays half-set-up so the user can debug). If the user skipped `/define-architect`, the line stays commented and no setup command runs.
 
 After all worktrees are created, summarize the layout.
 
@@ -372,7 +333,7 @@ Tell the user:
 ## What this skill will NOT do
 
 - Push anything to a remote (the project doesn't have a remote yet anyway).
-- Install dependencies directly. The setup command is captured in Phase 1, written into `.claude/workflow.config` in Phase 3, and run by `/add-worktree` in Phase 9 — so dependencies install once per worktree at creation, not by this skill itself.
+- Install dependencies directly. `/define-architect` writes `WORKFLOW_WORKTREE_SETUP_CMD` into `.claude/workflow.config` in Phase 7, and `/add-worktree` runs it inside each new worktree in Phase 9 — so dependencies install once per worktree at creation, not by this skill itself.
 - Run the project-definition dialogs itself. CI, deployment artifacts, code scaffold, test scaffold, and ticketing wiring are all owned by `/define-project` (invoked in Phase 7), not this skill.
 - Re-run safely. **This is a one-time bootstrap.** Running it again on an already-initialized project will reset `.git/` and lose your history. Refuse if `docs/` already exists and doesn't look like the example template.
 
