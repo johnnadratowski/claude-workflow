@@ -12,8 +12,9 @@ Bootstraps a fresh project from a `claude-workflow` clone:
 1. Resets git, installs the template docs + CLAUDE.md, writes the workflow config
 2. Asks how many feature / PR / test agents to set up
 3. Installs the user-level `SessionStart` hook into `~/.claude/settings.json`
-4. Creates worktrees + opens tmux panes + starts `claude` in each
-5. Hands off to `/define-project` — an orchestrator that drives product, architecture, QA, deployment+security, and ticketing dialogs with the user, populates the docs with real content, scaffolds code + tests + CI, and seeds tickets in the chosen ticketing system
+4. Hands off to `/define-project` — an orchestrator that drives product, architecture, QA, deployment+security, and ticketing dialogs with the user, populates the docs with real content, scaffolds code + tests + CI, and seeds tickets in the chosen ticketing system
+5. Commits everything `define-project` produced
+6. **Then** creates worktrees + opens tmux panes + starts `claude` in each — so the feature / PR / test agents branch from a fully-populated commit instead of an empty template
 
 After this skill finishes, the user has a working multi-agent setup, project-specific docs, a code + test scaffold, and ticketed feature specs.
 
@@ -180,7 +181,7 @@ Compute the worktree names from these counts:
 - `pr-1`, `pr-2`, ... up to PR count
 - `test-1`, `test-2`, ... up to test count
 
-Total worktrees = sum of the three counts. If 0, skip phase 6+ entirely (user can run `/add-worktree` later) — including the hook check in Phase 6, since no agents will be spawned.
+Total worktrees = sum of the three counts. If 0, skip **Phase 9** (worktree creation) and **Phase 10** (tmux panes) — the user can run `/add-worktree` later to add them. Phases 6 (SessionStart hook) and 7 (`/define-project` handoff) still run; the hook is useful for future sessions and `/define-project` is the main reason to bootstrap regardless of multi-agent setup.
 
 **Auto-derive the testing agent** from the answer. If `test count >= 1`, set `WORKFLOW_TESTING_AGENT` to the name of the first test agent — which **includes the prefix** from Phase 1 if one was chosen, since that's what the agent actually registers as:
 
@@ -192,11 +193,11 @@ if [ "$TEST_COUNT" -ge 1 ]; then
 fi
 ```
 
-This change isn't committed yet — it'll be picked up by the final commit in Phase 10 along with the docs-interview output. If the user creates zero test agents, `WORKFLOW_TESTING_AGENT` stays blank and `/todo continue` will ask the user for the target each time.
+This change isn't committed yet — it'll be picked up by the final commit in Phase 8 along with everything `define-project` produces. If the user creates zero test agents, `WORKFLOW_TESTING_AGENT` stays blank and `/todo continue` will ask the user for the target each time.
 
 ## Phase 6: Install the user-level SessionStart hook
 
-**Runs before worktree creation** because the moment a worktree's pane fires `claude` (Phase 8), the `SessionStart` hook needs to already be in place — otherwise the agent won't auto-register/auto-rename.
+**Runs before worktree creation** because the moment a worktree's pane fires `claude` (Phase 10), the `SessionStart` hook needs to already be in place — otherwise the agent won't auto-register/auto-rename.
 
 This phase **mutates `~/.claude/settings.json` directly** (with a timestamped backup) rather than asking the user to do it themselves, then reports exactly what changed. `SessionStart` hooks have to live at user level — Claude Code rejects them in project settings because they fire before project settings load.
 
@@ -292,34 +293,9 @@ The same snippet ships at `.claude/settings-user-level.json.example` in this pro
 
 Capture `install_result` so Phase 11 (report) can echo it back as part of the final summary.
 
-## Phase 7: Create worktrees
+## Phase 7: Hand off to `/define-project`
 
-For each worktree name, invoke `/add-worktree <name>`:
-
-- Path lands at `$(dirname $(pwd))/$(basename $(pwd))-<name>`
-- Branch `<name>` is created from the current (just-initialized) base branch — the initial-commit SHA
-- No `WORKFLOW_WORKTREE_SETUP_CMD` runs yet (the user hasn't configured it), so this is purely the `git worktree add`
-
-If `WORKFLOW_WORKTREE_SETUP_CMD` was configured in Phase 3, each `/add-worktree` invocation will run it inside the new worktree — so dependencies get installed automatically as each worktree comes up. Streaming the install output to the user makes it visible; failures are surfaced but don't abort the worktree (it stays half-set-up so the user can debug).
-
-After all worktrees are created, summarize the layout.
-
-## Phase 8: Open tmux panes
-
-For each worktree:
-
-```bash
-tmux new-window -n "$NAME" -c "$WORKTREE_PATH"
-tmux send-keys -t "$NAME" "claude" Enter
-```
-
-Each new claude session auto-registers via the user-level `SessionStart` hook verified back in Phase 6. The agent name comes from its branch (i.e., the worktree name).
-
-Alternative if the user prefers splits over windows: ask them via `AskUserQuestion` "New windows or splits?" before this phase.
-
-## Phase 9: Hand off to `/define-project`
-
-The repo is reset, configs are written, worktrees are spawned, and the user-level `SessionStart` hook is installed. The remaining work — turning the template-shaped `docs/` into a real product / architecture / testing / deployment specification, scaffolding the code, and wiring up ticketing — is owned end-to-end by the `define-project` orchestrator skill.
+The repo is reset, configs are written, and the user-level `SessionStart` hook is installed — but **worktrees haven't been spawned yet**. That's deliberate: `/define-project` is going to populate `docs/`, scaffold the code, generate `.claude/skills/tickets/SKILL.md`, and seed tickets — all in the main clone's working tree. We want the eventual worktrees to branch from a commit that already contains all of that, so feature / PR / test agents start with the complete project context (not template stubs).
 
 Invoke it via the Skill tool:
 
@@ -337,14 +313,39 @@ Skill: define-project
 
 Each subskill has its own subagent-driven critical review and user-signoff gate, so the user can iterate on each domain before moving to the next.
 
-Return to Phase 10 once `define-project` signals completion (it returns control here after `define-tickets` signoff). If the user calls out early via the orchestrator's "skip ahead" path, also continue — partial work is fine; they can re-enter `/define-project` later and it will detect the existing state.
+Return to Phase 8 (final commit) once `define-project` signals completion. If the user calls out early via the orchestrator's "skip ahead" path, also continue — partial work is fine; they can re-enter `/define-project` later and it will detect the existing state.
 
-## Phase 10: Final commit
+## Phase 8: Final commit
 
 ```bash
 git add -A
 git commit -m "docs: project-specific content from initialize interview"
 ```
+
+This single commit captures everything `define-project` produced — docs, code scaffold, test scaffold, CI/Dockerfile, the generated `/tickets` skill, and the updated `WORKFLOW_PROJECT_ID` / `WORKFLOW_TICKET_*` lines in `.claude/workflow.config`. Worktrees created in Phase 9 will branch from this commit, so each one starts with the full project.
+
+## Phase 9: Create worktrees
+
+For each worktree name from Phase 5, invoke `/add-worktree <name>`:
+
+- Path lands at `$(dirname $(pwd))/$(basename $(pwd))-<name>`
+- Branch `<name>` is created from the current base branch — which now points at the Phase 8 commit, so the worktree's initial state already contains all the docs + scaffold + generated skills from `define-project`
+- If `WORKFLOW_WORKTREE_SETUP_CMD` was configured in Phase 3 (and `define-architect` may have updated it during scaffold generation if the stack changed it), each `/add-worktree` invocation runs it inside the new worktree — so dependencies install automatically as each worktree comes up. Stream the install output; surface failures but don't abort the worktree (it stays half-set-up so the user can debug).
+
+After all worktrees are created, summarize the layout.
+
+## Phase 10: Open tmux panes
+
+For each worktree:
+
+```bash
+tmux new-window -n "$NAME" -c "$WORKTREE_PATH"
+tmux send-keys -t "$NAME" "claude" Enter
+```
+
+Each new claude session auto-registers via the user-level `SessionStart` hook installed back in Phase 6. The agent name comes from its branch (i.e., the worktree name).
+
+Alternative if the user prefers splits over windows: ask them via `AskUserQuestion` "New windows or splits?" before this phase.
 
 ## Phase 11: Report
 
@@ -366,13 +367,13 @@ Tell the user:
 - **`git init` or any sed fails**: stop and report — the user's repo state could be partial; tell them which file to inspect.
 - **`/add-worktree` fails for one or more worktrees**: continue with the rest; report which failed at the end. The user can re-run `/add-worktree` manually for the missed ones.
 - **`tmux new-window` fails**: skip that pane; report. The user can `cd <worktree>` and `claude` manually.
-- **Documentation interview can be skipped**: if the user says "skip docs interview" anywhere in phase 9, stop the interview, leave the example docs in place, and proceed to phase 10.
+- **`/define-project` skip-ahead**: if the user calls out early in Phase 7 (e.g., "skip the rest, let's just get the worktrees up"), accept it. Proceed to Phase 8 (final commit) with whatever the orchestrator produced so far — the user can re-enter `/define-project` later and it detects existing state. Skipping `define-project` entirely is also fine; the worktrees will branch from the initial commit (Phase 4) instead.
 
 ## What this skill will NOT do
 
 - Push anything to a remote (the project doesn't have a remote yet anyway).
-- Install dependencies directly. The setup command is captured in Phase 1, written into `.claude/workflow.config` in Phase 3, and run by `/add-worktree` in Phase 7 — so dependencies install once per worktree at creation, not by this skill itself.
-- Set up CI, deployment, or any project infrastructure.
+- Install dependencies directly. The setup command is captured in Phase 1, written into `.claude/workflow.config` in Phase 3, and run by `/add-worktree` in Phase 9 — so dependencies install once per worktree at creation, not by this skill itself.
+- Run the project-definition dialogs itself. CI, deployment artifacts, code scaffold, test scaffold, and ticketing wiring are all owned by `/define-project` (invoked in Phase 7), not this skill.
 - Re-run safely. **This is a one-time bootstrap.** Running it again on an already-initialized project will reset `.git/` and lose your history. Refuse if `docs/` already exists and doesn't look like the example template.
 
 ## Companion skills
