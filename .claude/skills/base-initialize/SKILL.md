@@ -1,6 +1,6 @@
 ---
 name: base-initialize
-description: Bootstrap a new project from a `claude-workflow` clone. Runs once at project start. Resets `.git` (the workflow's history is irrelevant to the new project), installs `docs/` from `templates/example_docs`, installs `CLAUDE.md` from the template, writes `.claude/workflow.config`, asks how many feature / PR / test agents to spin up, auto-installs the user-level `SessionStart` hook into `~/.claude/settings.json` (with backup) so spawned agents auto-rename, creates that many worktrees, opens tmux panes for each, starts `claude` in each, then interviews the user to fill in `docs/best-practices.md` / `architecture.md` / `security.md` / `testing.md` with initial real content.
+description: Bootstrap a new project from a `claude-workflow` clone. Runs once at project start. Resets `.git` (the workflow's history is irrelevant to the new project), installs `docs/` from `templates/example_docs`, installs `CLAUDE.md` from the template, writes `.claude/workflow.config`, asks how many feature / PR / test agents to spin up, auto-installs the user-level `SessionStart` hook into `~/.claude/settings.json` (with backup) so spawned agents auto-rename, creates that many worktrees, opens tmux panes for each, starts `claude` in each, then hands off to the `define-project` orchestrator skill — which drives product → architect → QA → deploy/security → ticketing dialogs, populates the docs with real content, scaffolds the code + tests + CI, and wires up a ticketing-system integration.
 ---
 
 # base-initialize
@@ -11,10 +11,11 @@ Bootstraps a fresh project from a `claude-workflow` clone:
 
 1. Resets git, installs the template docs + CLAUDE.md, writes the workflow config
 2. Asks how many feature / PR / test agents to set up
-3. Creates worktrees + opens tmux panes + starts `claude` in each
-4. Interviews the user about the project, fills in the docs
+3. Installs the user-level `SessionStart` hook into `~/.claude/settings.json`
+4. Creates worktrees + opens tmux panes + starts `claude` in each
+5. Hands off to `/define-project` — an orchestrator that drives product, architecture, QA, deployment+security, and ticketing dialogs with the user, populates the docs with real content, scaffolds code + tests + CI, and seeds tickets in the chosen ticketing system
 
-After this skill finishes, the user has a working multi-agent setup with project-specific (not example) documentation.
+After this skill finishes, the user has a working multi-agent setup, project-specific docs, a code + test scaffold, and ticketed feature specs.
 
 ## Pre-flight
 
@@ -316,48 +317,27 @@ Each new claude session auto-registers via the user-level `SessionStart` hook ve
 
 Alternative if the user prefers splits over windows: ask them via `AskUserQuestion` "New windows or splits?" before this phase.
 
-## Phase 9: Documentation interview
+## Phase 9: Hand off to `/define-project`
 
-The worktrees are up; the panes are running. Now drive an interview to replace the example content in `docs/` with project-specific content.
+The repo is reset, configs are written, worktrees are spawned, and the user-level `SessionStart` hook is installed. The remaining work — turning the template-shaped `docs/` into a real product / architecture / testing / deployment specification, scaffolding the code, and wiring up ticketing — is owned end-to-end by the `define-project` orchestrator skill.
 
-**Iterate over each doc in order.** For each, ask 2–4 targeted questions, draft the resulting content, show it to the user for approval, then write it.
+Invoke it via the Skill tool:
 
-### docs/architecture.md
+```
+Skill: define-project
+```
 
-- "What are the major components?" (list with one-line role each)
-- "How does a typical request / operation flow through them?" (numbered list)
-- "What's the most important invariant across components?" (one sentence + the reasoning)
+`define-project` will:
 
-Draft → confirm → write. Replace the example content entirely; the format spec at top of the file stays.
+1. Run `define-product` — interactive product dialog + numbered feature specs under `docs/specs/`
+2. Run `define-architect` — interactive technology / code-conventions dialog + initial code scaffold (package manifest, lint config, entrypoints, `.env.example`, etc.)
+3. Run `define-qa` — interactive testing-strategy dialog + test scaffold
+4. Run `define-deploy` — interactive deployment + security dialog + CI workflow / Dockerfile / platform config
+5. Run `define-tickets` — wire up the project's ticketing system (Jira / Linear / GitHub Issues), generate a project-local `/tickets` skill tailored to the chosen provider, then seed tickets from the specs created in step 1
 
-### docs/best-practices.md
+Each subskill has its own subagent-driven critical review and user-signoff gate, so the user can iterate on each domain before moving to the next.
 
-- Open-ended: "What are the 2–3 most important coding conventions in this project? For each, what real or anticipated bug motivated it?"
-- For each one: distill scenario + rule + how-to-apply. Confirm with user, write.
-
-It's fine to land with just 2–3 rules — the doc-drift loop (run by `/todo` after each implementation) will grow it organically.
-
-### docs/security.md
-
-- "Does this project handle user data, secrets, authentication, or authorization?" If no → empty out security.md to just the format header; the doc-drift loop will populate it as relevant code lands.
-- If yes → ask: "What are you protecting and from whom?" + "Name one or two security rules every contributor needs to know."
-
-### docs/testing.md
-
-- "What test categories does the project use?" (unit / integration / E2E / property / fuzz / etc.)
-- "For each: where do tests live, what's the run command?"
-
-Build the "Test categories" section from the answers. Add the gate-runner notes if the user has a CI matrix already.
-
-### docs/api-conventions.md
-
-- "Does this project expose an API surface (HTTP, RPC, library, CLI)?" If no → **delete** the file; tell the user it's gone.
-- If yes → ask: shape, error format, versioning, naming.
-
-### docs/TODO.md
-
-- "Is there any work already queued up that should go in TODO.md?" Add as `##` headers.
-- If nothing, leave the example template-strip in place so the user has a format example.
+Return to Phase 10 once `define-project` signals completion (it returns control here after `define-tickets` signoff). If the user calls out early via the orchestrator's "skip ahead" path, also continue — partial work is fine; they can re-enter `/define-project` later and it will detect the existing state.
 
 ## Phase 10: Final commit
 

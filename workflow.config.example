@@ -82,3 +82,24 @@ WORKFLOW_BASE_BRANCH="main"
 # run this by default — it's typically meaningful only after the user
 # has configured their stack.
 # WORKFLOW_WORKTREE_SETUP_CMD="pnpm install --frozen-lockfile"
+
+# =====================================================================
+# Ticketing integration (/define-tickets, generated /tickets skill)
+# =====================================================================
+
+# The ticketing-system project this repo's specs map to. Set by
+# /define-tickets after the user picks a provider; consumed by the
+# generated /tickets skill to scope every create/list/update call.
+# Example values: "PROJ" (Jira), "ENG" (Linear), "owner/repo" (GitHub).
+# WORKFLOW_PROJECT_ID=""
+
+# The ticketing provider. Used by /define-tickets re-entry mode and by
+# the generated /tickets skill for human-readable context.
+# Common values: jira, linear, github, gitlab, asana, none.
+# WORKFLOW_TICKET_PROVIDER=""
+
+# How the generated /tickets skill talks to the provider:
+#   mcp — call MCP server tools (e.g. atlassian/linear/github MCPs)
+#   cli — wrap the provider's CLI (jira, linear, gh, glab)
+#   api — direct HTTP calls with a token in .env
+# WORKFLOW_TICKET_INTEGRATION=""
