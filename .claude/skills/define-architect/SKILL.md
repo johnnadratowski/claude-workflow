@@ -25,7 +25,7 @@ else
 fi
 ```
 
-In `update` mode: ask "what do you want to change?" — options include change technology, add component, document new convention, expand a decision, restructure docs, regenerate scaffold piece. Jump into the relevant section.
+In `update` mode: **start by scanning every `docs/architecture*.md` for `## Open questions`** — those bullets are areas the user previously deferred (Phase B's two-level loop records skipped areas there). Surface them first as the natural starting points: "Last time you parked these — want to tackle any now?" If none are pending, ask "what do you want to change?" with options: change a technology, add a component, document a new convention, expand a decision, restructure docs, regenerate a scaffold piece, or pick an area from Phase B's list. Jump to the relevant section.
 
 ## First-run dialog
 
@@ -63,30 +63,26 @@ In all three cases, end Phase A with a locked-in **stack table** in `docs/archit
 
 If the project doesn't need a layer (e.g., a CLI tool has no database), leave the row out — don't write "n/a" everywhere.
 
-### Phase B: drill loop
+### Phase B: drill loop — two-level control
 
-Same drill-down pattern as `define-product`'s Phase B, but for architecture. Pick the **most underspecified area** each turn and ask 2–4 targeted questions.
+The user controls **how deep** to go on each area AND **which areas** to cover. Same two-level shape as `define-product`'s Phase B:
 
-Areas to cover, in roughly the order most projects need:
+**Inner loop — depth on a single area.** Pick an area. Drill with `AskUserQuestion` (2–4 questions per turn). Update the relevant doc (`architecture.md` / `api-conventions.md` / `best-practices.md`). Ask: "Want to go deeper here, or have we covered this enough?" If "deeper", surface the most underspecified follow-up and continue. If "enough", exit the inner loop.
 
-- **Component decomposition** — what code units exist and what each owns. Write them into `## Components` in `docs/architecture.md`.
-- **Data flow** — how a request / event / job moves through the components. Diagram or numbered list.
-- **External dependencies** — every external service the code talks to, and what happens if each is unavailable.
-- **Data model** — entities, relationships, ownership of writes. (High-level — schema details belong in code, not docs.)
-- **Caching strategy** — what's cached, where, with what TTL/invalidation rule, and the *bug class* it's solving.
-- **Configuration** — how config is loaded (env vars, file, secrets manager). What's required vs optional. What's per-environment vs global.
-- **Logging conventions** — structured vs unstructured, log levels, what goes in / what stays out (PII!), correlation IDs.
-- **Monitoring + alerting** — what metrics exist, what alerts fire on what, what dashboards a developer pulls up first when debugging. (High level — full deploy details go in `define-deploy`.)
-- **Linting / static analysis / type-checking** — what tools, what rule set, what's enforced by CI vs hooks.
-- **API surface (if any)** — endpoints / RPC methods / library functions exposed externally. Style (REST, GraphQL, RPC, CLI). Auth model. Versioning. Error envelope. → write to `docs/api-conventions.md`. If no external API, delete the file.
-- **Code conventions** — every "we always do X, never do Y" rule. → write to `docs/best-practices.md` in the `scenario + rule + how-to-apply` format the file already prescribes.
-- **High-level infrastructure** — where the code runs (containers, serverless, VMs). Just the topology — `define-deploy` covers the details.
+**Outer loop — area coverage.** Once an area is "enough", surface the next one. Two ways to pick:
 
-After each area, write to the appropriate doc, show the diff, confirm.
+1. **Suggest one** — pick from the area list below based on what's least defined relative to the product description so far, framed as a recommendation.
+2. **Let the user choose** — show category headings as `AskUserQuestion` options (not every sub-bullet) and ask which to tackle next.
 
-### Challenging technology choices
+After each area, the user can say "I want to move on" to exit the outer loop and proceed to Phases C–G. **Areas not covered are not failures** — record them as `## Open questions` entries (one bullet per skipped area, naming the area) in `docs/architecture.md` so a future `/define-architect` re-entry surfaces them as natural starting points.
 
-This is the load-bearing part of this skill. The user is the decision-maker, but you push back. For every choice, run through:
+The whole skill exits when the user says "done overall". Coverage of just the stack table plus 2-3 areas is fine for an MVP; re-enter later with more information.
+
+### Critical-reviewer role — applies on every answer
+
+The default-of-this-skill is to **challenge every technology choice and operationalize every vague claim**, regardless of which area is being drilled.
+
+For technology choices, run each through:
 
 - **Maturity / ecosystem** — is this tech still maintained? Hiring pool? Library availability?
 - **Fit for the product** — does the product's load / data shape / latency profile actually match what this tech is good at?
@@ -97,11 +93,119 @@ This is the load-bearing part of this skill. The user is the decision-maker, but
 
 Phrase pushback as questions + alternatives, not blocks. Example: "You picked Kafka for event ordering — for the throughput you described in product.md (~50 events/sec), would a plain Postgres queue cover it with a lot less ops burden? If you've used Kafka before, that may still be the right call."
 
-Record every challenge + decision in the `## Decisions log` of `docs/architecture.md`, dated, newest first.
+For vague answers — "fast", "scalable", "secure", "modern" — push back the same way `define-product` does: operationalize the claim. "Scalable to what load?" "Secure against what attacker?" Don't write the answer down until it has a measurable / specific form.
 
-### Drilling on unclear answers
+Record every challenge + decision in the `## Decisions log` of `docs/architecture.md`, dated, newest first. Decisions log entries are how this skill avoids re-litigating the same call on re-entry.
 
-Same rule as `define-product`: "fast", "scalable", "secure", "modern" — all need to be operationalized. "Scalable to what?" "Secure against what?" Don't write the answer down until it has a measurable / specific form.
+### The area list
+
+**★** marks the **essentials** — areas that are load-bearing for almost any backend / service / app; aim to at least *surface* these even if the user defers a deep dive. **⚙** marks **operational-discipline** areas — they look optional but quietly determine reliability; raise them early so they're not retrofitted under an outage.
+
+Areas tagged `(originally covered)` are the only ones the prior version of this skill named; the rest are new. Coverage is treated as a menu the user orders from, not a checklist.
+
+#### Execution shape — how the runtime actually runs
+
+- **★ Concurrency model** — sync/blocking vs async, threads vs event loop vs coroutines; request lifecycle from accept to response
+- **★ Statelessness** — what state lives in-process vs externalized; session storage; sticky vs cookie-able sessions
+- **★ Process model** — single binary vs multi-service; long-running vs short-lived; what runs where
+- **⚙ Graceful shutdown** — signal handling, in-flight-request draining, deadlines
+- **Hot path vs cold path** — which requests are latency-critical vs background; clarifies what gets optimized
+
+#### Data architecture (extends the original "data model" bullet)
+
+- **★ Primary data store choice + access pattern** — OLTP vs OLAP, read-heavy vs write-heavy (originally covered as part of data model)
+- **★ ID strategy** — auto-increment / UUID / ULID / Snowflake; external-facing vs internal IDs
+- **★ Schema migration policy** — expand-contract pattern, backward-compat window during rolling deploys
+- **★ Transaction boundaries** — what's atomic, what's eventually consistent, where the boundary lives
+- **★ Idempotency** — which write paths must be safe to retry; how the guarantee is enforced
+- **Search index** — separate from primary DB? sync model? eventual-consistency window?
+- **File / blob storage** — upload/download flow, signed URLs, lifecycle, multipart
+- **★ Caching strategy** (originally covered) — what's cached, where, with what TTL / invalidation rule, what bug class it solves
+- **⚙ Background data integrity** — reconciliation jobs, repair workflows, drift detection
+
+#### Request lifecycle + middleware
+
+- **★ Middleware order** — auth → trace → log → rate-limit → validate → handler → response. The order is load-bearing.
+- **★ AuthN strategy** — how the current user is established on every request
+- **AuthZ strategy** — where the check happens, what gets checked, fail-closed vs fail-open
+- **★ Timeouts** — per layer + end-to-end budget; what cascades to what
+- **Retries + backoff** — caller-side strategy, jitter, circuit breakers
+- **★ Rate limiting** — per-user / per-IP / per-endpoint; fair sharing
+- **★ Input validation boundary** — where untrusted input is cleansed; what's trusted past that line
+- **Pagination + filtering** — cursor vs offset, max page sizes, defaults
+- **Bulk operations** — batch APIs, partial-failure semantics
+- **Streaming** — SSE / WebSocket / gRPC stream patterns if applicable
+
+#### Async + jobs
+
+- **★ Background jobs** — cron vs queue vs event-driven; in-process worker vs separate process; failure handling
+- **Queue / messaging** — broker choice (challenge it!), ordering guarantees, retry policy, dead-letter queues
+- **Long-running tasks** — how the user is notified of completion (poll / webhook / push?)
+- **Multi-process coordination** — leader election, distributed locks (most apps don't need this)
+
+#### Boundaries + interop
+
+- **★ Internal vs external API boundaries** — public contract vs internal; what counts as a breaking change at each
+- **★ External dependencies** (originally covered) — every external service + failure mode per dep (timeout, fallback, fail-open, fail-closed)
+- **API versioning** — public + internal; deprecation window
+- **API contract testing** — schema-driven (OpenAPI / protobuf / etc.), codegen, compat checks
+- **Encoding / serialization** — JSON vs protobuf vs msgpack; UTF-8 vs binary gotchas
+- **★ Error handling philosophy** — exceptions vs result types, error wrapping, error taxonomy
+- **★ API surface** (originally covered) — endpoints / RPC methods / library functions exposed externally; style (REST, GraphQL, RPC, CLI); auth model; versioning; error envelope. Writes to `docs/api-conventions.md`. Delete that file if no external API.
+
+#### Observability
+
+- **★ Logging conventions** (originally covered) — structured vs unstructured, log levels, what goes in / what stays out (PII!), correlation IDs
+- **★ Metrics** — RED (rate / errors / duration) or USE (utilization / saturation / errors); what's instrumented at which layer
+- **Distributed tracing** — span propagation, correlation IDs, sampling rate
+- **★ Health checks + readiness** — liveness vs readiness; which dependencies count as "must be reachable"
+- **★ Monitoring + alerting** (originally covered) — what metrics exist, what alerts fire, what dashboards a dev pulls up first when debugging
+- **⚙ Debug endpoints + admin tooling** — REPL access? Runtime config inspection? Killswitches?
+
+#### Reliability + scale patterns
+
+- **⚙ Resource limits** — connection pools, memory caps, request-body sizes, timeouts (per layer)
+- **Circuit breakers / bulkheads / fallbacks** — when each is needed (often none)
+- **Multi-region / data sovereignty** — only if applicable
+- **Performance discipline** — N+1 prevention rules, query budgets, cardinality limits on metrics / logs
+
+#### Code organization + style (writes to `docs/best-practices.md`)
+
+- **★ Code conventions** (originally covered) — every "we always do X, never do Y" rule, in `scenario + rule + how-to-apply` format
+- **★ Module / package boundaries** — what can depend on what (the import graph as policy)
+- **Monorepo vs polyrepo** — if it's a decision to make
+- **★ Error-handling style at the code level** — paired with the philosophy above
+- **Naming conventions** — for the code units the team writes most often
+- **ADRs** (architecture decision records) — where they live, when one is required
+
+#### Build + dependencies + dev loop
+
+- **★ Linting / static analysis / type-checking** (originally covered) — what tools, what rule set, what's enforced by CI vs hooks
+- **★ Reproducibility** — lockfiles, pinned base images, deterministic builds
+- **⚙ Dependency-update policy** — automation, security-update SLA, supply-chain hygiene
+- **Build system specifics** — incremental, cached, what runs in CI vs locally
+- **★ Local dev experience** — how the project runs on a laptop, hot reload, fixtures, seed data, mocks
+
+#### Configuration + cross-cutting policy
+
+- **★ Configuration** (originally covered) — env vars / file / secrets manager; required vs optional; per-environment vs global
+- **Feature flags** — runtime config, rollout mechanism, kill-switch semantics
+- **Audit / event sourcing** — append-only logs, replay capability (only when relevant)
+- **Crypto hygiene at architecture level** — password hashing choice, signing, encryption-at-rest expectations (high-level — full threat model lives in `define-deploy`)
+
+#### Components + flow
+
+- **★ Component decomposition** (originally covered) — what code units exist and what each owns. Writes to `## Components` in `docs/architecture.md`.
+- **★ Data flow** (originally covered) — how a request / event / job moves through the components. Diagram or numbered list.
+- **★ High-level infrastructure** (originally covered) — where the code runs (containers, serverless, VMs). Just the topology — `define-deploy` covers details.
+
+### How to surface the list to the user
+
+Don't dump the whole tree at once. When asking the user "which area next?":
+
+1. If you have a strong recommendation (essentials they haven't touched, especially anything load-bearing for what `docs/product.md` says the product is), lead with: "I'd suggest <area> next — <one-sentence why>."
+2. Show the **category headings** as `AskUserQuestion` options plus an "Other" / free-form fallback. Once they pick a category, list bullets *inside* that category for the next selection (or pick the most essential one inside it and ask if they want that or something else).
+3. Always offer "I'm done overall" as an option in the outer loop.
 
 ## Phase C: splitting architecture.md
 
