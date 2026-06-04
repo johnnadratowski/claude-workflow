@@ -41,11 +41,14 @@ All merges into `<base>` go through the canonical **local** transient-worktree h
 | `.claude/hooks/drain-inbox.test.sh` | Hermetic test suite for the drain (run: `bash .claude/hooks/drain-inbox.test.sh`). Locks in the empty-mailbox, dot-delimiter, GC, kind-parse, and self-heal invariants. |
 | `.claude/scripts/agent-send.sh` | Backing script for `/agent-send` (supports `--stdin` heredoc bodies, `--reply`, `--followup`) |
 | `.claude/scripts/agent-broadcast.sh` | Backing script for `/agent-broadcast` — fan-out to all live peers |
+| `.claude/scripts/agent-fanout.sh` | Backing script for `/agent-fanout` — `status` / `merge-down` / `send` / `restart` (allow-listed; `restart` needs `--yes`) |
+| `.claude/scripts/agent-msg.sh` | Backing script for `/agent-msg` — read+delete one message, or `drain` the whole mailbox (allow-listed, so no ad-hoc `cat`+`rm`) |
 | `.claude/scripts/inbox-watcher.sh` | Opt-in poller that re-nudges parked (already-Stopped) agents. Not auto-started. |
 | `.claude/scripts/agent-rename.sh` | Backing script for `/agent-rename` |
 | `.claude/skills/agent-msg/SKILL.md` | Receiver-side handler (banner + request/reply/followup branching) |
 | `.claude/skills/agent-send/SKILL.md` | Sender-side dispatcher |
 | `.claude/skills/agent-broadcast/SKILL.md` | Fan-out dispatcher (carries an explicit user-authorization gate) |
+| `.claude/skills/agent-fanout/SKILL.md` | Fleet orchestration — status / role-targeted fan-out / merge-down / idle-gated restart |
 | `.claude/skills/agent-rename/SKILL.md` | Rename current agent (registry + tmux + claude session + git branch + base-branch file) |
 | `~/.claude/running-agents/<name>.<pid>` | **Runtime, never tracked.** Per-session registry. Filename carries the claude PID; contents are the tmux pane id. Cleaned up on `SessionEnd`. |
 | `~/.claude/agents/<name>` | **Persistent.** Agent's recorded base git branch. Written on first registration; consulted on every subsequent SessionStart to detect "you're on the wrong branch" drift. Updated by `/agent-rename`. |
@@ -62,7 +65,7 @@ All merges into `<base>` go through the canonical **local** transient-worktree h
 | `/agent-send <target> … --reply` | Send a **reply** (terminal; no response expected — breaks ping-pong loops). |
 | `/agent-send <target> … --followup` | Send a **followup**: a threaded message that **does** expect a response. Use instead of `--reply` when your reply asks the peer to act. |
 | `/agent-broadcast --stdin <<'BODY'…BODY` | Fan out one message to **all live peers** (`--exclude a,b`, `--followup`, `--dry-run`). High blast-radius — needs explicit user authorization. |
-| `/agent-fanout status` / `… msg --role <r>` / `… merge-down` / `… restart` | Fleet orchestration: read-only fleet snapshot, role-targeted message fan-out, canned post-push sync, and idle-gated force-restart (`claude --resume`, always confirmed). High blast-radius — see the skill. |
+| `/agent-fanout status` / `… msg --role <r>` / `… merge-down` / `… restart` | Fleet orchestration: read-only fleet snapshot, role-targeted message fan-out, canned post-push sync, and idle-gated force-restart (`claude --continue`, always confirmed). High blast-radius — see the skill. |
 | `/agent-msg <sender> <filename> [reply\|followup]` | Receiver-side handler. Invoked automatically when another agent's `tmux send-keys` (or the drain) lands in your prompt buffer — you never type this yourself. |
 | `/agent-rename <new-name>` | Rename this agent everywhere — registry, tmux pane title, tmux window, Claude session name. |
 

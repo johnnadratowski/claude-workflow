@@ -148,6 +148,8 @@ To test inter-agent comms, open a SECOND tmux pane and start another `claude` in
 │   ├── _config.sh               Sourceable config loader.
 │   ├── agent-send.sh            Backing script for /agent-send (req/rep/fwd).
 │   ├── agent-broadcast.sh       Backing script for /agent-broadcast (fan-out).
+│   ├── agent-fanout.sh          Backing script for /agent-fanout (status/merge-down/send/restart).
+│   ├── agent-msg.sh             Backing script for /agent-msg (read+delete; or `drain` the mailbox).
 │   ├── inbox-watcher.sh         Opt-in poller that re-nudges parked agents.
 │   ├── agent-rename.sh          Backing script for /agent-rename.
 │   └── gen-todos.mjs            Generates docs/TODO.md from docs/todos/ + validates.
@@ -380,5 +382,5 @@ So a config default acts as the *starting* identity but a later `/agent-rename` 
 ## Adapting
 
 - `base-pr` ships with a TODO marker for gates — fill in your project's lint/typecheck/test commands.
-- The `permissions.allow` list in `settings.json.example` is empty by default. Add `Bash(git push origin <pattern>)` entries for the branch names your skills will push.
+- `settings.json.example` ships with `permissions.allow` covering `git checkout` (branch switches; `git checkout --` file-discard stays denied) and the inter-agent backing scripts (`agent-send`/`broadcast`/`fanout`/`msg`) so fleet fan-outs and inbox draining don't prompt per command. Add `Bash(git push origin <pattern>)` entries for the branch names your skills will push.
 - If you want a different agent-name scheme (not the git branch), edit `register-agent.sh`'s "Determine agent name" section — the fallback chain is session-file `name` → git branch → cwd basename.
