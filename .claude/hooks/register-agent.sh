@@ -2,16 +2,19 @@
 # Register / re-sync this Claude session in ~/.claude/running-agents.
 #
 # Idempotent: safe to call from SessionStart and as a self-heal prelude
-# from agent-send.sh / agent-rename.sh. Both paths converge on the same
+# from agent-send.sh / agent-rename.sh. All paths converge on the same
 # end state.
 #
 # Registry: ~/.claude/running-agents/<name>.<claude_pid>  (content: $TMUX_PANE)
 # Name:     current git branch (sanitized), fallback to cwd basename.
 #
+# On SessionStart it also injects agent-type-specific startup instructions
+# (the "role context") via additionalContext — see "Role context" below.
+#
 # Usage:
-#   register-agent.sh sessionstart      — full setup; types /rename into the prompt
-#   register-agent.sh send-selfheal     — quiet re-sync; no /rename keystrokes
-#   register-agent.sh rename-selfheal   — quiet re-sync; no /rename keystrokes
+#   register-agent.sh sessionstart      — full setup; role context + /rename keystroke
+#   register-agent.sh send-selfheal     — quiet re-sync; no role context, no /rename
+#   register-agent.sh rename-selfheal   — quiet re-sync; no role context, no /rename
 
 set -u
 
@@ -112,8 +115,10 @@ fi
 #   3. Current git branch (sanitized).
 #   4. cwd basename.
 name=""
+session_name=""
 if [ -n "$claude_pid" ] && [ -f "$HOME/.claude/sessions/$claude_pid.json" ] && command -v jq >/dev/null 2>&1; then
-  name=$(jq -r '.name // empty' "$HOME/.claude/sessions/$claude_pid.json" 2>/dev/null)
+  session_name=$(jq -r '.name // empty' "$HOME/.claude/sessions/$claude_pid.json" 2>/dev/null)
+  name="$session_name"
 fi
 if [ -z "$name" ] && [ -n "${WORKFLOW_AGENT_DEFAULT_BRANCH:-}" ]; then
   name="$WORKFLOW_AGENT_DEFAULT_BRANCH"
@@ -132,7 +137,8 @@ if [ -n "${WORKFLOW_AGENT_NAME_TRANSFORM:-}" ]; then
   log "applied transform: $name"
 fi
 
-# Sanitize: alnum/dash/underscore only.
+# Sanitize: alnum/dash/underscore only. (No dots — dots are field delimiters
+# in the message-mailbox filenames; a dot in a name would break drain parsing.)
 name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
 
 # Apply optional prefix (also sanitized so the joined name stays clean).
@@ -146,6 +152,39 @@ fi
 
 # Sanitize current_branch the same way for consistent comparison.
 current_branch_sanitized=$(printf '%s' "$current_branch" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
+
+# Sanitize the session's current name too, so we can tell whether the Claude
+# session is ALREADY named correctly and skip a redundant /rename (the slow
+# path runs on every start — including `--resume`, which carries the name
+# forward — because the registry is keyed by the now-new PID).
+session_name_sanitized=$(printf '%s' "$session_name" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
+
+# --- Role context (injected at SessionStart via additionalContext) ---
+# Different agent types get tailored startup instructions. The role is derived
+# from the agent name; override per-agent with ~/.claude/agents/<name>.role (a
+# single word). Role docs live in .claude/agent-roles/<role>.md and ship with
+# the repo (so they propagate via merge-down). Only loaded on sessionstart.
+resolve_role() {
+  case "$1" in
+    cc|master|coordinator|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator ;;
+    test|*-test|*-test-*|test-*)                                       echo test ;;
+    review|pr|*-pr|*-pr-*|pr-*|*-review|*-review-*|review-*)           echo review ;;
+    *)                                                                 echo feature ;;
+  esac
+}
+role_context=""
+if [ "$source" = "sessionstart" ]; then
+  role=""
+  [ -f "$HOME/.claude/agents/$name.role" ] && role="$(tr -dc 'A-Za-z0-9_-' < "$HOME/.claude/agents/$name.role")"
+  [ -z "$role" ] && role="$(resolve_role "$name")"
+  role_file="$(cd "$(dirname "$0")/../agent-roles" 2>/dev/null && pwd)/$role.md"
+  if [ -f "$role_file" ]; then
+    role_context="$(cat "$role_file")"
+    log "loaded role context: role=$role file=$role_file"
+  else
+    log "no role file for role=$role ($role_file)"
+  fi
+fi
 
 log "name=$name current_branch=$current_branch"
 
@@ -195,13 +234,25 @@ mkdir -p "$HOME/.claude/running-agents"
 target="$HOME/.claude/running-agents/$name.$claude_pid"
 
 # Helper: emit Claude Code's SessionStart additionalContext JSON to stdout.
+# Combines the role context (loaded above) with any per-call warning so both
+# reach the model in one SessionStart additionalContext payload.
 emit_session_context() {
   local msg="$1"
-  if [ "$source" = "sessionstart" ] && [ -n "$msg" ]; then
-    if command -v jq >/dev/null 2>&1; then
-      jq -n --arg ctx "$msg" '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":$ctx}}'
+  local combined="${role_context:-}"
+  if [ -n "$msg" ]; then
+    if [ -n "$combined" ]; then
+      combined="$combined
+
+$msg"
     else
-      esc=${msg//\\/\\\\}; esc=${esc//\"/\\\"}; esc=${esc//$'\n'/\\n}
+      combined="$msg"
+    fi
+  fi
+  if [ "$source" = "sessionstart" ] && [ -n "$combined" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      jq -n --arg ctx "$combined" '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":$ctx}}'
+    else
+      esc=${combined//\\/\\\\}; esc=${esc//\"/\\\"}; esc=${esc//$'\n'/\\n}
       printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$esc"
     fi
     log "emitted SessionStart additionalContext"
@@ -232,17 +283,18 @@ if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/nul
   fi
 fi
 
-# Only type /rename into the prompt on the initial-startup path,
-# and only when WORKFLOW_AGENT_SKIP_RENAME is not "1".
-if [ "$source" = "sessionstart" ] && [ "${WORKFLOW_AGENT_SKIP_RENAME:-}" != "1" ]; then
+# Type /rename into the prompt on the initial-startup path — but ONLY when the
+# session isn't already named correctly (avoids a no-op /rename re-firing on
+# every start/resume) and WORKFLOW_AGENT_SKIP_RENAME isn't "1".
+if [ "$source" = "sessionstart" ] && [ "${WORKFLOW_AGENT_SKIP_RENAME:-}" != "1" ] && [ "$session_name_sanitized" != "$name" ]; then
   nohup bash -c "
     sleep 2
     tmux send-keys -t '$TMUX_PANE' -l '/rename $name'
     tmux send-keys -t '$TMUX_PANE' Enter
   " </dev/null >/dev/null 2>&1 &
   log "scheduled /rename via send-keys"
-elif [ "$source" = "sessionstart" ]; then
-  log "skipped /rename (WORKFLOW_AGENT_SKIP_RENAME=1)"
+else
+  log "skip /rename (source=$source skip=${WORKFLOW_AGENT_SKIP_RENAME:-} session='$session_name_sanitized' name='$name')"
 fi
 
 emit_session_context "$mismatch_warning"

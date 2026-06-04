@@ -2,9 +2,10 @@
 
 A drop-in `.claude/` for Claude Code projects that adds:
 
-- **Inter-agent communication** — Claude sessions in different tmux panes can message each other (`/agent-send`, `/agent-msg`, `/agent-rename`).
-- **Worktree-friendly base-branch workflow** — `/base-pull`, `/base-push`, `/base-merge`, `/base-pr`. The shared "trunk" branch is never checked out in any persistent worktree; promotions go through a short-lived transient worktree, with local and remote refs kept in lockstep.
-- **Auto-registration hooks** — Claude sessions register themselves at startup with their git branch as the agent name (rename anytime with `/agent-rename`).
+- **Inter-agent communication** — Claude sessions in different tmux panes can message each other (`/agent-send`, `/agent-msg`, `/agent-broadcast`, `/agent-rename`), with **at-least-once delivery**: every message is staged in a durable per-recipient mailbox and re-injected by a `Stop`-hook drain if the live nudge is missed.
+- **Local-first base-branch workflow** — `/base-push`, `/base-merge`, `/base-pr`, `/base-test`. All worktrees share one `.git`, so the local `<base>` ref is the single coordination point; merge/test/review operate on local refs and never touch the network. **`/base-push` is the only skill that touches origin** (it publishes local `<base>`); origin is write-only — there is no pull skill. The base branch is never checked out in a persistent worktree; promotions go through a short-lived transient worktree.
+- **Auto-registration + role hooks** — Claude sessions register themselves at startup with their git branch as the agent name (rename anytime with `/agent-rename`), and get **agent-type-specific startup instructions** injected from `.claude/agent-roles/<role>.md` (coordinator / review / feature / test, derived from the name).
+- **Autonomous driver** — `/afk` carries a task to done unattended: implement → doc-sync → review loop → test loop → land, stopping only for genuinely blocking questions.
 
 The base branch name is configurable per-project via `.claude/workflow.config`. Default is `main`.
 
@@ -62,7 +63,7 @@ cp -r /path/to/claude-workflow/.claude/. /path/to/your-project/.claude/
 This puts hooks, scripts, and skills in your project. Make the shell scripts executable:
 
 ```bash
-chmod +x /path/to/your-project/.claude/hooks/*.sh /path/to/your-project/.claude/scripts/agent-*.sh
+chmod +x /path/to/your-project/.claude/hooks/*.sh /path/to/your-project/.claude/scripts/*.sh
 ```
 
 ### 2. Create the per-project config
@@ -76,7 +77,7 @@ Set `WORKFLOW_BASE_BRANCH` to whatever your trunk is called (`main`, `master`, `
 
 ### 3. Merge the project-level settings.json
 
-The `SessionEnd` hook and the safety-rail deny rules go in your project's `.claude/settings.json`. See `.claude/settings.json.example` — copy the `hooks.SessionEnd` block and the `permissions.deny` list into your existing settings (if any), or use the example as a starting point.
+The project-level hooks — `UserPromptSubmit` (mark-busy), `Stop` (drain-inbox), `SessionEnd` (unregister) — and the safety-rail deny rules go in your project's `.claude/settings.json`. See `.claude/settings.json.example` — copy the `hooks` blocks and the `permissions.deny` list into your existing settings (if any), or use the example as a starting point. (`/base-initialize` installs/merges these for you.)
 
 If you want pushes of your branches to skip the Claude Code approval prompt, add entries to `permissions.allow`, e.g.:
 
@@ -129,37 +130,58 @@ To test inter-agent comms, open a SECOND tmux pane and start another `claude` in
 ```
 .claude/
 ├── hooks/
-│   ├── register-agent.sh        Idempotent registration. Installed as
-│   │                             SessionStart (user-level) + invoked as
-│   │                             self-heal prelude by agent-send/rename.
-│   └── unregister-agent.sh      SessionEnd hook (project-level).
+│   ├── register-agent.sh        Idempotent registration + role-context inject.
+│   │                             SessionStart (user-level) + self-heal prelude.
+│   ├── mark-busy.sh             UserPromptSubmit — marks the agent busy so peers
+│   │                             skip a redundant nudge mid-turn.
+│   ├── drain-inbox.sh           Stop — drains the per-recipient mailbox so a
+│   │                             missed nudge is re-delivered (at-least-once).
+│   ├── drain-inbox.test.sh      Hermetic test suite for the drain.
+│   └── unregister-agent.sh      SessionEnd cleanup (registry + busy marker).
+├── agent-roles/                 Startup instructions injected per agent type:
+│   ├── coordinator.md            coordinator / review / feature / test. Edit to
+│   ├── review.md                 change what each agent type is told. Role is
+│   ├── feature.md                derived from the agent name (override via
+│   └── test.md                   ~/.claude/agents/<name>.role).
 ├── scripts/
 │   ├── _config.sh               Sourceable config loader.
-│   ├── agent-send.sh            Backing script for /agent-send.
-│   └── agent-rename.sh          Backing script for /agent-rename.
+│   ├── agent-send.sh            Backing script for /agent-send (req/rep/fwd).
+│   ├── agent-broadcast.sh       Backing script for /agent-broadcast (fan-out).
+│   ├── inbox-watcher.sh         Opt-in poller that re-nudges parked agents.
+│   ├── agent-rename.sh          Backing script for /agent-rename.
+│   └── gen-todos.mjs            Generates docs/TODO.md from docs/todos/ + validates.
 ├── skills/
-│   ├── agent-msg/               Inbound-message handler.
-│   ├── agent-send/              Send to a peer agent.
+│   ├── agent-msg/               Inbound-message handler (banner + branch).
+│   ├── agent-send/              Send to a peer agent (--reply / --followup).
+│   ├── agent-broadcast/         Fan one message out to all live peers.
 │   ├── agent-rename/            Rename this agent everywhere.
-│   ├── base-pull/               Merge origin/<base> INTO current branch.
-│   ├── base-push/               Push current branch + advance LOCAL <base>
-│   │                             + push to origin (defines the
-│   │                             merge_into_branch_transient helper).
-│   ├── base-merge/              Local-only sync of <base>.
-│   ├── base-pr/                 Review pending state on <base>; promote.
+│   ├── base-push/               Land current branch into LOCAL <base>, then
+│   │                             publish to origin (defines the
+│   │                             merge_into_branch_local helper). Only origin touch.
+│   ├── base-merge/              Local-only sync of <base> (down/up). No network.
+│   ├── base-pr/                 In-place local-first review of what's new on
+│   │                             <base>; promote fixes locally; re-anchor.
 │   ├── base-test/               Merge local <base>, run all gates, report.
-│   ├── todo/                    Full-lifecycle todo manager. Loads docs/
-│   │                            during planning, runs doc-drift after commit,
-│   │                            stops for review. /todo continue handles
-│   │                            push → notify tester → cleanup.
+│   ├── todo/                    File-per-TODO lifecycle: add → plan → implement →
+│   │                             doc-sync (incl. architecture) → review → close.
+│   │                             Regenerates docs/TODO.md after every mutation.
+│   ├── afk/                     Autonomous driver: implement → review → test → land.
+│   ├── define-project/ +        Interactive project-definition orchestrator and
+│   │   define-product/             its subskills (product → architect → QA →
+│   │   define-architect/           deploy/security → TODO-taxonomy).
+│   │   define-qa/
+│   │   define-deploy/
+│   │   define-tickets/          Tailors the TODO taxonomy (no external provider).
+│   ├── feynman-auditor/ +       Language-agnostic deep-audit skills (used by
+│   │   state-inconsistency-auditor/   /base-pr on high-risk diffs).
+│   │   nemesis-auditor/
 │   ├── add-worktree/            git worktree add wrapper + env-copy + setup.
 │   ├── remove-worktree/         git worktree remove with confirmation.
 │   ├── list-worktrees/          Annotated list of all worktrees.
-│   └── base-initialize/         One-time bootstrap: reset .git, install
-│                                docs from templates, create worktrees,
-│                                open tmux panes, start agents, interview
-│                                the user to fill in docs.
-├── settings.json.example        Project-level settings (deny + SessionEnd).
+│   └── base-initialize/         One-time bootstrap (reset .git, install docs +
+│                                hooks, seed TODO index, create worktrees, run
+│                                /define-project).
+├── settings.json.example        Project-level (deny + mark-busy/drain/unregister).
 └── settings-user-level.json.example   SessionStart hook for ~/.claude/.
 
 workflow.config.example          Sample config file.
@@ -175,7 +197,8 @@ templates/
     ├── security.md              Threat model + sensitive-op rules (web-app example).
     ├── testing.md               Test categories + when to add tests.
     ├── api-conventions.md       REST API conventions (delete if no API surface).
-    └── TODO.md                  Backlog with worked PROMPT and non-PROMPT examples.
+    ├── api.md                   Rendered API reference (delete if no API surface).
+    └── todos/                   milestones.json taxonomy + README (the TODO model).
 
 docs/
 └── inter-agent-comms.md         Protocol writeup for the comms layer.
@@ -185,15 +208,17 @@ docs/
 
 | Skill | What it does |
 |---|---|
-| **`/base-pull`** | Merge `origin/$WORKFLOW_BASE_BRANCH` into the current feature branch (without checking the base out anywhere). Pushes the feature first as a backup, then merges. Doesn't auto-push the merge — your call when to publish. |
-| **`/base-push`** | Push the current feature branch to origin, then advance LOCAL `$WORKFLOW_BASE_BRANCH` to include those changes via a transient worktree, then push local to origin. Local and origin always end in lockstep. Defines `merge_into_branch_transient` (the helper the other base-* skills call). |
-| **`/base-merge`** | Local-only sync (no fetch, no push). Two modes: `down` (merge locally-cached `origin/<base>` into current) and `up` (advance local `<base>` from current). Used when you want refs aligned without publishing. |
-| **`/base-pr`** | Review what's pending on the base branch in a dedicated sandbox worktree. Runs project gates against the sandboxed state; optionally promotes to origin via the helper after gates pass. Reads `docs/best-practices.md` / `docs/architecture.md` / `docs/security.md` during review to flag rule violations. |
+| **`/base-push`** | Land the current feature branch into LOCAL `$WORKFLOW_BASE_BRANCH` via a transient worktree, then publish local `<base>` to origin. **The only skill that touches origin.** Defines `merge_into_branch_local` (the local-only helper the other base-* skills call). `--no-publish` skips the push (= `/base-merge up`). |
+| **`/base-merge`** | Local-only sync (no fetch, no push). `down` (merge local `<base>` into current), `up` (advance local `<base>` from current), or both. Reports the local-vs-origin drift so unpublished work is never invisible. |
+| **`/base-pr`** | In-place, local-first PR review: the current branch is a baseline snapshot; diffs it against local `<base>` and audits the new commits (design / security / **doc-drift incl. architecture**), escalating to the nemesis deep-audit on high-risk diffs. Optionally applies fixes and promotes them into local `<base>`, then re-anchors the snapshot. No fetch, no push. |
 | **`/base-test`** | Merge LOCAL `$WORKFLOW_BASE_BRANCH` into the current branch, then run every project quality gate against the merged result. Operates in place — no sandbox, no commit, no push. Reports failures together (doesn't stop at the first). |
-| **`/agent-send <target> "<body>" [--reply]`** | Send a message to another Claude session running in another tmux pane on this machine. Self-heals the registry before sending. Body is staged in `~/.claude/agent-inbox/`; delivery is a one-line slash command into the target's prompt. `--reply` distinguishes replies (don't auto-respond) from requests. |
-| **`/agent-msg <sender> <filename> [reply]`** | Inbound-message handler. Invoked AUTOMATICALLY when a peer agent's `tmux send-keys` lands `/agent-msg ...` in your prompt buffer. Reads + deletes the message file, prints a visible banner, then either processes (request) or integrates (reply). You never type this yourself. |
+| **`/agent-send <target> "<body>" [--reply\|--followup]`** | Send a message to another Claude session on this machine. Self-heals the registry, stages the body in a durable per-recipient mailbox, then nudges via `tmux send-keys` (skipped if the target is busy / scrolled — the drain delivers instead). `--reply` = terminal (no response); `--followup` = threaded message expecting a response. |
+| **`/agent-msg <sender> <filename> [reply\|followup]`** | Inbound-message handler. Invoked AUTOMATICALLY when a peer's `tmux send-keys` (or the Stop-hook drain) lands `/agent-msg ...` in your prompt. Reads + deletes the file, prints a visible banner, then processes (request/followup) or integrates (reply). You never type this yourself. |
+| **`/agent-broadcast --stdin <<'BODY'…`** | Fan one message out to ALL live peers (`--exclude`, `--followup`, `--dry-run`). Reuses `/agent-send` per recipient. High blast-radius — requires explicit user authorization. |
 | **`/agent-rename <new-name>`** | Rename this agent everywhere: registry file in `~/.claude/running-agents/`, persistent base-branch file in `~/.claude/agents/`, tmux pane title, tmux window name, Claude session label (via the built-in `/rename`), and the local git branch (`git branch -m`). |
-| **`/todo <verb-or-text>`** | Full-lifecycle todo manager. Drives a todo through plan (informed by `docs/best-practices.md` and the rest of the doc corpus) → execute → verify → commit → doc-drift check → STOP for review → `/todo continue` → push base + notify tester → cleanup. Four modes: add, execute next, execute by keyword, continue (post-review). The doc-drift check after every implementation is the loop that keeps `docs/best-practices.md` growing scenarios as the project evolves. |
+| **`/todo <verb-or-text>`** | File-per-TODO lifecycle manager. `add` mints a stable `AREA-<lane>NNN` ID and writes `docs/todos/<ID>.md`; the spine is add → plan → implement → **doc-sync (incl. architecture)** → review → `continue` (promote + notify tester) → close (archive to `completed/`). Regenerates `docs/TODO.md` + validates frontmatter after every mutation. The TODO files are the tracker — no external ticket system. |
+| **`/afk --pr <agent> [--test <agent>]`** | Autonomous driver. Carries the current task to done unattended: implement → doc-sync → review loop (with a peer reviewer, failover) → test loop → land into local `<base>` (publish if clean). Stops and notifies only for genuinely blocking questions or non-converging loops. |
+| **`/define-project`** (+ `define-product` / `define-architect` / `define-qa` / `define-deploy` / `define-tickets`) | Interactive project-definition orchestrator. Drives product → architecture → QA → deploy/security → TODO-taxonomy dialogs, each with subagent critical review + signoff, populating `docs/` and scaffolding code/tests/CI. Run by `/base-initialize`; re-enterable later. |
 | **`/add-worktree <name>`** | Create a new git worktree at `<parent>/<repo>-<name>`. Optionally on a new branch (default), an existing branch (`--branch <name>`), or from a non-default ref (`--from <ref>`). Optionally copies env files (`WORKFLOW_WORKTREE_COPY_FILES`) and runs a setup command (`WORKFLOW_WORKTREE_SETUP_CMD`) from config. |
 | **`/remove-worktree <name>`** | Tear down a worktree. Confirms first (unless `--force`). `--delete-branch` also removes the local branch. Refuses if the worktree has uncommitted changes (override with `--force`). |
 | **`/list-worktrees`** | Show all worktrees of the current repo: path, branch, last commit, dirty status, and a `(current)` marker for the one you're calling from. |
@@ -270,17 +295,20 @@ Useful when you want a context-window-isolated sub-task to run in parallel with 
 ### Aligning multiple worktrees after a base advance
 
 ```text
-After you /base-push from one worktree, every other live agent should
-/base-pull to pick up the change. The two-line ritual:
+Coordination is purely local — once one worktree advances local <base>
+(via /base-push or /base-merge up), every other worktree shares the same
+.git, so the new commits are already visible. To fold them into a peer's
+feature branch, the peer runs /base-merge down. Broadcast the nudge once:
 
-You> /agent-send <peer-name> \
-     "origin/<base> just advanced to <sha>. Please /base-pull."
+You> /agent-broadcast --stdin <<'BODY'
+local <base> just advanced. Please /base-merge down to pick it up.
+BODY
 
-   (peer agent runs /base-pull, replies with confirmation +
+   (each peer runs /base-merge down, replies with confirmation +
     any conflicts encountered)
 ```
 
-Saves you switching panes to broadcast the news manually.
+No fetch needed — the refs are local. `/agent-broadcast` saves you switching panes.
 
 ## Project documentation structure
 
@@ -305,7 +333,7 @@ All per-project configuration lives in **`.claude/workflow.config`** — a shell
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WORKFLOW_BASE_BRANCH` | `main` | The shared "trunk" branch other branches merge into and pull from. Used by `/base-pull`, `/base-push`, `/base-merge`, `/base-pr`. |
+| `WORKFLOW_BASE_BRANCH` | `main` | The shared "trunk" branch other branches merge into. Lives only as a ref (never checked out in a persistent worktree). Used by `/base-push`, `/base-merge`, `/base-pr`, `/base-test`. |
 | `WORKFLOW_MAIN_PATH` | git toplevel of cwd | Path to the canonical clone, used as the anchor for transient worktrees created during `/base-push` and `/base-pr` promotions. Only override if your "main clone" lives somewhere different from where you call skills. |
 
 ### Agent workflow
@@ -333,15 +361,18 @@ So a config default acts as the *starting* identity but a later `/agent-rename` 
 
 | Variable | Read by |
 |---|---|
-| `WORKFLOW_BASE_BRANCH` | `base-pull`, `base-push`, `base-merge`, `base-pr` |
-| `WORKFLOW_MAIN_PATH` | `merge_into_branch_transient` helper inside `base-push` |
+| `WORKFLOW_BASE_BRANCH` | `base-push`, `base-merge`, `base-pr`, `base-test` |
+| `WORKFLOW_MAIN_PATH` | `merge_into_branch_local` helper inside `base-push` |
 | `WORKFLOW_AGENT_*` | `register-agent.sh` only (via `_config.sh`) |
+| `WORKFLOW_TESTING_AGENT` | `todo` (`continue`), `afk` |
+| `WORKFLOW_TODO_LANE` | `todo` (ID allocation) |
+| `AGENT_INBOX_GC_DAYS` | `drain-inbox.sh` |
 
 ## Caveats
 
 - **macOS / Linux only** — the scripts use `tmux`, `ps`, `jq`, `git`, and bash arrays. `jq` is a soft dependency for `register-agent.sh` (the session-id lookup degrades to process-tree walk without it).
 - **tmux required** — the registry and message-delivery mechanism both rely on `tmux send-keys`. The hook silently no-ops when `$TMUX_PANE` is unset.
-- **The base branch must not be checked out in any persistent worktree.** The transient-worktree helper checks it out as a branch (not detached), so a concurrent checkout elsewhere will make the helper fail. By design, the base branch only exists as a ref and only materializes briefly during a `/base-push` or `/base-pr` promotion.
+- **The base branch must not be checked out in any persistent worktree.** The `merge_into_branch_local` helper checks it out as a branch (not detached) in a transient worktree, so a concurrent checkout elsewhere will make the helper fail — silently breaking promotion for every agent. By design, the base branch only exists as a ref and only materializes briefly during a `/base-push`, `/base-merge up`, or `/base-pr` promotion. For a base-tracking worktree, ride a stable branch or a detached `origin/<base>`.
 
 ## Adapting
 

@@ -1,0 +1,26 @@
+{
+  "_comment": "Canonical taxonomy for the TODO system. The generator (.claude/scripts/gen-todos.mjs) reads this to validate every docs/todos/*.md frontmatter and to order the generated docs/TODO.md index. The /todo skill and humans consult it. To add a milestone/area/priority, edit here. Customize the areas + milestones to your project (the /define-product and /define-architect skills can help).",
+  "milestones": [
+    { "key": "pre-release", "version": "pre-v1.0", "label": "Pre-release — before the v1.0 launch cut" },
+    { "key": "initial-release", "version": "1.0.0", "label": "Initial release (v1.0.0)" },
+    { "key": "post-initial-release", "version": "1.1.x", "label": "Post-initial-release fast-follows (v1.1.x)" },
+    { "key": "next-minor", "version": "1.2.x", "label": "Next minor (v1.2.x)" },
+    { "key": "backlog", "version": null, "label": "Backlog — unscheduled" }
+  ],
+  "priorities": [
+    { "key": "critical", "label": "Security, data integrity, money movement" },
+    { "key": "high", "label": "Correctness, compliance, auth-adjacent" },
+    { "key": "medium", "label": "Features, developer experience" },
+    { "key": "low", "label": "Polish, copy, nice-to-haves" }
+  ],
+  "statuses": ["open", "in-progress", "blocked", "deferred", "done", "cancelled"],
+  "_statusNote": "open/in-progress/blocked/deferred live in docs/todos/. done/cancelled are archived to docs/todos/completed/.",
+  "areas": [
+    { "key": "feature", "prefix": "FEAT", "label": "Product feature" },
+    { "key": "bug", "prefix": "BUG", "label": "Bug fix" },
+    { "key": "security", "prefix": "SEC", "label": "Security" },
+    { "key": "infra", "prefix": "INF", "label": "Infrastructure / CI / deploy" },
+    { "key": "dx", "prefix": "DX", "label": "Developer experience / build / tests" },
+    { "key": "docs", "prefix": "DOC", "label": "Documentation" }
+  ]
+}

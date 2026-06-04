@@ -11,7 +11,7 @@ This file is intentionally light. The real documentation lives in `docs/`, where
 - [`docs/security.md`](docs/security.md) — threat model + sensitive-operation rules. Read before touching auth, secrets, or anything that crosses a trust boundary.
 - [`docs/testing.md`](docs/testing.md) — where each kind of test lives. Read before adding tests (or claiming a change is tested).
 - [`docs/api-conventions.md`](docs/api-conventions.md) — if this project exposes an API, the conventions are here. (Delete this bullet if not applicable.)
-- [`docs/TODO.md`](docs/TODO.md) — active backlog. Check before starting work to avoid duplication.
+- [`docs/TODO.md`](docs/TODO.md) — **generated** backlog index (source: `docs/todos/*.md` via the `/todo` skill). Check before starting work to avoid duplication; never hand-edit it.
 
 ## Hard rules
 
@@ -27,14 +27,18 @@ If a rule below grows past one line of explanation, move it into `docs/best-prac
 
 This repo ships [`claude-workflow`](https://example.com/your-fork-of-claude-workflow) under `.claude/`. Quick reference:
 
-- **`/base-pull`** — merge `origin/<base>` into the current branch.
-- **`/base-push`** — push current branch + advance `<base>` locally and on origin.
-- **`/base-merge`** — local-only sync (no fetch, no push).
-- **`/base-pr`** — review pending changes against `<base>`, optionally promote.
+- **`/base-push`** — land current branch into LOCAL `<base>`, then publish to origin. The only skill that touches origin.
+- **`/base-merge`** — local-only sync of `<base>` (down/up; no fetch, no push).
+- **`/base-pr`** — local-first review of what's new on `<base>`; optionally promote fixes locally.
 - **`/base-test`** — merge local `<base>`, run every project gate, report.
-- **`/agent-send <target> "..."`** — message another Claude session on this machine.
+- **`/todo <verb>`** — file-per-TODO lifecycle (add → plan → implement → doc-sync → review → close).
+- **`/afk --pr <agent>`** — drive a task to done autonomously (review + test loops).
+- **`/agent-send <target> "..."`** — message another Claude session (`--reply` / `--followup`).
+- **`/agent-broadcast`** — fan one message out to all live peers (needs explicit authorization).
 - **`/agent-msg`** — inbound-message handler (invoked automatically).
 - **`/agent-rename <name>`** — rename this agent everywhere (registry + tmux + Claude session + git branch).
+
+Coordination is **local-first**: the local `<base>` ref is shared across worktrees; only `/base-push` touches origin (write-only — no pull skill).
 
 Configuration lives in `.claude/workflow.config`. Defaults are sensible; override `WORKFLOW_BASE_BRANCH` and `WORKFLOW_MAIN_PATH` per project.
 
@@ -42,9 +46,9 @@ Configuration lives in `.claude/workflow.config`. Defaults are sensible; overrid
 
 A few recurring patterns. Detailed steps live with each skill's `SKILL.md`.
 
-- **Starting work on a new branch** → `/base-pull` to get current, then code, then `/base-test` before pushing.
+- **Starting a unit of work** → `/todo add <desc>` (mints the ID), then `/base-merge down` to get current, then code.
 - **Promoting work to the shared branch** → `/base-test` first (sanity), then `/base-push`.
-- **Reviewing what's accumulated on the base** → `/base-pr` (optionally splits review and promotion into discrete steps).
+- **Reviewing what's accumulated on the base** → `/base-pr` (review + optional local promotion).
 - **Asking a peer agent to take on a sub-task** → `/agent-send <name> "..."` and let them reply via `/agent-msg` → `/agent-send --reply`.
 
 ## What lives where

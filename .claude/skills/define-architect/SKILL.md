@@ -10,7 +10,7 @@ Interactive dialog with the user to lock down the technology stack and code-leve
 Produces:
 
 - `docs/architecture.md` — components, data flow, invariants, decisions log
-- `docs/api-conventions.md` — only if the project exposes an API surface
+- `docs/api-conventions.md` + `docs/api.md` — **only if the project exposes an API surface** (`/base-initialize` deletes both when the user answered "no API"). When the project DOES have an API: keep them, and if the stack can generate an OpenAPI/`swagger.json` from in-code annotations, **wire the regenerate command** (note it in `api-conventions.md`; `api.md` renders the spec). That generated spec then becomes part of the doc-sync step (regenerate on any route/shape change) and a `/base-pr` doc-drift check. If there's no API, leave both deleted.
 - `docs/best-practices.md` — coding conventions, lint rules, patterns to repeat / avoid
 - `docs/architecture/<topic>.md` — split docs when the main file grows unwieldy
 - Initial code scaffold — package manifest, entrypoints, lint/format/git-hook config, language version pin (e.g., `.nvmrc`, `.python-version`, `rust-toolchain.toml`), `.env`/`.env.example` stub, `.gitignore` matched to the stack

@@ -1,6 +1,6 @@
 ---
 name: base-initialize
-description: Bootstrap a new project from a `claude-workflow` clone. Runs once at project start. Resets `.git` (the workflow's history is irrelevant to the new project), installs `docs/` from `templates/example_docs`, installs `CLAUDE.md` from the template, writes `.claude/workflow.config`, asks how many feature / PR / test agents to spin up, auto-installs the user-level `SessionStart` hook into `~/.claude/settings.json` (with backup) so spawned agents auto-rename, creates that many worktrees, opens tmux panes for each, starts `claude` in each, then hands off to the `define-project` orchestrator skill — which drives product → architect → QA → deploy/security → ticketing dialogs, populates the docs with real content, scaffolds the code + tests + CI, and wires up a ticketing-system integration.
+description: Bootstrap a new project from a `claude-workflow` clone. Runs once at project start. Resets `.git` (the workflow's history is irrelevant to the new project), installs `docs/` from `templates/example_docs`, installs `CLAUDE.md` from the template, writes `.claude/workflow.config`, installs the project-level agent hooks + seeds the generated TODO index, asks how many feature / PR / test agents to spin up, auto-installs the user-level `SessionStart` hook into `~/.claude/settings.json` (with backup) so spawned agents auto-register, creates that many worktrees, opens tmux panes for each, starts `claude` in each, then hands off to the `define-project` orchestrator skill — which drives product → architect → QA → deploy/security → TODO-taxonomy dialogs, populates the docs with real content, and scaffolds the code + tests + CI.
 ---
 
 # base-initialize
@@ -12,7 +12,7 @@ Bootstraps a fresh project from a `claude-workflow` clone:
 1. Resets git, installs the template docs + CLAUDE.md, writes the workflow config
 2. Asks how many feature / PR / test agents to set up
 3. Installs the user-level `SessionStart` hook into `~/.claude/settings.json`
-4. Hands off to `/define-project` — an orchestrator that drives product, architecture, QA, deployment+security, and ticketing dialogs with the user, populates the docs with real content, scaffolds code + tests + CI, and seeds tickets in the chosen ticketing system
+4. Hands off to `/define-project` — an orchestrator that drives product, architecture, QA, deployment+security, and TODO-taxonomy dialogs with the user, populates the docs with real content, and scaffolds code + tests + CI
 5. Commits everything `define-project` produced
 6. **Then** creates worktrees + opens tmux panes + starts `claude` in each — so the feature / PR / test agents branch from a fully-populated commit instead of an empty template
 
@@ -23,7 +23,7 @@ After this skill finishes, the user has a working multi-agent setup, project-spe
 Verify the cwd is a `claude-workflow` clone:
 
 ```bash
-[ -d ./templates/example_docs ] && [ -d ./.claude/skills/base-pull ] \
+[ -d ./templates/example_docs ] && [ -d ./.claude/skills/base-push ] \
   && [ -f ./workflow.config.example ] \
   || { echo "Doesn't look like a claude-workflow clone."; exit 1; }
 ```
@@ -46,6 +46,7 @@ Use `AskUserQuestion` to collect, in this order:
 | Description | `(empty)` | One-paragraph; goes into CLAUDE.md after the heading. |
 | Base branch | `main` | Becomes `WORKFLOW_BASE_BRANCH`. |
 | Git remote URL | `(none)` | "Do you have a remote you want to push to?" If yes, captured as a URL string and applied in Phase 2 via `git remote add origin <url>`. If no, skip — the user can add a remote later. |
+| Exposes an API? | (asks) | "Does this project expose an API (HTTP/REST/RPC) callers depend on?" Yes/No. **No** → Phase 3 deletes `docs/api.md`, `docs/api-conventions.md` (and any `docs/swagger.json`). **Yes** → they're kept; `/define-architect` documents the conventions + wires the spec-generation command. |
 | Agent name prefix | (asks) | "Multiple projects share `~/.claude/running-agents/`, so prefixing agent names is recommended if you'll run agents from more than one project at a time." Four-option `AskUserQuestion` (see below). Becomes `WORKFLOW_AGENT_NAME_PREFIX`. |
 
 ### Agent prefix — four options
@@ -94,6 +95,11 @@ sed -i.bak "s|<Project name>|$PROJECT_NAME|g" CLAUDE.md
 sed -i.bak "s|<One-paragraph description.*|$DESCRIPTION|" CLAUDE.md
 rm CLAUDE.md.bak
 
+# If the project has no API surface, drop the API docs (kept otherwise).
+if [ "$EXPOSES_API" != "yes" ]; then
+  rm -f docs/api.md docs/api-conventions.md docs/swagger.json
+fi
+
 # Workflow config
 cp workflow.config.example .claude/workflow.config
 
@@ -113,13 +119,34 @@ fi
 
 rm -f .claude/workflow.config.bak
 
+# Install the PROJECT-level settings (deny rules + the agent hooks:
+# UserPromptSubmit→mark-busy, Stop→drain-inbox, SessionEnd→unregister). These
+# fire after project settings load, so unlike SessionStart they belong here.
+# Merge into an existing .claude/settings.json if the user already has one; else
+# copy the example wholesale.
+if [ -f .claude/settings.json ] && command -v jq >/dev/null 2>&1; then
+  tmp=$(mktemp)
+  jq -s '.[0] * .[1]' .claude/settings.json .claude/settings.json.example > "$tmp" && mv "$tmp" .claude/settings.json
+else
+  cp .claude/settings.json.example .claude/settings.json
+fi
+
+# Seed the generated TODO index from the shipped docs/todos/ (milestones.json + README).
+node .claude/scripts/gen-todos.mjs || echo "gen-todos failed — check docs/todos/milestones.json"
+
 # Remove now-redundant template files
 rm -rf templates/
-rm workflow.config.example
+rm -f workflow.config.example .claude/settings.json.example .claude/settings-user-level.json.example
 rm -f README.md   # original was the workflow's README; user will write their own
 ```
 
 (macOS `sed -i ''` vs GNU `sed -i` differ — use `-i.bak` + `rm *.bak` pattern as a portable middle ground.)
+
+> The whole `.claude/` tree is copied as-is into the project, so the agent hooks
+> (`register-agent.sh`, `drain-inbox.sh`, `mark-busy.sh`, `unregister-agent.sh`), the
+> scripts (`agent-send.sh`, `agent-broadcast.sh`, `inbox-watcher.sh`, `gen-todos.mjs`),
+> the **agent-role startup files** (`.claude/agent-roles/{coordinator,review,feature,test}.md`),
+> and every skill ride along automatically — no per-file copy needed here.
 
 ## Phase 4: Initial commit
 
@@ -270,7 +297,7 @@ Skill: define-project
 2. Run `define-architect` — interactive technology / code-conventions dialog + initial code scaffold (package manifest, lint config, entrypoints, `.env.example`, etc.)
 3. Run `define-qa` — interactive testing-strategy dialog + test scaffold
 4. Run `define-deploy` — interactive deployment + security dialog + CI workflow / Dockerfile / platform config
-5. Run `define-tickets` — wire up the project's ticketing system (Jira / Linear / GitHub Issues), generate a project-local `/tickets` skill tailored to the chosen provider, then seed tickets from the specs created in step 1
+5. Run `define-tickets` — tailor the built-in TODO system's taxonomy + conventions (areas → ID prefixes, priorities, milestones, definition-of-ready/done, spec↔TODO link) by editing `docs/todos/milestones.json`. The TODO files under `docs/todos/` are the tracker — there's no external provider and no generated `/tickets` skill.
 
 Each subskill has its own subagent-driven critical review and user-signoff gate, so the user can iterate on each domain before moving to the next.
 
@@ -283,7 +310,7 @@ git add -A
 git commit -m "docs: project-specific content from initialize interview"
 ```
 
-This single commit captures everything `define-project` produced — docs, code scaffold, test scaffold, CI/Dockerfile, the generated `/tickets` skill, and the updated `WORKFLOW_PROJECT_ID` / `WORKFLOW_TICKET_*` lines in `.claude/workflow.config`. Worktrees created in Phase 9 will branch from this commit, so each one starts with the full project.
+This single commit captures everything `define-project` produced — docs, code scaffold, test scaffold, CI/Dockerfile, and the customized TODO taxonomy (`docs/todos/milestones.json`). Worktrees created in Phase 9 will branch from this commit, so each one starts with the full project.
 
 ## Phase 9: Create worktrees
 
@@ -341,5 +368,5 @@ Tell the user:
 
 - **`add-worktree`** / **`remove-worktree`** / **`list-worktrees`** — worktree CRUD.
 - **`todo`** — the day-to-day workflow this skill bootstraps the user into.
-- **`base-pull`** / **`base-push`** / **`base-merge`** / **`base-pr`** / **`base-test`** — the underlying branch flow.
-- **`agent-send`** / **`agent-msg`** / **`agent-rename`** — agent-to-agent comms between the spawned panes.
+- **`base-push`** / **`base-merge`** / **`base-pr`** / **`base-test`** — the underlying local-first branch flow (origin is write-only via `base-push`; there is no pull skill).
+- **`agent-send`** / **`agent-msg`** / **`agent-broadcast`** / **`agent-rename`** — agent-to-agent comms between the spawned panes.

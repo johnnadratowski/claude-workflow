@@ -35,7 +35,8 @@ If you write a rule with no scenario, you've written a draft — finish it or de
 | `security.md` | Threat model + sensitive-operation rules | `/base-pr` for security-relevant diffs |
 | `testing.md` | Where each kind of test lives and what it covers | `/base-test` for the gate sweep; `/base-pr` for "did this PR add tests where needed?" |
 | `api-conventions.md` | If your project exposes an API: request/response shape, error format, versioning | `/base-pr` for API-touching diffs. **Delete this file if your project has no API surface.** |
-| `TODO.md` | Active backlog | All skills as context for "is this in-scope or out-of-scope?" |
+| `api.md` | Rendered API reference (Swagger UI over a generated `swagger.json`) | Humans browsing the API. **Delete (with `swagger.json`) if your project has no API** — `/base-initialize` does this on "no API". |
+| `todos/` | Work tracking — one file per TODO + `milestones.json` taxonomy; the generated index is `TODO.md` | The `/todo` skill + `gen-todos.mjs`. `docs/TODO.md` is GENERATED — never hand-edit. |
 
 ## How `claude-workflow` skills use these
 

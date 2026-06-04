@@ -1,22 +1,57 @@
 ---
 name: base-pr
-description: PR-style review of what's new on the base branch since the last review, in a dedicated sandbox worktree. Snapshot the diff, run project gates, then optionally promote the reviewed state to the base via the transient-worktree helper. Base branch is configurable via `.claude/workflow.config` (default `main`).
+description: PR-style review of what's new on the LOCAL base branch since the last review, run in place. The current branch is a baseline snapshot; diff it against local `<base>`, audit (design / security / doc-drift) against the project doc corpus, optionally apply fixes and promote into local `<base>` via the local merge helper, then re-anchor the snapshot. No fetch, no push. Base branch configurable via `.claude/workflow.config` (default `main`).
 ---
 
-# base-pr — review then promote
+# base-pr — review then promote (local-first)
 
-PR-style review of **what's new on the base branch since the last review**, in a dedicated sandbox worktree (default name: `<base>-review`). After review, optionally promote the reviewed state to the base via the same `merge_into_branch_transient` helper from `base-push`.
+PR-style review of **what's new on a base branch since the last review**. The base branch defaults to `$WORKFLOW_BASE_BRANCH`; pass `--base <branch>` to review against any other shared branch.
+
+The current worktree's branch is a **baseline snapshot** — it marks where the base branch stood the last time a review ran. `/base-pr` diffs that snapshot against the current **local `<base>`** branch to surface everything that has landed on the base since, and treats those new commits as the pull request under review.
+
+> **Why local, not `origin/<base>`?** Coordination is purely local — local `<base>` is the source of truth, and `origin/<base>` is only a published snapshot that advances on an explicit `/base-push`. Sourcing the audit range from `origin/<base>` would make unpublished local commits invisible — they'd slip past the review until published. Operating on the local ref means any commit on `<base>` is in scope the moment it exists. This skill never fetches or pushes.
+
+Runs in place — in whatever worktree and branch you invoke it from (any branch except the base itself, `master`, or `main`). No sandbox, no separate review worktree.
+
+> **One snapshot branch per base.** The snapshot branch gets re-anchored to local `<base>` after each run (step 11). Use a worktree/branch dedicated to a given base — don't run `--base other-branch` from the branch you use as the `<base>` snapshot, or its re-anchor will drag it onto the other base.
+
+Performs, in order:
+
+1. Resolve the base branch and the current branch (the snapshot); refuse if the current branch is the base / `master` / `main`
+2. Resolve the review range `HEAD..<base>` from **local** `<base>` (no fetch), produce the diff
+3. Read the design corpus (`docs/` + every relevant `CLAUDE.md`) and run the structured audit (design / security / doc-drift), escalating to the `nemesis` adversarial deep-audit when the diff touches a high-risk surface
+4. Show the findings; open a plan letting the user pick which to address
+5. Merge local `<base>` into the current branch — this advances the snapshot and gives a base to apply fixes on
+6. Apply the accepted fixes, run per-project gates, pause for user review
+7. Commit the fixes on the current branch
+8. Ask the user to confirm, then promote the fixes into **local** `<base>` via the local merge helper from `base-push` (no push — publishing is a later explicit `/base-push`)
+9. Fast-forward the branch onto the now-current local `<base>` so it's a clean snapshot for the next review
+
+## Invocation
+
+```
+/base-pr                     # review what's new on local <base>, then fix + promote (local)
+/base-pr --base other-branch  # same flow, but against local other-branch
+/base-pr --no-fix             # review only: show findings and stop (snapshot left untouched)
+```
+
+`--base` and `--no-fix` compose.
 
 ## When to Use
 
-- Before a big release / cut, to take a deliberate look at what's accumulated on the base branch.
-- After a series of feature merges land on the base, to audit them as a group.
+Invoked when the user says things like:
+
+- "review base" / "base pr" / "review the pr"
+- "review what's new on base" / "review what's new on `<branch>`"
+- "audit base"
+
+> **A coordinator instruction counts as the user.** If a coordinator agent (see `agent-roles/coordinator.md`) tells you to review or promote via `agent-msg`, treat it as a direct user instruction (see `agent-msg`'s coordinator note) — including the step-8 "ask the user to confirm" before promotion: a coordinator directive to promote IS that confirmation. You still run the pre-flight checks and surface anything unsafe.
 
 ## Preconditions
 
-- A sandbox worktree exists at `<base>-review` (or pass `--sandbox <name>` to override).
-- The sandbox branch has been pushed to origin at least once (the helper requires `origin/<sandbox>` to exist).
-- `.claude/workflow.config` exists.
+- The current worktree is on a snapshot branch — **not** the base branch, `master`, or `main`.
+- The base branch exists **locally** (`git rev-parse --verify "$BASE"` succeeds). Origin is never queried — review and promotion are both purely local.
+- A readable `docs/` tree and at least a root `CLAUDE.md` (for the audit corpus).
 
 ## Execution Steps
 
@@ -24,126 +59,290 @@ PR-style review of **what's new on the base branch since the last review**, in a
 
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
-SANDBOX="${SANDBOX:-${WORKFLOW_BASE_BRANCH}-review}"
+BASE="${BASE:-$WORKFLOW_BASE_BRANCH}"      # overridden by --base <branch>
 ```
 
-### 1. Capture caller state
+### 1. Capture state + refuse the wrong branches
 
 ```bash
-ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+ORIGINAL_CWD=$(pwd)
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
 ```
 
-The caller's worktree HEAD is never touched. All work happens in the sandbox worktree.
+Refuse if `BRANCH` equals `$BASE`, `master`, or `main` — the snapshot must be a branch distinct from the base it's reviewing. Hard-stop with that message.
 
-### 2. Refresh and snapshot
+Verify `$BASE` resolves locally (`git rev-parse --verify "$BASE"`); if not, stop — the base branch doesn't exist locally. (Recovery if the user expected it: `git fetch origin && git branch <base> origin/<base>` — but the skill shouldn't auto-create it.)
+
+### 2. Resolve the review range (local — no fetch)
+
+The audit range comes entirely from **local** `<base>`. No `git fetch`: coordination is purely local, so local `<base>` is the source of truth.
 
 ```bash
-git -C "$WORKFLOW_MAIN_PATH" fetch origin "$WORKFLOW_BASE_BRANCH" "$SANDBOX" --quiet
+git log --no-merges --oneline HEAD..$BASE     # new commits on the base since the snapshot
+git diff --stat HEAD...$BASE                  # three-dot: diff from the merge base
 ```
 
-In the sandbox worktree:
-- Reset the sandbox branch to `origin/$WORKFLOW_BASE_BRANCH` (this is the "what's pending review" snapshot).
-- Compare against the previous review snapshot to enumerate new commits since last review.
+`HEAD..$BASE` (two-dot) lists the new base-branch commits. `HEAD...$BASE` (three-dot) diffs from the merge base, so anything the snapshot branch carries that the base lacks is excluded — the patch shows only what the base added.
 
-### 3. Read the project docs
+Topology checks:
 
-Before walking the diff, load the project-doc corpus into context so the review can flag rule violations and missing scenarios:
+- If `git log HEAD..$BASE` is empty: local `<base>` has not advanced past the snapshot. Nothing new to review — stop with that message.
+- If the snapshot branch is *ahead* of / diverged from local `<base>`: unusual — a prior promotion may not have completed, or the snapshot is anchored to a different base. Surface `git log --left-right --oneline HEAD...$BASE` and ask the user.
+- Normal case (snapshot is an ancestor of local `<base>`): proceed.
+
+**Note unpublished work if any:** check `git log --oneline origin/$BASE..$BASE` (read-only, against the cached `origin/<base>` ref — no fetch) — if non-empty, local `<base>` has commits not yet published. Mention this in the upfront report so the user knows the audit includes pre-publication work.
+
+**Report the range back to the user upfront** ("Reviewing what's landed on local `<base>` since the `<branch>` snapshot — N commits, M files changed; K of those unpublished [if applicable]") before the deeper audit starts.
+
+### 3. Capture the diff
 
 ```bash
-# Read everything under docs/ that the review should consult.
-cat docs/best-practices.md docs/architecture.md docs/security.md docs/testing.md docs/api-conventions.md 2>/dev/null
+git log --no-merges --pretty=format:'%h %s%n%b%n---' HEAD..$BASE
+git diff HEAD...$BASE   # full patch — feed this into the audit
 ```
 
-Skip files that don't exist for the project; the corpus shipped in `templates/example_docs/` from the `claude-workflow` repo (see this project's `docs/README.md` for what's there). Treat each doc's rules as constraints the diff must respect.
+For very large diffs (thousands of lines), summarize per-file before drilling in. Don't truncate silently — tell the user when the diff is bigger than what fits comfortably.
 
-### 4. Walk the diff against the doc corpus
+### 4. Load the design + rules corpus
 
-For each file in the diff, ask three questions sourced from the docs:
+**Tier 1 — Best-practices docs (canonical "how we do it"). ALWAYS load in full when the diff touches the matching area.** These are the primary reference for the audit — every diff is judged against them first.
 
-- **Best practices** — does this diff violate any rule in `docs/best-practices.md`? Cite the rule.
-- **Architecture** — does this diff violate any invariant in `docs/architecture.md`? Cite the invariant.
-- **Security** — if the diff touches an area `docs/security.md` flagged as sensitive, does it follow the rules for that area?
+- `docs/best-practices.md` — the project's coding conventions, scenario-organized (each section names a problem, states the rule, gives a recipe). The audit walks each scenario whose surface is touched by the diff and checks the diff follows the recipe (see step 5.A).
+- Projects that split best-practices per area (e.g. `docs/best-practices/backend.md`, `docs/frontend-coding-standards.md`, `docs/contracts-best-practices.md`) — load the ones the diff touches.
 
-Collect findings, don't stop at the first. Group by severity (blocking / fix-before-promote / nit).
+If a best-practices doc *doesn't exist* for an area the diff touches heavily, that itself is a doc-drift finding (the area needs one).
 
-### 5. Run gates
+**Tier 2 — Project rules + design corpus. Always read what's relevant.**
 
-> **Configure your project's gates here.** This template doesn't ship gate commands; they're project-specific. Edit this section in your project's copy of the skill to list:
->
-> - Lint commands
-> - Type-checks
-> - Unit / integration tests
-> - Any drift checks (codegen artifacts, migration ordering, etc.)
-> - Build commands
->
-> Run them in the sandbox worktree and surface failures before considering promotion. Often the same gates as `/base-test` — extract them into a shared script if it helps.
+- `CLAUDE.md` (root) and every nested `*/CLAUDE.md` whose area is touched by the diff
+- `docs/architecture.md` (and any `docs/architecture/*.md` topic docs), `docs/product.md`
+- `docs/security.md` / `docs/security/*.md` (**always** — the security pass is mandatory every run)
+- `docs/api-conventions.md` (if the project exposes an API), `docs/testing.md`
+- Anything under `docs/` whose filename matches files/areas in the diff (use `grep -l` over `docs/` for the changed module names)
 
-### 6. (Optional) Deep audit on high-risk surfaces
+If a referenced doc doesn't exist, log it as a doc-drift finding.
 
-When the diff touches a **high-risk surface**, escalate to the bundled `nemesis-auditor` skill (which itself runs `feynman-auditor` and `state-inconsistency-auditor` in a feedback loop). Scope the run to the changed files/functions named in the diff — it's an iterative, PoC-writing audit, so don't point it at the whole repo.
+### 5. Run the audit
 
-High-risk surfaces typically include:
+Produce three sections — write them to the user AND keep them as working notes for the plan step.
 
-- Authentication, authorization, session, token-handling code
-- State machines with coupled fields (mutating A without mutating B)
-- Arithmetic on values that affect access decisions or stored balances
-- Anything that crosses a trust boundary (user input → privileged operation)
-- Code paths that previously had bugs in the same general area
+**A. Design alignment** — primary lens: best-practices docs (Tier 1 from step 4)
 
-Skip the deep audit for docs-only / config-only / test-only diffs — the line-by-line walk above already exhausts the review surface there.
+The best-practices docs are scenario-organized: each scenario names a real failure mode, states the rule that prevents it, and gives a recipe. They are the canonical "this is how we do it." The audit's first responsibility is to judge the diff against them.
 
-Fold every verified finding from the deep audit into your "blocking" findings list with its identifier. Note in the report whether the deep audit ran or was skipped, and why.
+**A.1 — Walk every Tier 1 scenario whose surface the diff touches.** For each one, ask:
+- Does the diff follow the rule + recipe? If not, this is a Design finding. Reference the scenario by name and the file:line of the violating code; quote the specific rule sentence from the doc that the code breaks. Severity: blocker / nit / question.
+- If the doc names a **single egress point** (a wrapper every call must go through — e.g. an HTTP client wrapper, a notification helper, a DB-access layer), grep the diff for any bare alternative that bypasses it. A bypass of a documented single-egress point is always a finding.
+- If the doc gives a recipe (a numbered list, "How to apply"), check each step against the diff. Missing a step is a finding.
 
-### 7. Doc-drift check
+**A.2 — Other design / rules checks** (still important, not best-practices-doc-driven):
+- Cross-project / module-boundary rules from `CLAUDE.md` or `docs/architecture.md`.
+- Conventional Commits.
+- Framework conventions the project documents.
+- Anything in `docs/architecture.md` / `docs/product.md` whose surface the diff touches — including **architectural invariants** the diff must not break.
 
-After the diff walk + gates + (optional) deep audit, ask: **did this PR change something that the docs don't yet cover?** Look for:
+**A.3 — Coverage gap: new patterns the doc should capture.** Best-practices docs evolve with the code. If the diff introduces a pattern that's *correct* — done well, would survive review — but isn't yet documented in the relevant best-practices doc and ought to be, that's a recommendation, not a code change. Examples of "ought to be":
+- A new single egress point for an external service.
+- A new convention for a recurring problem (a novel idempotency pattern, a new auth tier, a new way of structuring a state machine).
+- A new "never do X" rule the diff codifies by removing every instance of X.
+- A novel resolution for a class of bug the doc doesn't yet name.
 
-- New conventions introduced by the diff that should become a rule in `docs/best-practices.md`
-- New architectural invariants the diff relies on, not yet in `docs/architecture.md`
-- New sensitive surfaces or trust boundaries the diff introduces, not in `docs/security.md`
-- New test categories or test infrastructure, not in `docs/testing.md`
+Capture these as **Best-practices coverage gap findings** — file:line of the new pattern, what it does, suggested doc location. These are recommendations to the doc author, not blockers on the code.
 
-For each, propose a scenario + rule + how-to-apply addition. **Only WRITE the addition if the user explicitly approves it** — the docs are theirs, not the skill's.
+Flag findings as **Design findings**, each with: file:line, what changed, which scenario / doc / rule / invariant it conflicts with (or which gap it surfaces), severity (blocker / nit / question / coverage-gap).
 
-### 8. Report review findings
+**B. Security audit** (mandatory — every run)
 
-Tell the user:
-- What new commits are on the base since the last review
-- The diff-walk findings (blocking / fix-before-promote / nit), each citing the doc-rule they touch
-- Which gates passed / failed in the sandbox
-- If deep-audit ran: its findings (or note that no deep-audit skill is installed)
-- Proposed doc-drift additions (waiting on the user's approval to write them)
-- Whether the state is promotable
+Walk the diff with:
+- OWASP top-10 surface: SQL/NoSQL injection, XSS, command injection, SSRF, path traversal, deserialization, IDOR, broken access control
+- Authn/authz: any new route or query that bypasses the project's permission model
+- Secrets: any value that looks like a key/token/password/JWT secret/webhook URL committed in plaintext
+- Server-side validation at trust boundaries (per `docs/security.md`)
+- Any project-specific sensitive surface `docs/security.md` flags (payment/money movement, approval flows, signer thresholds, multi-factor gates, etc.)
+- New external calls — env-gated config, properly authenticated, timeout/retry bounded?
+- Test coverage of the security-sensitive change
 
-### 9. (Optional) Promote
+Flag findings as **Security findings**, each with: file:line, the concern, exploitability (high / medium / low / theoretical), recommended fix.
 
-If the user says "promote" / "ship" after review, push the sandbox to origin and use the helper:
+**C. Doc-drift checklist** — verifies the implementer's documentation-sync step (`docs/doc-sync.md`, if the project has one) was actually done.
+
+For each code area changed, ask:
+- **Product-behavior drift (primary):** Does this diff change *how the product functions* — a flow, rule, limit, default, edge-case, or business decision — without the **product docs** being updated to encode it? An **unencoded product/business decision is a doc-drift finding** even if no existing doc was made untrue. (Conversely, a product doc section the diff made untrue is also a finding.)
+- **Architecture drift:** Did this diff add/remove a component, change a dependency or data flow, introduce or break an **architectural invariant**, or change the system topology — without `docs/architecture.md` (or the relevant `docs/architecture/*.md` topic doc) being updated? An architecture change shipped without the architecture doc reconciled is a doc-drift finding. Cross-check every component name, data-flow description, and invariant in the sections the diff touches.
+- **Best-practices accuracy:** Does any Tier 1 best-practices doc now contain a claim the diff makes untrue? Renamed function, moved file, removed scenario, changed signature, deleted egress point, replaced recipe step — these are the easy misses. Cross-check every concrete file path, function name, and code example in the scenarios touching the diff's surface (never synthesize an API name from memory; verify against code).
+- Did an API change without the API docs (e.g. swagger/OpenAPI annotations + regenerated spec) being updated? (Only if the project exposes an API.)
+- Did a new env var, port, config knob, or migration land without `CLAUDE.md` / the relevant doc being updated?
+- Did a security-sensitive surface change without `docs/security.md` being updated?
+- Was a TODO addressed without being closed in the TODO system?
+
+The **best-practices coverage gaps** identified in A.3 are also doc-drift in the broader sense — list them again here as concrete "consider adding scenario X to docs/<file>.md" recommendations if they didn't already get a Design finding.
+
+List every doc that appears stale and what specifically needs to change.
+
+**D. Adversarial deep-audit (nemesis) — conditional**
+
+The A–C passes are a manual walk. When the diff touches a **high-risk surface**, escalate to a full adversarial audit by invoking the **`nemesis-auditor`** skill (via the Skill tool). It runs the Feynman + State-Inconsistency auditors in an iterative back-and-forth loop and writes verified findings.
+
+Trigger nemesis when the diff touches any of:
+
+- **Value movement** — transfers, withdrawals, deposits, balances, payments
+- **Coupled state mutated across multiple writes**, or a finalizer/cron/queue that resumes after a crash
+- **Multi-step state machines** — auth, approval flows, signer-count gates
+- **Smart contracts** (if applicable) — any on-chain logic change
+- **Event/indexer handlers** — idempotency / coupled-entity updates
+- **Anything that crosses a trust boundary** (user input → privileged operation)
+
+Scope the nemesis run to the changed files/functions named in the diff — it's an iterative, PoC-writing audit, so don't point it at the whole repo. Skip it entirely for docs-only, UI-copy, config, or test-only diffs; the A–C walk is sufficient there.
+
+Fold every nemesis **verified** finding into the **Security findings** list with its id and discovery path. Note in the report whether nemesis ran or was skipped, and why.
+
+### 6. Show findings + open the fix plan
+
+Write the three audit sections to the user, then use the plan tooling (EnterPlanMode → ExitPlanMode) to present a numbered plan that:
+- Restates each finding as a discrete fix item (Design — including A.1 violations + A.3 coverage-gap recommendations / Security — including any nemesis findings / Doc-drift sections)
+- Marks severity / blocker status (coverage-gap recommendations are never blockers)
+- Asks the user which items to fix in this pass — and whether to roll best-practices/architecture doc updates into the same fix commit or a separate doc-only one
+
+Wait for user input. Items the user defers should be captured as a note (the user may want them tracked as TODOs).
+
+If `--no-fix` was passed: skip steps 7–11 and end here with the findings + deferred-findings summary. The snapshot branch is left untouched.
+
+### 7. Merge local `<base>` into the snapshot branch
+
+Bring the snapshot up to the current base — this advances the baseline and gives a clean base to apply fixes on:
 
 ```bash
-git -C "$WORKFLOW_MAIN_PATH/$SANDBOX-worktree" push origin "$SANDBOX"
-merge_into_branch_transient "$WORKFLOW_BASE_BRANCH" "origin/$SANDBOX" \
-  "Merge branch '$SANDBOX' into $WORKFLOW_BASE_BRANCH"
+git status --porcelain   # must be clean
+git merge "$BASE"
 ```
 
-(The helper definition lives in `base-push/SKILL.md`.)
+- If the tree is dirty: surface `git status` and ask the user to commit/stash first — do not auto-stash.
+- If the merge conflicts: stop. Surface the conflicted files and let the user resolve. Do not auto-resolve.
+- Normal case (snapshot is an ancestor of local `<base>`): this fast-forwards cleanly.
 
-After a successful promotion, re-anchor the sandbox branch to the new `origin/$WORKFLOW_BASE_BRANCH` for the next review cycle.
+### 8. Apply accepted fixes
+
+Apply fixes via Edit / file operations on the current branch. Run per-project gates as you go (the same gates `/base-test` runs — lint, type-check, unit tests, build, any drift guards for the touched area). Re-run codegen + drift checks if you edited a generated source.
+
+Do **NOT** run destructive admin/DB commands without explicit user permission — they can wipe local state shared across worktrees.
+
+### 9. Pause for user review, then commit the fixes
+
+Surface `git status` and `git diff`. Ask the user to confirm before committing. If they want changes, iterate. Do not commit without explicit approval.
+
+On approval:
+
+- Conventional Commits subject + body focused on the *why*
+- HEREDOC for the message
+- Stage specific files (no `git add -A` / `git add .`)
+- `git commit` (NEW commit — never `--amend`)
+
+Pre-commit hook fails: surface output, no `--amend`, no `--no-verify`. User resolves and re-runs with a fresh commit.
+
+If the user accepted no fixes (review was clean, or every finding deferred): skip steps 9–10 entirely and go to step 11 to leave the snapshot advanced to the current base.
+
+### 10. Ask to merge the fixes into the base branch (local-only)
+
+Promotion is **purely local** — it merges the review/fix branch into the **local** base branch via `merge_into_branch_local`; nothing is fetched or pushed. Publishing the base to `origin`, if ever wanted, is a separate explicit `/base-push` the user runs later.
+
+Ask the user to confirm promotion. On approval:
+
+```bash
+merge_into_branch_local "$BASE" "$BRANCH" \
+  "Merge branch '$BRANCH' (base-pr review fixes) into $BASE"
+```
+
+The helper is defined in `base-push/SKILL.md`. It advances **local** `<base>` in a short-lived transient worktree (no fetch, no push), so the base is never checked out in the current worktree. Because all worktrees share one `.git`, the local `$BRANCH` is mergeable as-is — no push needed. Route by return code:
+
+- **0**: success — local `<base>` now includes the fix commit; continue to step 11.
+- **1**: worktree-add failure — `<base>` is checked out somewhere, or a stale transient worktree lingers. Surface the error + cleanup commands, stop.
+- **2 (conflict)**: stop. Surface the printed transient-worktree path so the user can resolve, commit, and clean up manually. The fixes are safe on the local `$BRANCH` regardless.
+
+### 11. Re-anchor the snapshot for the next review
+
+Step 10 advanced **local** `<base>` to include the fix commit. Fast-forward the snapshot branch onto the now-current local `<base>` so it exactly marks the just-reviewed state — the next `/base-pr` then reviews only what lands after this point:
+
+```bash
+git merge --ff-only "$BASE"    # FF snapshot to the now-advanced local <base>
+```
+
+`--ff-only` is non-destructive: if it can't fast-forward, it no-ops with an error to surface — do NOT `reset --hard` or force; the promotion already succeeded.
+
+### 12. Report
+
+- The base branch, the snapshot branch, and the range (`<snapshot-sha>..<base>`, N commits, M files, and K unpublished if local was ahead of origin)
+- A short summary of findings by category (counts + blocker count)
+- Whether the nemesis deep-audit ran (with its finding count) or was skipped, and why
+- Which findings were fixed vs deferred
+- The fix commit on the branch (hash + subject), if any
+- The merge commit on **local** `<base>`, if promoted (and a reminder that it's unpublished — `/base-push` to publish when ready)
+- That the snapshot branch is now re-anchored to local `<base>`
+- That the worktree is still on `$BRANCH`
+
+If `--no-fix` was passed, the report ends at the findings + deferred-findings summary and notes the snapshot is unchanged.
 
 ## Flags
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `--sandbox <name>` | `<base>-review` | Override the sandbox worktree/branch name. |
-| `--main-path <path>` | `$WORKFLOW_MAIN_PATH` from config (or git toplevel) | Helper's anchor for the transient-worktree promotion. |
-| `--no-promote` | off | Just review + report; skip promotion entirely. |
+| `--base <branch>` | `$WORKFLOW_BASE_BRANCH` | Base branch to review against and promote into. |
+| `--no-fix` | off | Run the audit and present the plan, then stop. Do NOT merge the base in, apply, commit, promote, or re-anchor. |
+| `--main-path <path>` | `$WORKFLOW_MAIN_PATH` | Helper's anchor (for the transient-worktree promotion). |
+
+## Failure Handling
+
+Stop immediately and leave state as-is on:
+
+- **Current branch is the base / `master` / `main`:** hard stop — the snapshot must be a separate branch.
+- **Base branch missing locally:** stop — `git rev-parse --verify <base>` failed. Recovery: `git fetch origin && git branch <base> origin/<base>`.
+- **Local `<base>` has not advanced past the snapshot:** stop with "nothing new to review".
+- **Snapshot branch is ahead of / diverged from local `<base>`:** show `git log --left-right` and ask.
+- **Dirty tree at the merge step:** surface `git status`; ask the user to commit/stash. No auto-stash.
+- **Merge conflict pulling the base in:** stop. Surface conflicted files. No auto-resolve.
+- **Pre-commit hook fails on the fix commit:** surface output. No `--amend`, no `--no-verify`.
+- **Promotion helper return 1 (worktree add):** stop. `<base>` is checked out somewhere, or a stale transient worktree lingers — surface the cleanup commands.
+- **Transient-merge conflict (helper return 2):** stop. The branch (and its fixes) are safe on the local `$BRANCH`; resolve in the printed tmp path.
+- **Re-anchor `--ff-only` refused (step 11):** surface it. Don't force; the local promotion already succeeded.
 
 ## What This Skill Will NOT Do
 
-- Check out the base branch directly in any persistent worktree.
-- Push without explicit promotion (review is read-only by default).
-- Auto-resolve merge conflicts on promotion — the helper bails with the transient-worktree path.
+- Auto-stash or auto-discard uncommitted user work.
+- Check out the base branch in the current worktree (the transient-worktree helper exists precisely to avoid this).
+- Use `--amend`, `--no-verify`, `--no-gpg-sign`, or `git reset --hard` / `--force`.
+- Bypass failing tests or hooks.
+- Run destructive admin/DB commands without explicit approval.
+- Skip the security pass — it runs every time, even when the diff is small.
+- Commit fixes without showing the user the diff first.
+- Promote to the base branch without explicit user confirmation.
+
+## Quick Reference
+
+| Phase | Command |
+|-------|---------|
+| Load config | `source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"` · `BASE` from `--base` (default `$WORKFLOW_BASE_BRANCH`) |
+| Refuse if forbidden | check `$BRANCH ∉ {$BASE, master, main}` |
+| Verify base exists locally | `git rev-parse --verify "$BASE"` |
+| Range (LOCAL base, no fetch) | `git log HEAD..$BASE` · `git diff HEAD...$BASE` |
+| Note unpublished gap | `git log --oneline origin/$BASE..$BASE` (cached ref, no fetch) |
+| Read corpus — Tier 1 | `docs/best-practices.md` (+ any per-area best-practices doc the diff touches) |
+| Read corpus — Tier 2 | root + nested `CLAUDE.md`, `docs/architecture.md`, `docs/product.md`, `docs/security.md`/`security/*`, `docs/api-conventions.md` |
+| Best-practices alignment | A.1 — walk every Tier 1 scenario whose surface the diff touches |
+| Architecture/doc-drift | C — flag arch changes shipped without `docs/architecture.md` reconciled |
+| Deep-audit (conditional) | high-risk surface → invoke `nemesis-auditor` scoped to changed files |
+| Plan | EnterPlanMode → list Design / Security / Doc-drift findings → ExitPlanMode |
+| Advance snapshot | `git merge "$BASE"` |
+| Apply fixes | per-project gates (same as `/base-test`) |
+| Confirm + commit | `git status` + `diff`, await approval, conventional-commits HEREDOC |
+| Promote to base (local) | ask user → `merge_into_branch_local "$BASE" "$BRANCH" "..."` (no push) |
+| Re-anchor snapshot | `git merge --ff-only "$BASE"` |
+
+## Naming note
+
+The skill is called **`base-pr`** because the user invokes it to "review the pending PR on the base" — the new commits on `<base>` are treated as a pull request awaiting review. The current branch is a **baseline snapshot**: it records where the base branch stood at the previous review. Each `/base-pr` run reviews `snapshot..<base>` (local), then (after fixes are promoted) re-anchors the snapshot to the current local `<base>` — so the branch is always "everything on the base that has already been reviewed." Keep one snapshot branch per base.
 
 ## Companion Skills
 
-- **`base-push`** — defines the `merge_into_branch_transient` helper this skill uses for promotion.
-- **`base-pull`** — for keeping a feature branch synced with the base; complementary to this skill.
+- **`base-push`** — defines the `merge_into_branch_local` helper this skill uses for promotion; also the only skill that publishes the base to origin.
+- **`base-merge`** — local-only sync of `<base>` ↔ a feature branch (no push).
+- **`base-test`** — full gate sweep against a merged-in local `<base>`.
+- **`nemesis-auditor`** — the adversarial deep-audit invoked by step 5D for high-risk diffs (wraps `feynman-auditor` + `state-inconsistency-auditor`).

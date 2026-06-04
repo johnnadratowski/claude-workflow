@@ -13,6 +13,7 @@ If your project exposes an API (HTTP, RPC, library, CLI — anything callers dep
 - **Naming** — conventions for endpoints, parameters, fields.
 - **Authentication / authorization** — how callers authenticate. Reference `security.md` for the rules.
 - **Conventions worth knowing** — the API quirks that have caused bugs or confusion. Scenario + rule + how-to-apply.
+- **Generated spec** — if you generate an OpenAPI/`swagger.json` from in-code annotations, note the regenerate command here. It's rendered at [`api.md`](api.md) and is part of the doc-sync step (regenerate on any route/shape change) and a `/base-pr` doc-drift check.
 
 ---
 

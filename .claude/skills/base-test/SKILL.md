@@ -32,7 +32,7 @@ Invoked when the user says things like:
 
 ## Sync opt-out
 
-The default contract: **always fetch `origin` (refresh) and merge local `$WORKFLOW_BASE_BRANCH` into the current branch before running gates.** That's what makes the run a check against "what's actually on local base right now, merged into my work" instead of "my branch as it sits." Most invocations should take this default.
+The default contract: **always merge local `$WORKFLOW_BASE_BRANCH` into the current branch before running gates.** That's what makes the run a check against "what's actually on local base right now, merged into my work" instead of "my branch as it sits." Most invocations should take this default. No fetch — local `<base>` is the source of truth (it's advanced by peers via `/base-push` / `/base-merge up`, all visible through the shared `.git`).
 
 The caller may opt out of the sync when:
 
@@ -92,7 +92,6 @@ Everything below runs with `cwd = $WT_ROOT`.
 
 ```bash
 PRE_MERGE_SHA="$(git rev-parse HEAD)"
-git fetch origin --quiet      # refresh origin/<base> for the local-vs-origin gap report below
 git merge --no-ff "$WORKFLOW_BASE_BRANCH" -m "Merge branch '$WORKFLOW_BASE_BRANCH' into $CURRENT_BRANCH"
 CANDIDATE_SHA="$(git rev-parse HEAD)"
 ```
@@ -100,12 +99,12 @@ CANDIDATE_SHA="$(git rev-parse HEAD)"
 Notes:
 
 - The merge source is **local `$WORKFLOW_BASE_BRANCH`** (`refs/heads/$WORKFLOW_BASE_BRANCH`), not `origin/<base>`. Unpushed commits on local are in scope.
-- The `git fetch` keeps `origin/<base>` fresh — used to detect the local-vs-origin gap, not as the merge source.
+- **No fetch** — the local-first model never reads origin during a test run. Local `<base>` already reflects everything peers have advanced via `/base-push` / `/base-merge up` (shared `.git`).
 - `--no-ff` keeps merge topology consistent.
 - If the merge produces conflicts, **stop**, report the conflicted paths, and ask the user how to resolve. Do not auto-resolve.
 - If the current branch is already up to date with local base, git will say "Already up to date" — proceed; `CANDIDATE_SHA` will equal `PRE_MERGE_SHA`.
 
-**Note the local-vs-origin gap if any:** after the merge, check `git log --oneline origin/$WORKFLOW_BASE_BRANCH..$WORKFLOW_BASE_BRANCH` — if non-empty, the merged local base includes unpushed commits. Surface this in the final report.
+**Note the local-vs-origin gap if any:** check `git log --oneline origin/$WORKFLOW_BASE_BRANCH..$WORKFLOW_BASE_BRANCH` (read-only against the cached origin ref — no fetch) — if non-empty, the merged local base includes unpushed commits. Surface this in the final report.
 
 **If the caller opted out of the sync:** skip the fetch + merge in this step. Set `CANDIDATE_SHA="$(git rev-parse HEAD)"`, record `OPTED_OUT_OF_SYNC=true` for the final report, and mention this prominently — "this run was NOT measured against the latest local base".
 
@@ -238,7 +237,7 @@ Tell the user:
 
 - Run **in place** in the current worktree, against the currently checked-out branch.
 - **Hard-stop** if the current branch is `main`, `master`, or `$WORKFLOW_BASE_BRANCH`, if the worktree is dirty, if local base doesn't exist, or if any project-specific preflight check fails.
-- **By default, fetch origin (refresh) and merge local base into the current branch before running any gate.** This is on every invocation unless the caller used a sync opt-out signal.
+- **By default, merge local base into the current branch before running any gate** (no fetch — local `<base>` is the source of truth). This is on every invocation unless the caller used a sync opt-out signal.
 - Honor a caller's sync opt-out by skipping the fetch+merge step entirely and flagging it in the report.
 - Surface the local-vs-origin gap (unpushed commits on local base) so the user knows whether the run included pre-publication work.
 - Run every project gate from section 3 and report pass/fail for each.
@@ -266,20 +265,20 @@ Tell the user:
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Load config             | `source $(git rev-parse --show-toplevel)/.claude/scripts/_config.sh`                                                                             |
 | Preflight               | branch ∉ {main, master, $WORKFLOW_BASE_BRANCH}; clean tree; `git rev-parse --verify $WORKFLOW_BASE_BRANCH`; project-specific prerequisites       |
-| Sync (default; opt-out) | `git fetch origin --quiet && git merge --no-ff $WORKFLOW_BASE_BRANCH` — every invocation unless caller said "skip sync" / "test as-is"           |
+| Sync (default; opt-out) | `git merge --no-ff $WORKFLOW_BASE_BRANCH` (no fetch) — every invocation unless caller said "skip sync" / "test as-is"                            |
 | Note unpushed gap       | `git log --oneline origin/$WORKFLOW_BASE_BRANCH..$WORKFLOW_BASE_BRANCH` — surface count in the final report                                      |
 | Run gates               | Section 3 — project-specific commands per gate                                                                                                  |
 | Diagnostics on failure  | `git log --oneline "$PRE_MERGE_SHA..$CANDIDATE_SHA"`, `git diff --stat "$PRE_MERGE_SHA..$CANDIDATE_SHA"`, project-specific log paths              |
 
 ## Companion Skills
 
-- **`base-pull`** — merge `origin/<base>` into the caller's feature branch. No tests.
-- **`base-push`** — merge the caller's feature branch up into the base and push. No tests.
-- **`base-pr`** — review pending changes on the base in a sandbox, run gates there, promote on approval.
+- **`base-merge`** — local-only sync of `<base>` ↔ the caller's branch (down/up). No tests.
+- **`base-push`** — merge the caller's feature branch up into local `<base>` and publish to origin. No tests.
+- **`base-pr`** — review pending changes on local `<base>`, run gates, promote on approval.
 
-## Difference vs. `base-push` / `base-pull` / `base-pr`
+## Difference vs. `base-push` / `base-merge` / `base-pr`
 
-- **`base-pull`** merges `origin/<base>` down into the caller's feature branch. No tests.
-- **`base-push`** merges the caller's feature branch up into the base and pushes. No tests.
-- **`base-pr`** reviews pending changes on the base (including unpushed commits) in a sandbox, applies fixes, promotes to origin.
+- **`base-merge`** syncs `<base>` ↔ the caller's branch locally (no network). No tests.
+- **`base-push`** merges the caller's feature branch up into local `<base>` and publishes it to origin. No tests.
+- **`base-pr`** reviews pending changes on local `<base>` (including unpushed commits), applies fixes, promotes locally.
 - **`base-test`** merges **local** `<base>` into the current branch and then runs every project gate against the merged result. Including unpushed local commits on `<base>` in the test sweep is the whole point of sourcing from local. It reports; it does not push or promote.

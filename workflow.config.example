@@ -3,10 +3,17 @@
 # .claude/scripts/_config.sh — what you put here is just shell.
 
 # =====================================================================
-# Base-branch workflow (/base-pull, /base-push, /base-merge, /base-pr)
+# Base-branch workflow (/base-push, /base-merge, /base-test, /base-pr)
 # =====================================================================
+#
+# The workflow is LOCAL-FIRST: every worktree shares one .git, so the local
+# `<base>` ref is the single coordination point. /base-merge, /base-test and
+# /base-pr all operate on local refs only — they never touch the network.
+# /base-push is the ONLY skill that touches origin (it publishes local <base>).
+# There is no pull skill: origin is write-only.
 
-# The shared "trunk" branch other branches merge into and pull from.
+# The shared "trunk" branch every other branch merges into. It lives only as a
+# ref — never check it out in a persistent worktree (see add-worktree).
 # Common choices: main, master, trunk, develop.
 WORKFLOW_BASE_BRANCH="main"
 
@@ -60,9 +67,14 @@ WORKFLOW_BASE_BRANCH="main"
 # WORKFLOW_AGENT_SKIP_BRANCH_WARN=""
 
 # Name of the agent that should run /base-test after a /todo continue.
-# The todo skill's Mode 4 will dispatch the test notification to this
-# agent unless the user overrides per-invocation.
+# The todo skill dispatches the test notification to this agent unless
+# the user overrides per-invocation.
 # WORKFLOW_TESTING_AGENT=""
+
+# Days before drain-inbox.sh garbage-collects an undelivered message left
+# in a mailbox (default 7). Only abandoned mail (in mailboxes of agents
+# that never drain) is ever swept — an active agent empties its box each turn.
+# AGENT_INBOX_GC_DAYS="7"
 
 # =====================================================================
 # Worktree workflow (/add-worktree, /remove-worktree, /list-worktrees)
@@ -84,22 +96,14 @@ WORKFLOW_BASE_BRANCH="main"
 # WORKFLOW_WORKTREE_SETUP_CMD="pnpm install --frozen-lockfile"
 
 # =====================================================================
-# Ticketing integration (/define-tickets, generated /tickets skill)
+# TODO system (/todo, .claude/scripts/gen-todos.mjs)
 # =====================================================================
 
-# The ticketing-system project this repo's specs map to. Set by
-# /define-tickets after the user picks a provider; consumed by the
-# generated /tickets skill to scope every create/list/update call.
-# Example values: "PROJ" (Jira), "ENG" (Linear), "owner/repo" (GitHub).
-# WORKFLOW_PROJECT_ID=""
+# This worktree's lane number — the namespace for minted TODO IDs
+# (AREA-<lane>NNN, e.g. SEC-2001 in lane 2). Give each parallel worktree
+# a DISTINCT lane so concurrent ID mints can't collide. Default (unset): 0.
+# WORKFLOW_TODO_LANE="0"
 
-# The ticketing provider. Used by /define-tickets re-entry mode and by
-# the generated /tickets skill for human-readable context.
-# Common values: jira, linear, github, gitlab, asana, none.
-# WORKFLOW_TICKET_PROVIDER=""
-
-# How the generated /tickets skill talks to the provider:
-#   mcp — call MCP server tools (e.g. atlassian/linear/github MCPs)
-#   cli — wrap the provider's CLI (jira, linear, gh, glab)
-#   api — direct HTTP calls with a token in .env
-# WORKFLOW_TICKET_INTEGRATION=""
+# Work tracking is the built-in file-per-TODO system (docs/todos/ + the
+# generated docs/TODO.md). There is no external ticketing provider — the
+# /define-tickets skill only tailors the taxonomy in docs/todos/milestones.json.
