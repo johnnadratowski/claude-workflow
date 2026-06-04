@@ -108,7 +108,7 @@ Design decisions baked into the helper:
 
 > **Precondition:** `<target>` is not checked out in any worktree. For `<base>` / `<base>-review` / `<base>-test` this is the project convention. For an unusual `--base` passed to `/base-pr`, verify the base isn't checked out first.
 >
-> **Only a checkout of the TARGET branch breaks this** — a worktree on any *other* branch (a coordinator worktree on a stable branch, or detached at `origin/<base>`) is harmless. Never check out the literal base branch in a worktree: it makes `worktree add <base>` fail here, silently breaking the merge path for every agent. Ride a stable branch or a detached ref for a base-tracking worktree — see `add-worktree`.
+> **Only a checkout of the TARGET branch breaks this** — a worktree on any *other* branch (a coordinator worktree on a dedicated `<base>-cc` branch, or detached at `origin/<base>`) is harmless. Never check out the literal base branch in a worktree: it makes `worktree add <base>` fail here, silently breaking the merge path for every agent. Ride a `<base>-cc` branch or a detached ref for a base-tracking worktree — see `add-worktree`.
 >
 > **Stale transient worktree (return 1 after a crash):** if a previous merge crashed mid-flight it may have left a worktree attached to the base, blocking everyone. Recover with `git -C "$WORKFLOW_MAIN_PATH" worktree list` to find the `wf-merge-local-*` path, then `git -C "$WORKFLOW_MAIN_PATH" worktree remove --force <path>` (and `git worktree prune`).
 

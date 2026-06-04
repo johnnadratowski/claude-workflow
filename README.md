@@ -3,6 +3,7 @@
 A drop-in `.claude/` for Claude Code projects that adds:
 
 - **Inter-agent communication** — Claude sessions in different tmux panes can message each other (`/agent-send`, `/agent-msg`, `/agent-broadcast`, `/agent-rename`), with **at-least-once delivery**: every message is staged in a durable per-recipient mailbox and re-injected by a `Stop`-hook drain if the live nudge is missed.
+- **Fleet orchestration** — `/agent-fanout` shows fleet status, fans messages out by role, and can idle-gated force-restart agents (`claude --resume`, always confirmed first).
 - **Local-first base-branch workflow** — `/base-push`, `/base-merge`, `/base-pr`, `/base-test`. All worktrees share one `.git`, so the local `<base>` ref is the single coordination point; merge/test/review operate on local refs and never touch the network. **`/base-push` is the only skill that touches origin** (it publishes local `<base>`); origin is write-only — there is no pull skill. The base branch is never checked out in a persistent worktree; promotions go through a short-lived transient worktree.
 - **Auto-registration + role hooks** — Claude sessions register themselves at startup with their git branch as the agent name (rename anytime with `/agent-rename`), and get **agent-type-specific startup instructions** injected from `.claude/agent-roles/<role>.md` (coordinator / review / feature / test, derived from the name).
 - **Autonomous driver** — `/afk` carries a task to done unattended: implement → doc-sync → review loop → test loop → land, stopping only for genuinely blocking questions.
@@ -154,6 +155,7 @@ To test inter-agent comms, open a SECOND tmux pane and start another `claude` in
 │   ├── agent-msg/               Inbound-message handler (banner + branch).
 │   ├── agent-send/              Send to a peer agent (--reply / --followup).
 │   ├── agent-broadcast/         Fan one message out to all live peers.
+│   ├── agent-fanout/            Fleet status + role-targeted fan-out + force-restart.
 │   ├── agent-rename/            Rename this agent everywhere.
 │   ├── base-push/               Land current branch into LOCAL <base>, then
 │   │                             publish to origin (defines the
@@ -215,6 +217,7 @@ docs/
 | **`/agent-send <target> "<body>" [--reply\|--followup]`** | Send a message to another Claude session on this machine. Self-heals the registry, stages the body in a durable per-recipient mailbox, then nudges via `tmux send-keys` (skipped if the target is busy / scrolled — the drain delivers instead). `--reply` = terminal (no response); `--followup` = threaded message expecting a response. |
 | **`/agent-msg <sender> <filename> [reply\|followup]`** | Inbound-message handler. Invoked AUTOMATICALLY when a peer's `tmux send-keys` (or the Stop-hook drain) lands `/agent-msg ...` in your prompt. Reads + deletes the file, prints a visible banner, then processes (request/followup) or integrates (reply). You never type this yourself. |
 | **`/agent-broadcast --stdin <<'BODY'…`** | Fan one message out to ALL live peers (`--exclude`, `--followup`, `--dry-run`). Reuses `/agent-send` per recipient. High blast-radius — requires explicit user authorization. |
+| **`/agent-fanout <status\|msg\|merge-down\|restart>`** | Fleet orchestration: read-only `status` snapshot (roles/busy/branch), role-targeted message fan-out, canned post-`/base-push` `merge-down` sync, and idle-gated `restart` (kill the pane's claude, relaunch `claude --resume` to preserve context). Messages need explicit authorization; restarts always confirm first. |
 | **`/agent-rename <new-name>`** | Rename this agent everywhere: registry file in `~/.claude/running-agents/`, persistent base-branch file in `~/.claude/agents/`, tmux pane title, tmux window name, Claude session label (via the built-in `/rename`), and the local git branch (`git branch -m`). |
 | **`/todo <verb-or-text>`** | File-per-TODO lifecycle manager. `add` mints a stable `AREA-<lane>NNN` ID and writes `docs/todos/<ID>.md`; the spine is add → plan → implement → **doc-sync (incl. architecture)** → review → `continue` (promote + notify tester) → close (archive to `completed/`). Regenerates `docs/TODO.md` + validates frontmatter after every mutation. The TODO files are the tracker — no external ticket system. |
 | **`/afk --pr <agent> [--test <agent>]`** | Autonomous driver. Carries the current task to done unattended: implement → doc-sync → review loop (with a peer reviewer, failover) → test loop → land into local `<base>` (publish if clean). Stops and notifies only for genuinely blocking questions or non-converging loops. |

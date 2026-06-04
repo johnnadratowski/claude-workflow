@@ -79,7 +79,7 @@ ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 Refuse if `ORIGINAL_BRANCH` is one of: `$WORKFLOW_BASE_BRANCH`, `${WORKFLOW_BASE_BRANCH}-review`, `${WORKFLOW_BASE_BRANCH}-test`. Hints:
 
-- on the base itself: this skill exists to advance the base FROM another branch — can't run with the base checked out. (In the worktree model, the base shouldn't be checked out anywhere — the transient `worktree add <base>` in step "Up" requires it free. A coordinator worktree on a stable branch or detached at `origin/<base>` is fine; only the literal base branch being checked out breaks this.)
+- on the base itself: this skill exists to advance the base FROM another branch — can't run with the base checked out. (In the worktree model, the base shouldn't be checked out anywhere — the transient `worktree add <base>` in step "Up" requires it free. A coordinator worktree on a dedicated `<base>-cc` branch or detached at `origin/<base>` is fine; only the literal base branch being checked out breaks this.)
 - on `<base>-review`: use `/base-pr`. Its baseline machinery is the right tool for advancing the review sandbox.
 - on `<base>-test`: use `/base-test`. It owns the `<base>-test` ↔ `<base>` relationship.
 

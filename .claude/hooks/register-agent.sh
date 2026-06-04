@@ -166,7 +166,7 @@ session_name_sanitized=$(printf '%s' "$session_name" | tr -c 'A-Za-z0-9_-' '-' |
 # the repo (so they propagate via merge-down). Only loaded on sessionstart.
 resolve_role() {
   case "$1" in
-    cc|master|coordinator|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator ;;
+    cc|coordinator|*-cc|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator ;;
     test|*-test|*-test-*|test-*)                                       echo test ;;
     review|pr|*-pr|*-pr-*|pr-*|*-review|*-review-*|review-*)           echo review ;;
     *)                                                                 echo feature ;;

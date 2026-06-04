@@ -86,6 +86,28 @@ echo "Branch: $NAME"
 echo "cd $TARGET"
 ```
 
+## Never check out the base branch — and the command-and-control worktree
+
+**Never check out the literal base branch (`$WORKFLOW_BASE_BRANCH`) in a worktree.** The
+local-first merge helper (`merge_into_branch_local` in `base-push`) checks the base out in a
+transient worktree; a persistent checkout elsewhere makes `git worktree add <base>` fail for
+*everyone*, silently breaking promotion across the fleet. Any other branch is safe.
+
+A **command-and-control (coordinator) worktree** — an agent that orchestrates the
+feature/PR/test agents rather than owning a lane — rides a dedicated **`<base>-cc`** branch
+(e.g. `main-cc`), created from `origin/<base>`:
+
+```
+/agent-fanout            # (later) the orchestration the cc drives
+/add-worktree cc --branch <base>-cc --from origin/<base>
+```
+
+(then `/agent-rename cc` so it registers as `cc` and picks up the coordinator role.)
+`<base>-cc` keeps the cc off the trunk while still being a normal branch — so the cc can also
+do feature work on it and merge up into the base like any feature agent when handed a coding
+task (see `agent-roles/coordinator.md`). A purely read-only orchestrator can instead detach at
+`origin/<base>`. **Never** point a coordinator worktree at the literal base branch.
+
 ## Failure handling
 
 - Name validation fail: report which rule, don't create.
