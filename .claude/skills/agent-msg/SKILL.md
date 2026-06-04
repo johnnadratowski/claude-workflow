@@ -22,11 +22,21 @@ Where:
 
 ### 1. Read and delete the message file
 
+Use the backing script (allow-listed, so it never prompts — unlike an ad-hoc `cat … && rm`,
+whose `rm` does). It prints the body and deletes the file atomically:
+
 ```bash
-body=$(cat ~/.claude/agent-inbox/<filename>) && rm ~/.claude/agent-inbox/<filename>
+body="$("$(git rev-parse --show-toplevel)/.claude/scripts/agent-msg.sh" <filename>)"
 ```
 
-If the file doesn't exist, abort with a one-line note ("message file gone — duplicate delivery?") and do not continue.
+If it exits non-zero / prints "message file gone", abort with that one-line note ("message
+file gone — duplicate delivery?") and do not continue.
+
+> **Several at once?** When the `drain-inbox.sh` Stop hook lists multiple `/agent-msg` lines,
+> consume them all in one allow-listed call — `agent-msg.sh drain` reads+deletes every message
+> in your mailbox oldest-first, printing a `===== from: <sender>  kind: <k> =====` header + body
+> per message. Then handle each per its kind (below): `req`/`fwd` → act + reply, `rep` →
+> integrate only. Still print the banner for each so the human sees them.
 
 ### 2. Print a banner — this MUST be the FIRST text in your response, before any thinking or other output
 

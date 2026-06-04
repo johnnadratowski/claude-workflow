@@ -1,6 +1,6 @@
 ---
 name: agent-fanout
-description: Orchestrate the agent fleet — show fleet status, fan a message or canned action out to a targeted set of peers (by role), and optionally force-restart idle agents (kill the pane's claude, relaunch with `claude --resume` to preserve context). High blast-radius; every fan-out needs explicit user authorization and every restart is confirmed first. Use for "show me the fleet", "tell the feature agents to merge down", "restart the test agent".
+description: Orchestrate the agent fleet — show fleet status, fan a message or canned action out to a targeted set of peers (by role), and optionally force-restart idle agents (kill the pane's claude, relaunch with `claude --continue` to preserve context). Backed by `.claude/scripts/agent-fanout.sh` (one allow-listed command per action). High blast-radius; every fan-out needs explicit user authorization and every restart is confirmed first. Use for "show me the fleet", "tell the feature agents to merge down", "restart the test agent".
 ---
 
 # agent-fanout — fleet orchestration
@@ -18,19 +18,34 @@ This is **high blast-radius**. Two hard gates:
 - **Restarts ALWAYS ask first** — never kill+relaunch an agent without an explicit confirmation
   in this turn, even when relaying a coordinator instruction.
 
+## Backing script
+
+The mechanics live in **`.claude/scripts/agent-fanout.sh`** — one allow-listed command per
+action, so you don't re-prompt on ad-hoc bash. Subcommands:
+
+```
+"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" status
+"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" merge-down [--role R] [--exclude a,b] [--dry-run]
+"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" send  [--role R] [--only a,b] [--exclude a,b] [--dry-run] --stdin <<'BODY' … BODY
+"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" restart --yes [--role R] [--only a,b] [--exclude a,b] [--dry-run]
+```
+
+The script always excludes self, idle-gates `restart` (skips BUSY / copy-mode panes), and
+relaunches with `claude --continue` (no session-id needed — it resumes the pane's latest
+conversation). **`restart` refuses to run without `--yes`** — the human gate below decides when
+to pass it; the allow-list removes the bash prompt, NOT the confirmation.
+
 ## Modes
 
 ```
 /agent-fanout status                              # read-only fleet snapshot (no auth needed)
 /agent-fanout msg --role <r> --stdin <<'BODY'…    # fan a message out to a role/set
 /agent-fanout merge-down [--role all]             # canned: peers run /base-merge down
-/agent-fanout pause "<reason>"                    # canned: tell peers to pause
-/agent-fanout restart [--role <r>|<names>]        # idle-gated, confirmed, claude --resume
+/agent-fanout restart [--role <r>|<names>]        # idle-gated, confirmed, claude --continue
 ```
 
-Targeting flags (all modes): `--role feature|review|test|coordinator|all` · `<name1,name2>`
-explicit list · `--exclude a,b` · `--dry-run`. Restart adds `--resume` (default) / `--fresh`,
-`--wait` (wait for busy→idle), `--parallel` (default sequential).
+Targeting flags (all modes): `--role feature|review|test|coordinator|all` · `--only name1,name2`
+explicit list · `--exclude a,b` · `--dry-run`.
 
 Roles are derived from the agent name: `*-test*`/`test-*`→test, `*-pr*`/`pr-*`/`*-review*`→review,
 `cc`/`*-cc`/`coordinator`→coordinator, else feature (matches `register-agent.sh`'s `resolve_role`).
@@ -90,57 +105,44 @@ The deliberate version of "broadcast, but only to the agents that should act."
 
 ## Mode: `restart` — force-restart agents (idle-gated, always confirmed)
 
-Kill an agent's `claude` in its pane and relaunch it, **preserving its conversation** via
-`claude --resume`. Useful when an agent is wedged, on a stale version of the skills/hooks, or its
-context needs a clean reload without losing history.
+Kill an agent's `claude` in its pane and relaunch it with **`claude --continue`**, which resumes
+the pane's most recent conversation (no session-id lookup needed) — so context is preserved.
+Useful when an agent is wedged, on a stale version of the skills/hooks, or needs a clean reload
+without losing history.
 
 > **Never restart without an explicit confirmation in this turn.** Restart kills the live process.
 > Always show the plan and ask first.
 
-Per target, in order:
+How to run it: confirm with the user (show the candidate list — `agent-fanout.sh restart
+--dry-run [targeting]` prints it), then:
 
-1. **Resolve identity + session.** From the registry: `pid="${bn##*.}"`. Get the resumable session
-   id from the session file Claude Code writes:
-   ```bash
-   sid="$(jq -r '.sessionId // empty' "$HOME/.claude/sessions/$pid.json" 2>/dev/null)"
-   ```
-   If `sid` is empty (no session file), you **cannot** `--resume` — offer `--fresh` (a brand-new
-   `claude`, which **loses the conversation**, extra confirmation) or skip that agent.
-2. **Idle-gate.** Refuse to restart a BUSY agent (fresh `~/.claude/agent-busy/<name>`, <30 min) or
-   one whose pane is in copy-mode — killing mid-turn loses in-flight work. Skip it and report, or
-   with `--wait` poll (use the **Monitor** tool with an until-condition; foreground `sleep` is
-   blocked) until the busy marker clears, up to a timeout, then proceed.
-3. **Confirm with the user.** Show the table: each target's name, role, pane, pid, recorded branch,
-   and the relaunch command (`claude --resume <sid>` or `claude` for `--fresh`). Get an explicit yes.
-   Default is **sequential** (one at a time) so a failure is contained; `--parallel` does them at
-   once (riskier — don't nuke the whole fleet blindly).
-4. **Kill** the running claude in the pane (Claude Code exits on a double Ctrl-C):
-   ```bash
-   tmux send-keys -t "$pane" C-c; sleep 1; tmux send-keys -t "$pane" C-c
-   ```
-   Wait until the claude pid is actually gone before relaunching (so the shell prompt is back):
-   ```bash
-   for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
-   kill -0 "$pid" 2>/dev/null && { echo "$name: claude (pid $pid) didn't exit on C-c; killing"; kill "$pid"; sleep 1; }
-   ```
-5. **Relaunch** in the same pane:
-   ```bash
-   tmux send-keys -t "$pane" "claude --resume $sid" Enter      # or just "claude" for --fresh
-   ```
-   The `SessionStart` hook re-registers the agent (new pid) and re-injects its role context.
-6. **Verify it came back.** Poll the registry for a NEW `<name>.<newpid>` entry whose contents match
-   `$pane` and whose pid ≠ the old one (it may also need an `/agent-rename` if the branch-derived
-   name differs — e.g. a coordinator on `<base>-cc` should re-rename to `cc`). Report success/failure
-   per agent; on failure, surface the pane so the user can look.
+```bash
+"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" restart --yes [--role R] [--only a,b] [--exclude a,b]
+```
 
-**Never restart yourself** (the caller / coordinator). If a target resolves to self, skip it and say so.
+What the script does per target (sequential, fail-contained):
+
+1. **Idle-gate** — skips any agent with a fresh `~/.claude/agent-busy/<name>` marker or a pane in
+   copy-mode (killing mid-turn loses in-flight work). To wait for a busy agent instead of skipping,
+   poll with the **Monitor** tool until idle, then re-run.
+2. **Kill** — `tmux send-keys C-c` twice, then waits for the pid to exit. In current Claude Code the
+   double-`C-c` often does NOT exit, so the script falls back to `kill <pid>` once the grace window
+   passes. (SessionEnd fires either way → unregisters.)
+3. **Relaunch** — `tmux send-keys "claude --continue" Enter` in the same pane. The `SessionStart`
+   hook re-registers the agent (new pid) and re-injects its role context; `--continue` resumes the
+   prior conversation. No session-id lookup needed. For a genuine clean slate (loses history),
+   launch plain `claude` manually with a separate explicit confirmation.
+4. **Verify** — polls for a NEW `<name>.<newpid>` registry entry on that pane; prints OK or a WARN
+   (with the pane) if it didn't come back.
+
+**Never restarts the caller** (self is always excluded). A coordinator on `<base>-cc` keeps its
+`cc` name across `--continue` (the session `.name` persists), so no re-`/agent-rename` is needed.
 
 ## Other useful behaviors (built in / suggested)
 
-Built in above: read-only `status` (no auth), role-targeted audiences, `--dry-run` everywhere,
-self-exclusion, idle-gating + optional `--wait`, sequential-by-default restart with re-registration
-verification, `--resume` (preserve context) vs `--fresh` (clean slate, extra confirm), stale-entry
-surfacing.
+Built in (in `agent-fanout.sh`): read-only `status` (no auth), role/`--only`/`--exclude` targeting,
+`--dry-run` everywhere, self-exclusion, idle-gating (skip BUSY/copy-mode), sequential restart via
+`claude --continue` with re-registration verification, and the `--yes` tripwire on `restart`.
 
 Worth considering (ask the user before adding — out of scope unless requested):
 
@@ -155,9 +157,9 @@ Worth considering (ask the user before adding — out of scope unless requested)
 
 ## What this skill will NOT do
 
-- Fan out a message or restart anything without explicit user authorization in the current turn.
-- Kill or restart a BUSY agent (skips it unless `--wait` is used and it goes idle).
-- Restart the caller, or `--fresh`-restart (losing context) without a second explicit confirm.
+- Fan out a message or restart anything without explicit user authorization in the current turn (the script's `restart` refuses without `--yes`, which you pass only after confirming).
+- Kill or restart a BUSY agent (idle-gated — skipped).
+- Restart the caller (self is always excluded).
 - Touch `origin` (it only sends messages + manages local panes). Publishing stays `/base-push`.
 
 ## Companion skills
