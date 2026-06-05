@@ -6,7 +6,8 @@
       "Bash(*agent-send.sh:*)",
       "Bash(*agent-broadcast.sh:*)",
       "Bash(*agent-fanout.sh:*)",
-      "Bash(*agent-msg.sh:*)"
+      "Bash(*agent-msg.sh:*)",
+      "Bash(*update-workflow.sh:*)"
     ],
     "deny": [
       "Bash(git checkout --:*)",

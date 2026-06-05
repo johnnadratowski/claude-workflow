@@ -107,3 +107,17 @@ WORKFLOW_BASE_BRANCH="main"
 # Work tracking is the built-in file-per-TODO system (docs/todos/ + the
 # generated docs/TODO.md). There is no external ticketing provider — the
 # /define-tickets skill only tailors the taxonomy in docs/todos/milestones.json.
+
+# =====================================================================
+# Machinery updates (/update-workflow, .claude/scripts/update-workflow.sh)
+# =====================================================================
+
+# Path to the upstream claude-workflow clone that /update-workflow pulls
+# machinery updates from. If unset, the script auto-discovers a sibling
+# directory named 'claude-workflow' next to this repo.
+# WORKFLOW_UPSTREAM_PATH="$HOME/git/claude-workflow"
+
+# Optional: extra space-separated path globs that /update-workflow must
+# NEVER sync, beyond the built-in project-owned set (active settings.json,
+# workflow.config, base-test/SKILL.md, the generated tickets skill).
+# WORKFLOW_SYNC_EXCLUDE=".claude/skills/my-custom-skill .claude/hooks/local-only.sh"
