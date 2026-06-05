@@ -142,10 +142,16 @@ fi
 name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
 
 # Apply optional prefix (also sanitized so the joined name stays clean).
+# Guard against double-application: a session whose name already carries the
+# prefix (set by /rename, then re-derived from session_name on `claude
+# --continue`) must NOT become <prefix><prefix>name (e.g. wf-todo-wf-todo-feat-1),
+# which would fork a duplicate registry entry + corrupt the agent's identity.
 if [ -n "${WORKFLOW_AGENT_NAME_PREFIX:-}" ]; then
   prefix=$(printf '%s' "$WORKFLOW_AGENT_NAME_PREFIX" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g')
-  name="${prefix}${name}"
-  log "applied prefix: $name"
+  case "$name" in
+    "$prefix"*) log "prefix already present, not re-applying: $name" ;;
+    *) name="${prefix}${name}"; log "applied prefix: $name" ;;
+  esac
 fi
 
 [ -z "$name" ] && name="agent"
