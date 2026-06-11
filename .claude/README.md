@@ -79,7 +79,7 @@ dedicated `<base>-cc` branch (`/add-worktree cc --branch <base>-cc --from origin
 | Hook | Event | Role |
 |---|---|---|
 | `register-agent.sh` | SessionStart (+ self-heal) | Registers the agent, derives name + role, injects role context. Wired in **user-level** `~/.claude/settings.json` (SessionStart fires before project settings load). |
-| `mark-busy.sh` | UserPromptSubmit | Marks the agent busy so peers skip a redundant nudge mid-turn. |
+| `mark-busy.sh` | UserPromptSubmit + PreToolUse | Marks the agent busy so peers skip a redundant nudge mid-turn. |
 | `drain-inbox.sh` (+ `.test.sh`) | Stop | Re-injects undelivered mailbox messages (at-least-once); GCs abandoned mail; clears the busy marker. |
 | `unregister-agent.sh` | SessionEnd | Cleans up the registry entry + busy marker. |
 

@@ -145,7 +145,8 @@ slash="/agent-msg $self_name $rel_path"
 # the recipient's Stop-drain deliver from the durable file instead:
 #   - pane in copy-mode (scrolled back): the nudge lands in copy-mode and is lost.
 #   - target busy mid-turn (fresh agent-busy marker, set by mark-busy.sh on the
-#     target's UserPromptSubmit): the nudge would only buffer and replay as a
+#     target's UserPromptSubmit and re-touched on its every PreToolUse, so it
+#     covers notification/continuation turns too): the nudge would only buffer and replay as a
 #     DUPLICATE after the drain already delivered at the target's Stop. Skipping
 #     it costs no latency — a busy agent can't act before its Stop anyway — and
 #     eliminates the duplicate. The marker is cleared on the target's Stop.

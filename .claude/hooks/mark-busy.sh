@@ -1,5 +1,12 @@
 #!/bin/bash
-# UserPromptSubmit hook: mark this agent BUSY (a turn is starting).
+# UserPromptSubmit + PreToolUse hook: mark this agent BUSY.
+#
+# UserPromptSubmit marks the turn START; PreToolUse re-touches the marker on
+# every tool call so it stays FRESH through turns that never had a prompt
+# submit at all — background-task notifications and Stop-hook continuations
+# start turns without UserPromptSubmit, and were invisible to the idle-guard
+# (senders nudged a working agent; the buffered nudge always loses to the
+# Stop-drain and replays as a duplicate).
 #
 # A peer's agent-send reads this marker and SKIPS the live tmux nudge when the
 # target is busy — the target's Stop-drain (drain-inbox.sh) will deliver the
