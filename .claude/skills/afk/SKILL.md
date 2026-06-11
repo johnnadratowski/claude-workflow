@@ -24,6 +24,9 @@ You are about to run **unattended**. The user is away and wants this task carrie
 > outcome (see the `todo` skill's planning-workflow step 3) and the plan is
 > complex, run the gate against the `--pr` agent BEFORE implementing — same
 > receipt-watch / failover / stop-and-notify protocol as the review loop.
+> The interactive user-bookends (draft approval + delta sign-off) are skipped
+> here by design — record the gate's deltas in the journal and the final
+> report so the user reviews them on return.
 
 The **task** is the work the user set up before invoking this (the current branch's in-progress changes and/or the referenced TODO). You own all the code and all the fixes; the `--pr` and `--test` agents are **services** you consult.
 

@@ -233,6 +233,14 @@ frontmatter, bump `updated`, then run the generator.
    5. **A material plan revision after green invalidates the record** — re-run the gate or
       append the delta + rationale. Small/trivial plans skip the gate; `--review` /
       `--no-review` override either way.
+   6. **User sign-off on the gate's deltas (interactive runs).** After PLAN GREEN, present
+      the user what the gate CHANGED — each blocker/suggestion and how the plan moved (or a
+      one-line "peer gate: GREEN, no changes") — and get their sign-off before implementation
+      starts. The plan side is **user → agent → user**: the user approved the draft, the peer
+      hardened it, the user reviews the hardening. **The human is the terminal reviewer of
+      every loop** — peer review always precedes and never replaces user review (the diff
+      side ends the same way: peer verdict, then the user's go). Under `/afk` this bookend is
+      skipped; the delta goes in the journal + final report instead.
 4. **Implement** the plan, respecting the cited rules.
 5. **Verify** with the user; run the gates (the same gates `/base-test` runs for the touched
    area). WAIT for confirmation.
