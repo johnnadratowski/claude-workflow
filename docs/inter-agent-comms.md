@@ -69,6 +69,13 @@ All merges into `<base>` go through the canonical **local** transient-worktree h
 | `/agent-msg <sender> <filename> [reply\|followup]` | Receiver-side handler. Invoked automatically when another agent's `tmux send-keys` (or the drain) lands in your prompt buffer — you never type this yourself. |
 | `/agent-rename <new-name>` | Rename this agent everywhere — registry, tmux pane title, tmux window, Claude session name. |
 
+## Conversation shapes worth knowing
+
+Beyond ad-hoc requests, two structured exchanges ride this transport:
+
+- **Plan review** (`/todo` planning-workflow step 3): a feature agent sends `PLAN REVIEW REQUEST: <ID> …` with the plan content inline to a review-role agent (discovered via `agent-fanout.sh status`, ROLE = `review`); the reviewer replies `--reply` with **`PLAN GREEN`** or numbered blocker/suggestion findings; the outcome lands in the TODO's `plan_review:` frontmatter (gen-todos-validated). Read-only, pre-implementation.
+- **Diff review** (workflow step "STOP for review"): the post-implementation `/base-pr` audit request; the reviewer replies **`GREEN LIGHT`** or blockers/nits with `file:line`. The two verdict tokens are deliberately distinct.
+
 ## Auto-discovery
 
 A sending agent finds its own name by scanning `~/.claude/running-agents/` for the file whose **content** matches its own `$TMUX_PANE`. This works in any subprocess of Claude (the Bash tool, hooks, etc.) because `$TMUX_PANE` is inherited reliably; `$PPID` is not (intermediate shells in the Bash tool chain confuse it).

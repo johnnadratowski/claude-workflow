@@ -13,12 +13,17 @@ You are about to run **unattended**. The user is away and wants this task carrie
 /afk [test-first] --pr <agent> [--test <agent>] [--todo <ID>] [--max-rounds N] [--no-publish]
 ```
 
-- **`--pr <agent[,agent2,…]>`** (required) — the PR reviewer(s), as a **failover priority list** (e.g. `pr-2,pr`). `/afk` uses the first; if it's dead or never picks up / never replies within the timeout, it advances to the next — and may additionally discover other live `*pr*`-named peers as further fallbacks. List live agents: `ls ~/.claude/running-agents/ | sed 's/\.[0-9]*$//' | sort -u`.
+- **`--pr <agent[,agent2,…]>`** (required) — the PR reviewer(s), as a **failover priority list** (e.g. `pr-2,pr`). `/afk` uses the first; if it's dead or never picks up / never replies within the timeout, it advances to the next — and may additionally discover other live review-role peers as further fallbacks (use the canonical classifier: `.claude/scripts/agent-fanout.sh status`, ROLE column `review` — not a name glob).
 - **`--test <agent>`** (default: `WORKFLOW_TESTING_AGENT` from config, else ask) — the peer agent that runs the test sweep.
 - **`test-first`** — flavor B (test/fix loop *before* review). Default is flavor A (implement first).
 - **`--todo <ID>`** — the TODO this task closes (else infer from the task / branch; skip closing if none applies).
 - **`--max-rounds N`** (default `5`) — cap per loop (review, test). On reaching it, STOP and surface — never loop forever unattended.
 - **`--no-publish`** — never `/base-push`, even on a clean run (default: publish only if the run finished with zero blocking questions — see Finish).
+
+> **Plan-review gate first:** if the TODO's plan has no recorded `plan_review:`
+> outcome (see the `todo` skill's planning-workflow step 3) and the plan is
+> complex, run the gate against the `--pr` agent BEFORE implementing — same
+> receipt-watch / failover / stop-and-notify protocol as the review loop.
 
 The **task** is the work the user set up before invoking this (the current branch's in-progress changes and/or the referenced TODO). You own all the code and all the fixes; the `--pr` and `--test` agents are **services** you consult.
 
@@ -92,7 +97,7 @@ Repeat up to `--max-rounds`:
    | (either) | **PID/pane gone** (`kill -0` fails or pane missing) | 💀 **fail over** immediately |
 
    Suggested overall cap per reviewer: ~30 min after pickup (longer if the diff is large). On reply: you consume the file yourself (read + delete, like `agent-msg`). If the verdict instead arrives via a `/agent-msg … reply` turn (the run briefly yielded), handle it identically — the journal says you're mid-AFK, so route it into this loop rather than just integrating it.
-3. **Reviewer failover.** When step 2 says "fail over": advance to the next agent in the `--pr` list (or, if exhausted, a freshly-discovered live `*pr*`-named peer not already tried). Re-stage the same request to it, note the failover in the journal, and resume the wait. If **no** reviewer in the pool is reachable → **Stop** and notify (don't merge unreviewed).
+3. **Reviewer failover.** When step 2 says "fail over": advance to the next agent in the `--pr` list (or, if exhausted, a freshly-discovered live review-role peer not already tried — `agent-fanout.sh status`, ROLE `review`). Re-stage the same request to it, note the failover in the journal, and resume the wait. If **no** reviewer in the pool is reachable → **Stop** and notify (don't merge unreviewed).
 4. **Parse the verdict.** Look for an explicit **GREEN LIGHT** (approval). Otherwise treat the reply as findings.
    - **Green** → exit the loop.
    - **Findings** → fix every blocker (and reasonable nits); if a finding is itself a blocking question with no safe default, record it and address what you can. Append each finding + resolution to the journal. Commit the fixes, then loop (resend so the reviewer re-reviews the fixed branch — prefer the same reviewer for continuity).
@@ -146,7 +151,7 @@ The **final report** (terminal + appended to `$JOURNAL`):
 
 - A **blocking question** with no safe default — after PR + test on what's implemented.
 - **Cap reached** (`--max-rounds`) or a loop not converging.
-- The **entire reviewer pool exhausted** — every `--pr` agent (and any discovered `*pr*` fallback) is dead or unresponsive past its timeout.
+- The **entire reviewer pool exhausted** — every `--pr` agent (and any discovered review-role fallback) is dead or unresponsive past its timeout.
 - A **merge conflict** landing into the base, or any gate you cannot fix within scope.
 - Anything that would require an action the contract forbids (origin write beyond the sanctioned publish, destructive git, out-of-scope change).
 

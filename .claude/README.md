@@ -58,7 +58,7 @@ writes it as `<base>`.)
 ### Work + autonomy
 | Skill | What it does |
 |---|---|
-| `/todo` | File-per-TODO lifecycle. Mints `AREA-<lane>NNN` IDs (`WORKFLOW_TODO_LANE`), regenerates `docs/TODO.md` via `scripts/gen-todos.mjs`. |
+| `/todo` | File-per-TODO lifecycle. Mints `AREA-<lane>NNN` IDs (`WORKFLOW_TODO_LANE`), regenerates `docs/TODO.md` via `scripts/gen-todos.mjs`. Complex plans pass a peer **plan-review gate** (`PLAN GREEN` → `plan_review:` frontmatter) before implementation. |
 | `/afk` | Drive a task to done unattended: implement → doc-sync → review loop → test loop → land. Stops only for blocking questions. |
 
 ### Setup + project definition

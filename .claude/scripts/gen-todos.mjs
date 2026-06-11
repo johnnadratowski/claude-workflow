@@ -206,6 +206,15 @@ for (const t of all) {
     errors.push(`${where}: unknown milestone '${fm.milestone}'`)
   if (fm.status && !validStatuses.has(fm.status))
     errors.push(`${where}: unknown status '${fm.status}'`)
+  // plan_review (optional): the plan-review gate's machine-checkable record.
+  // Shape: "green (<agent>, YYYY-MM-DD[; note])" or "skipped (<reason>)".
+  if (fm.plan_review != null) {
+    const pr = String(fm.plan_review)
+    if (!/^(green \([^,()]+, \d{4}-\d{2}-\d{2}[^()]*\)|skipped \(.+\))$/.test(pr))
+      errors.push(
+        `${where}: plan_review '${pr}' must be 'green (<agent>, YYYY-MM-DD…)' or 'skipped (<reason>)'`,
+      )
+  }
   const isClosed = fm.status === 'done' || fm.status === 'cancelled'
   if (t.archived && !isClosed)
     errors.push(`${where}: in completed/ but status is '${fm.status}' (must be done|cancelled)`)

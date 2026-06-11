@@ -48,6 +48,8 @@ updated: 2026-01-01           # ISO date, bumped on every change
 tags: []                     # free-form labels
 blocked_by: []               # [other-ids] — must resolve to real TODOs
 plan:                        # optional: docs/todo_plans/<slug>.md
+plan_review:                 # set by the plan-review gate: "green (<agent>, YYYY-MM-DD)" | "skipped (<reason>)"
+                             # validated by gen-todos when present; complex plans get one before implementation
 spec:                        # optional: docs/specs/NNN-<slug>.md (if the project uses specs)
 # on close, the archived file also carries:
 # completed: 2026-01-02
@@ -146,7 +148,8 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
 
 ### `start` — open → in-progress
 Set `status: in-progress`, bump `updated`, run the generator. For complex work, draft a plan
-in `docs/todo_plans/<slug>.md` and set the `plan:` field (see the planning workflow).
+in `docs/todo_plans/<slug>.md` and set the `plan:` field (see the planning workflow) — then
+run the **plan-review gate** (planning workflow step 3) before any implementation starts.
 
 ### `<ID>` / `do the <keyword> todo` — plan + implement
 Locate the TODO (by ID, or by searching titles/bodies for the keyword), then run the full
@@ -212,15 +215,34 @@ frontmatter, bump `updated`, then run the generator.
    for approval → write it to `docs/todo_plans/<slug>.md` and set the TODO's `plan:` field.
    `start` the TODO. (Skippable with "skip plan"/"just do it" for trivial work — the docs
    corpus is still loaded for the doc-sync step.)
-3. **Implement** the plan, respecting the cited rules.
-4. **Verify** with the user; run the gates (the same gates `/base-test` runs for the touched
+3. **Plan review (peer gate)** — complex plans go to a review agent BEFORE implementation:
+   1. **Find a live review agent** — don't invent a name glob; use the canonical role
+      classifier via `.claude/scripts/agent-fanout.sh status` and pick a live agent whose
+      ROLE column is `review`. None alive → ask the user (proceed unreviewed, or wait).
+   2. **Send the plan content inline** via `agent-send <reviewer> --stdin` as a
+      `PLAN REVIEW REQUEST: <ID> — <title>` asking for: corpus fit, missing applicable
+      best-practices rules, scope gaps, simpler alternatives. (Inline — peers see your
+      committed repo state only after a merge-down.)
+   3. **Wait for the verdict** (read-only review — minutes). Blockers → revise the plan,
+      resend until **PLAN GREEN**. Suggestions → adopt or note the rejection in the plan.
+      Reviewer goes dark mid-loop: interactively ask the user; under `/afk`, use its
+      receipt-watch/failover protocol.
+   4. **Record the outcome** in the TODO frontmatter — `plan_review: green (<agent>, <date>)`
+      or `plan_review: skipped (<reason>)` (gen-todos-validated). **Implementation does not
+      start before a recorded green** (or an explicit user override / recorded skip).
+   5. **A material plan revision after green invalidates the record** — re-run the gate or
+      append the delta + rationale. Small/trivial plans skip the gate; `--review` /
+      `--no-review` override either way.
+4. **Implement** the plan, respecting the cited rules.
+5. **Verify** with the user; run the gates (the same gates `/base-test` runs for the touched
    area). WAIT for confirmation.
-5. **Commit** referencing the ID.
-6. **Documentation sync** (before review) — see the doc-sync section below. Ships in the **same
+6. **Commit** referencing the ID.
+7. **Documentation sync** (before review) — see the doc-sync section below. Ships in the **same
    diff** as the code.
-7. **STOP for review** — do NOT `done` the TODO yet. Send to a reviewer (`/base-pr`, or an
-   `agent-send` to a review agent); address feedback with follow-up commits.
-8. **Close** — after review + the user's explicit go to ship: run `/todo continue` (promote →
+8. **STOP for review** — do NOT `done` the TODO yet. Send to a reviewer (`/base-pr`, or an
+   `agent-send` to a review agent); address feedback with follow-up commits. (The diff review
+   is unchanged by the plan-review gate — the gate is additional and earlier.)
+9. **Close** — after review + the user's explicit go to ship: run `/todo continue` (promote →
    notify tester → archive). `done`-ing the TODO is the LAST step, after the work ships.
 
 > Merge-to-base / `/base-push` / tester-notification stay gated on the user's explicit
