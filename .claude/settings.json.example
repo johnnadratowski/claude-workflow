@@ -7,7 +7,12 @@
       "Bash(.claude/scripts/agent-broadcast.sh:*)",
       "Bash(.claude/scripts/agent-fanout.sh:*)",
       "Bash(.claude/scripts/agent-msg.sh:*)",
-      "Bash(.claude/scripts/update-workflow.sh:*)"
+      "Bash(.claude/scripts/update-workflow.sh:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checkout:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr status:*)"
     ],
     "deny": [
       "Bash(git checkout --:*)",

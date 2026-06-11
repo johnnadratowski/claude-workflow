@@ -33,9 +33,36 @@ Performs, in order:
 /base-pr                     # review what's new on local <base>, then fix + promote (local)
 /base-pr --base other-branch  # same flow, but against local other-branch
 /base-pr --no-fix             # review only: show findings and stop (snapshot left untouched)
+/base-pr --pr <number>        # review a GitHub PR (read-only); report findings in the terminal
 ```
 
-`--base` and `--no-fix` compose.
+`--base` and `--no-fix` compose. `--pr` is a distinct **read-only GitHub mode** (see below) —
+it ignores `--base`, never touches local `<base>`, and never writes to GitHub.
+
+## Mode: review a GitHub PR (`--pr <number>`)
+
+A **read-only** audit of an open GitHub pull request whose findings are reported **in the
+terminal** (and replied to the requester if a peer dispatched it via `agent-send`). It does
+**not** post to GitHub, touch local `<base>`, apply fixes, or promote — it's a review for a
+human to read and act on. Runs only the corpus-load + audit (steps 4–5), then reports (step 12).
+
+**Prerequisite:** the `gh` CLI installed + authenticated (`gh auth status`). Read-only here —
+only `gh pr view` / `gh pr diff` (+ an optional `gh pr checkout` into a transient worktree if
+you want to run gates); nothing is posted. (Projects preferring an MCP can swap a GitHub MCP's
+read tools for the `gh` calls — same flow.)
+
+1. **Resolve the PR + capture the diff:** `gh pr view <number> --json
+   number,title,body,author,baseRefName,headRefName,additions,deletions,changedFiles,url,files`
+   for metadata; `gh pr diff <number>` for the patch. Report the PR upfront; summarize large
+   diffs per-file (don't truncate silently).
+2. **Load the corpus** (step 4) and **run the audit** (step 5: design/best-practices, security,
+   doc-drift incl. architecture, nemesis on high-risk), citing `file:line` from the PR diff.
+3. **Report in the terminal** (step 12's shape): findings by category + severity, whether
+   nemesis ran, and an overall recommendation (approve / request-changes / comment) **as a
+   recommendation to the human** — do NOT post it. If a peer dispatched this, reply the summary
+   with `agent-send <requester> --stdin --reply`.
+
+Nothing below this section (snapshot merge, fixes, promotion, re-anchor) runs for `--pr`.
 
 ## When to Use
 
@@ -287,6 +314,7 @@ If `--no-fix` was passed, the report ends at the findings + deferred-findings su
 |------|---------|--------|
 | `--base <branch>` | `$WORKFLOW_BASE_BRANCH` | Base branch to review against and promote into. |
 | `--no-fix` | off | Run the audit and present the plan, then stop. Do NOT merge the base in, apply, commit, promote, or re-anchor. |
+| `--pr <number>` | off | **Read-only GitHub mode** (see "Mode: review a GitHub PR"). Source the diff from `gh pr diff <number>`, audit, report findings in the terminal. Ignores `--base`; never touches local `<base>`; never posts to GitHub. |
 | `--main-path <path>` | `$WORKFLOW_MAIN_PATH` | Helper's anchor (for the transient-worktree promotion). |
 
 ## Failure Handling
