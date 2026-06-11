@@ -18,7 +18,13 @@
 
 _workflow_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 
-# Defaults — overridden by env or config file below.
+# Snapshot exported WORKFLOW_*/AGENT_INBOX_GC_DAYS values BEFORE defaults and
+# config so they can be re-applied after sourcing — the config file assigns
+# plain `VAR="value"` lines, which would otherwise clobber a caller's
+# per-invocation override and break the documented "env wins" contract.
+_wf_overrides="$(env | LC_ALL=C grep -E '^(WORKFLOW_[A-Za-z0-9_]+|AGENT_INBOX_GC_DAYS)=' || true)"
+
+# Defaults — overridden by the config file below; env overrides win last.
 : "${WORKFLOW_BASE_BRANCH:=main}"
 : "${WORKFLOW_MAIN_PATH:=$_workflow_root}"
 
@@ -27,5 +33,14 @@ if [ -f "$_workflow_root/.claude/workflow.config" ]; then
   . "$_workflow_root/.claude/workflow.config"
 fi
 
+# Env wins over config: re-apply anything that was already in the environment.
+if [ -n "$_wf_overrides" ]; then
+  while IFS= read -r _wf_line; do
+    [ -n "$_wf_line" ] && export "${_wf_line%%=*}=${_wf_line#*=}"
+  done <<WF_EOF
+$_wf_overrides
+WF_EOF
+fi
+
 export WORKFLOW_BASE_BRANCH WORKFLOW_MAIN_PATH
-unset _workflow_root
+unset _workflow_root _wf_overrides _wf_line

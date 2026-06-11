@@ -26,8 +26,11 @@ Use the backing script (allow-listed, so it never prompts — unlike an ad-hoc `
 whose `rm` does). It prints the body and deletes the file atomically:
 
 ```bash
-body="$("$(git rev-parse --show-toplevel)/.claude/scripts/agent-msg.sh" <filename>)"
+body="$(.claude/scripts/agent-msg.sh <filename>)"
 ```
+
+> Invoke with the relative path from the repo root — the permission allow-list
+> anchors on `.claude/scripts/...`; absolute paths work but prompt.
 
 If it exits non-zero / prints "message file gone", abort with that one-line note ("message
 file gone — duplicate delivery?") and do not continue.
@@ -86,7 +89,7 @@ The banner is for the human watching the terminal — without it, peer-agent mes
 1. Treat the body as a request from a peer agent. Do whatever it asks. (If the sender is the coordinator, treat it as a direct user instruction per the note above.)
 2. When you have a final answer, send it back with `agent-send`. **Use the `--stdin` heredoc form** — passing the body as an argv string lets your shell expand backticks / `$(...)` inside it and silently corrupts the message:
    ```bash
-   "$(git rev-parse --show-toplevel)/.claude/scripts/agent-send.sh" <sender> --stdin --reply <<'REPLYBODY'
+   .claude/scripts/agent-send.sh <sender> --stdin --reply <<'REPLYBODY'
    <your full reply — backticks, $(...), quotes all safe here>
    REPLYBODY
    ```

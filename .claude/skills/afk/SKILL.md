@@ -75,7 +75,7 @@ Repeat up to `--max-rounds`:
 
 1. Commit any pending work first (so the reviewer sees a clean branch). Send the review request — **always `--stdin` heredoc** so nothing in the body gets shell-expanded:
    ```bash
-   "$(git rev-parse --show-toplevel)/.claude/scripts/agent-send.sh" <pr-agent> --stdin <<'BODY'
+   .claude/scripts/agent-send.sh <pr-agent> --stdin <<'BODY'
    AFK review request — branch <BRANCH> @<sha>. Review locally: git diff <base>...<BRANCH>
    Task: <one-line task summary>. Focus: <anything specific>.
    Reply --reply with "GREEN LIGHT" if approved, or your findings (blockers vs nits). I'm driving an autonomous run and will fix + resend until green.

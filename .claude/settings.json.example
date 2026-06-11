@@ -3,11 +3,11 @@
   "permissions": {
     "allow": [
       "Bash(git checkout:*)",
-      "Bash(*agent-send.sh:*)",
-      "Bash(*agent-broadcast.sh:*)",
-      "Bash(*agent-fanout.sh:*)",
-      "Bash(*agent-msg.sh:*)",
-      "Bash(*update-workflow.sh:*)"
+      "Bash(.claude/scripts/agent-send.sh:*)",
+      "Bash(.claude/scripts/agent-broadcast.sh:*)",
+      "Bash(.claude/scripts/agent-fanout.sh:*)",
+      "Bash(.claude/scripts/agent-msg.sh:*)",
+      "Bash(.claude/scripts/update-workflow.sh:*)"
     ],
     "deny": [
       "Bash(git checkout --:*)",

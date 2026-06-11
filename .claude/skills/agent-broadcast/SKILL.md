@@ -27,12 +27,12 @@ auto-broadcast; ask who to include (or whether to skip).
 
 ```bash
 # PREFERRED — heredoc body (immune to shell expansion):
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-broadcast.sh" --stdin [--followup] [--exclude a,b] <<'BODY'
+.claude/scripts/agent-broadcast.sh --stdin [--followup] [--exclude a,b] <<'BODY'
 <message to every peer — backticks / $(...) / quotes all safe>
 BODY
 
 # Preview recipients without sending anything:
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-broadcast.sh" --dry-run [--exclude a,b]
+.claude/scripts/agent-broadcast.sh --dry-run [--exclude a,b]
 ```
 
 - `--stdin` — read the body from a quoted heredoc. Default to this (same reason as `agent-send`).

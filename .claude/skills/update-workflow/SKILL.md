@@ -64,11 +64,11 @@ WORKFLOW_UPSTREAM_PATH="$HOME/git/claude-workflow"
 1. **Preview** (recommended first): dry-run shows the incoming commits + the
    new/updated/skipped/diverged breakdown, writing nothing.
    ```bash
-   "$(git rev-parse --show-toplevel)/.claude/scripts/update-workflow.sh" --check
+   .claude/scripts/update-workflow.sh --check
    ```
 2. **Apply:**
    ```bash
-   "$(git rev-parse --show-toplevel)/.claude/scripts/update-workflow.sh"
+   .claude/scripts/update-workflow.sh
    ```
    (Override discovery with `--upstream <path>` if the clone isn't a sibling and
    the config knob isn't set.)

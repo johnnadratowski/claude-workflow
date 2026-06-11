@@ -24,10 +24,10 @@ The mechanics live in **`.claude/scripts/agent-fanout.sh`** — one allow-listed
 action, so you don't re-prompt on ad-hoc bash. Subcommands:
 
 ```
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" status
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" merge-down [--role R] [--exclude a,b] [--dry-run]
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" send  [--role R] [--only a,b] [--exclude a,b] [--dry-run] --stdin <<'BODY' … BODY
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" restart --yes [--role R] [--only a,b] [--exclude a,b] [--dry-run]
+.claude/scripts/agent-fanout.sh status
+.claude/scripts/agent-fanout.sh merge-down [--role R] [--exclude a,b] [--dry-run]
+.claude/scripts/agent-fanout.sh send  [--role R] [--only a,b] [--exclude a,b] [--dry-run] --stdin <<'BODY' … BODY
+.claude/scripts/agent-fanout.sh restart --yes [--role R] [--only a,b] [--exclude a,b] [--dry-run]
 ```
 
 The script always excludes self, idle-gates `restart` (skips BUSY / copy-mode panes), and
@@ -87,7 +87,7 @@ The deliberate version of "broadcast, but only to the agents that should act."
    at-least-once drain guarantee), or `/agent-broadcast` with `--exclude` for "all":
    ```bash
    for peer in $RECIPIENTS; do
-     "$(git rev-parse --show-toplevel)/.claude/scripts/agent-send.sh" "$peer" --stdin <<'BODY'
+     .claude/scripts/agent-send.sh "$peer" --stdin <<'BODY'
    <the message>
    BODY
    done
@@ -117,7 +117,7 @@ How to run it: confirm with the user (show the candidate list — `agent-fanout.
 --dry-run [targeting]` prints it), then:
 
 ```bash
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-fanout.sh" restart --yes [--role R] [--only a,b] [--exclude a,b]
+.claude/scripts/agent-fanout.sh restart --yes [--role R] [--only a,b] [--exclude a,b]
 ```
 
 What the script does per target (sequential, fail-contained):

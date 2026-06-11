@@ -24,7 +24,10 @@ SEND="$here/agent-send.sh"
 [ -r "$here/_config.sh" ] && . "$here/_config.sh"
 BASE="${WORKFLOW_BASE_BRANCH:-main}"
 
-role_of() { case "$1" in *-test*|test-*) echo test;; *-pr*|pr-*|*-review*) echo review;; cc|*-cc|coordinator) echo coordinator;; *) echo feature;; esac; }
+# Keep these patterns IDENTICAL to resolve_role() in hooks/register-agent.sh —
+# a divergence means status/targeting classify an agent differently from the
+# role context it was booted with (e.g. "x-print" must NOT read as review).
+role_of() { case "$1" in cc|coordinator|*-cc|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator;; test|*-test|*-test-*|test-*) echo test;; review|pr|*-pr|*-pr-*|pr-*|*-review|*-review-*|review-*) echo review;; *) echo feature;; esac; }
 self_name() { local f; for f in "$reg"/*; do [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "${TMUX_PANE:-}" ] && { basename "$f" | sed 's/\.[0-9]*$//'; return; }; done; }
 is_busy()  { local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -30 2>/dev/null)" ]; }
 pane_in_mode() { [ "$(tmux display-message -p -t "$1" '#{pane_in_mode}' 2>/dev/null || echo 0)" = "1" ]; }

@@ -88,9 +88,16 @@ echo
 EXCLUDE_DEFAULT=".claude/settings.json .claude/workflow.config .claude/skills/base-test/SKILL.md .claude/skills/tickets .claude/.workflow-sync"
 is_excluded() {
   local p="$1" g
+  # set -f: the unquoted word-split below must NOT pathname-expand entries like
+  # ".claude/skills/define-*" against the caller's cwd. case patterns are
+  # unaffected by -f, so glob entries still match.
+  set -f
   for g in $EXCLUDE_DEFAULT ${WORKFLOW_SYNC_EXCLUDE:-}; do
-    case "$p" in "$g"|"$g"/*) return 0 ;; esac
+    # shellcheck disable=SC2254 — $g is deliberately unquoted: entries may be
+    # globs, and a quoted pattern would only ever match literally.
+    case "$p" in $g|$g/*) set +f; return 0 ;; esac
   done
+  set +f
   return 1
 }
 

@@ -6,7 +6,7 @@ description: Rename this Claude agent everywhere — registry file, tmux pane ti
 # agent-rename — rename this agent
 
 ```bash
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-rename.sh" <new-name>
+.claude/scripts/agent-rename.sh <new-name>
 ```
 
 ## Effects
@@ -28,9 +28,9 @@ description: Rename this Claude agent everywhere — registry file, tmux pane ti
 
 ```bash
 # Make a more descriptive name than the branch
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-rename.sh" researcher
+.claude/scripts/agent-rename.sh researcher
 
 # Disambiguate two agents on the same branch
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-rename.sh" main-coder
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-rename.sh" main-reviewer
+.claude/scripts/agent-rename.sh main-coder
+.claude/scripts/agent-rename.sh main-reviewer
 ```

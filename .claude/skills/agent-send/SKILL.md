@@ -28,13 +28,18 @@ The file write is the durable delivery; the `tmux send-keys` is only a low-laten
 
 ```bash
 # PREFERRED — heredoc body (immune to shell expansion of backticks / $(...) / quotes):
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-send.sh" <target> --stdin [--reply|--followup] <<'BODY'
+.claude/scripts/agent-send.sh <target> --stdin [--reply|--followup] <<'BODY'
 <your message — any content, no escaping needed>
 BODY
 
 # Short, metachar-free one-liners only:
-"$(git rev-parse --show-toplevel)/.claude/scripts/agent-send.sh" <target> "<body>" [--reply|--followup]
+.claude/scripts/agent-send.sh <target> "<body>" [--reply|--followup]
 ```
+
+> **Invoke with the relative path, from the repo root.** The permission
+> allow-list anchors on `.claude/scripts/...` — an absolute-path invocation
+> works but triggers a permission prompt. If your shell cwd has drifted,
+> `cd "$(git rev-parse --show-toplevel)"` first.
 
 - `<target>` — name of the destination agent. List active agents with:
   ```bash
