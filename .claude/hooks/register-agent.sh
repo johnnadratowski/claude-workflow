@@ -170,6 +170,7 @@ session_name_sanitized=$(printf '%s' "$session_name" | tr -c 'A-Za-z0-9_-' '-' |
 # from the agent name; override per-agent with ~/.claude/agents/<name>.role (a
 # single word). Role docs live in .claude/agent-roles/<role>.md and ship with
 # the repo (so they propagate via merge-down). Only loaded on sessionstart.
+# Keep these patterns IDENTICAL to role_of() in scripts/agent-fanout.sh.
 resolve_role() {
   case "$1" in
     cc|coordinator|*-cc|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator ;;
@@ -189,6 +190,20 @@ if [ "$source" = "sessionstart" ]; then
     log "loaded role context: role=$role file=$role_file"
   else
     log "no role file for role=$role ($role_file)"
+  fi
+  # Base-branch alias: tell the model the configured base branch's NAME, so a
+  # user saying "merge <branch>" / "push <branch>" routes to the base-* skills
+  # even though the skills are branch-name-agnostic. Config-derived — renaming
+  # the base branch never requires a prose edit.
+  if [ -n "${WORKFLOW_BASE_BRANCH:-}" ]; then
+    base_alias_note="This project's configured base branch is \`$WORKFLOW_BASE_BRANCH\` (WORKFLOW_BASE_BRANCH in .claude/workflow.config). When the user names it — \"merge $WORKFLOW_BASE_BRANCH\", \"push $WORKFLOW_BASE_BRANCH\", \"review $WORKFLOW_BASE_BRANCH\", \"test $WORKFLOW_BASE_BRANCH\" — they mean /base-merge, /base-push, /base-pr, /base-test against that branch."
+    if [ -n "$role_context" ]; then
+      role_context="$role_context
+
+$base_alias_note"
+    else
+      role_context="$base_alias_note"
+    fi
   fi
 fi
 
