@@ -138,6 +138,17 @@ node .claude/scripts/gen-todos.mjs || echo "gen-todos failed — check docs/todo
 rm -rf templates/
 rm -f workflow.config.example .claude/settings.json.example .claude/settings-user-level.json.example
 rm -f README.md   # original was the workflow's README; user will write their own
+# NOTE: `.claude/README.md` (the in-repo agent-workflow reference) is KEPT — it
+# rides along with the .claude/ tree and is the project's standing skills/workflow
+# doc. Do not remove it.
+
+# Ensure the project ignores the harness's runtime lock/state files (written under
+# .claude/ by the scheduled-tasks/routines feature, etc.). The full project .gitignore
+# is authored by /define-architect for the chosen stack; this guarantees the line
+# exists regardless.
+if ! grep -qF '.claude/*.lock' .gitignore 2>/dev/null; then
+  printf '\n# Claude Code harness runtime artifacts (not source)\n.claude/scheduled_tasks.lock\n.claude/*.lock\n' >> .gitignore
+fi
 ```
 
 (macOS `sed -i ''` vs GNU `sed -i` differ — use `-i.bak` + `rm *.bak` pattern as a portable middle ground.)
@@ -345,6 +356,7 @@ Tell the user:
 - Agents started: list each pane / window name
 - Docs populated: which docs were customized; which (if any) are still using the example content
 - SessionStart hook: echo back the `install_msg` captured in Phase 6 so the user has a permanent record of what happened to `~/.claude/settings.json` (installed + backup path, created fresh, already-present, or failed/no-jq with the manual-merge reminder)
+- **Workflow reference**: point the user at [`.claude/README.md`](../../README.md) — the in-repo skills + agent-workflow map that ships with the project (kept by this skill, survives initialize).
 - **Next step**: add your first todo with `/todo Add my first feature` (or similar), then `/todo do next`.
 - **Workflow reminder**: the doc-drift loop (in `/todo`) will keep growing `docs/best-practices.md` as the project evolves — don't pre-fill it.
 

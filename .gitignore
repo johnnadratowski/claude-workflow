@@ -4,3 +4,8 @@
 # Editor swap files
 *.swp
 *~
+
+# Claude Code harness runtime artifacts (lock/state files written under .claude/,
+# not source — e.g. the scheduled-tasks/routines lock). The rest of .claude/ is tracked.
+.claude/scheduled_tasks.lock
+.claude/*.lock
