@@ -1,13 +1,13 @@
 ---
 name: base-push
-description: Land the current worktree's branch into the shared LOCAL base branch, then publish local base to origin — without ever checking the base out in the caller's working directory. This is the ONLY skill that touches origin; all inter-agent coordination happens on local refs. Base branch is configurable via `.claude/workflow.config` (default `main`).
+description: Land the current worktree's branch into the shared LOCAL base branch, then publish local base to origin — without ever checking the base out in the caller's working directory. This is the ONLY skill that pushes `origin/<base>` (the PR lifecycle skills /open-pr and /pr-comments make their own deliberate, user-gated origin writes — pr/* branches and comment posts — never the base); all inter-agent coordination happens on local refs. Base branch is configurable via `.claude/workflow.config` (default `main`).
 ---
 
 # base-push — advance local base + publish to origin
 
 Land the current worktree's branch into the shared **local** base branch (default `main`), then **publish** local base to `origin` — without ever checking the base branch out in the caller's working directory.
 
-`/base-push` is the **only** skill that touches `origin`. All inter-agent coordination happens on the **local** `refs/heads/<base>` ref (shared across every worktree on this machine); `origin/<base>` is just a published snapshot that advances when — and only when — you run this skill.
+`/base-push` is the **only** skill that pushes `origin/<base>`. (The PR lifecycle skills — `/open-pr`, `/pr-comments` — also write to origin, deliberately and user-gated: `pr/*` branch pushes and comment posts. They never touch `origin/<base>`.) All inter-agent coordination happens on the **local** `refs/heads/<base>` ref (shared across every worktree on this machine); `origin/<base>` is just a published snapshot that advances when — and only when — you run this skill.
 
 Performs, in order:
 

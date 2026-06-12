@@ -9,8 +9,9 @@
 # The workflow is LOCAL-FIRST: every worktree shares one .git, so the local
 # `<base>` ref is the single coordination point. /base-merge, /base-test and
 # /base-pr all operate on local refs only — they never touch the network.
-# /base-push is the ONLY skill that touches origin (it publishes local <base>).
-# There is no pull skill: origin is write-only.
+# /base-push is the ONLY skill that pushes origin/<base> (it publishes local
+# <base>); /open-pr and /pr-comments write pr/* branches + comments, user-gated.
+# There is no pull skill for the base: origin/<base> is write-only.
 
 # The shared "trunk" branch every other branch merges into. It lives only as a
 # ref — never check it out in a persistent worktree (see add-worktree).
@@ -65,6 +66,10 @@ WORKFLOW_BASE_BRANCH="main"
 # match the recorded base. Useful in single-branch projects where
 # the warning is noise.
 # WORKFLOW_AGENT_SKIP_BRANCH_WARN=""
+
+# The branch GitHub PRs target — /open-pr roots its frozen pr/* branches at
+# origin/<this>. Unset = auto-detect the repo's default branch.
+# WORKFLOW_PR_TARGET_BRANCH=""
 
 # Name of the agent that should run /base-test after a /todo continue.
 # The todo skill dispatches the test notification to this agent unless

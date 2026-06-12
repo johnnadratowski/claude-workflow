@@ -215,6 +215,9 @@ for (const t of all) {
         `${where}: plan_review '${pr}' must be 'green (<agent>, YYYY-MM-DD…)' or 'skipped (<reason>)'`,
       )
   }
+  // pr (optional): the GitHub PR number that ships this TODO, written by /open-pr.
+  if (fm.pr != null && !/^[1-9]\d*$/.test(String(fm.pr)))
+    errors.push(`${where}: pr '${fm.pr}' must be a positive PR number`)
   const isClosed = fm.status === 'done' || fm.status === 'cancelled'
   if (t.archived && !isClosed)
     errors.push(`${where}: in completed/ but status is '${fm.status}' (must be done|cancelled)`)

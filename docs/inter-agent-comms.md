@@ -6,7 +6,7 @@ A lightweight mailbox + tmux-bridge that lets Claude Code sessions running in di
 
 The agent fleet coordinates on the **local** base branch (`$WORKFLOW_BASE_BRANCH`, default `main`), never `origin/<base>`. All worktrees on the machine share one `.git`, so `refs/heads/<base>` is a single shared ref every agent reads and advances — a peer's work is mergeable the moment it's *committed* (no push needed).
 
-**`origin` is touched by exactly one skill: `/base-push`.** It publishes local `<base>` to `origin/<base>` (a one-way snapshot for backup / CI / other machines) when — and only when — a human runs it. There is **no pull skill**: origin is effectively write-only. If you ever need to ingest published remote state, that's a deliberate manual `git fetch` + merge.
+**`origin/<base>` is pushed by exactly one skill: `/base-push`.** It publishes local `<base>` to `origin/<base>` (a one-way snapshot for backup / CI / other machines) when — and only when — a human runs it. The PR lifecycle skills make their own **deliberate, user-gated** origin writes — `/open-pr` pushes frozen `pr/*` branches and `/pr-comments` posts approved replies — but neither ever touches `origin/<base>`. There is **no pull skill**: origin is effectively write-only for the base (the PR skills fetch the PR-target branch explicitly before cutting a `pr/*` branch). If you ever need to ingest published remote state into `<base>`, that's a deliberate manual `git fetch` + merge.
 
 | Skill | Touches `origin`? | Role |
 |-------|-------------------|------|
@@ -14,6 +14,8 @@ The agent fleet coordinates on the **local** base branch (`$WORKFLOW_BASE_BRANCH
 | `/base-pr` | no | Review + promote fixes into **local** `<base>` (or any `--base`). |
 | `/base-test` | no | Merge **local** `<base>` in, run the gate sweep. |
 | `/base-push` | **yes (publish only)** | Land a branch into local `<base>`, then `git push origin <base>`. |
+| `/open-pr` | **yes (`pr/*` only, user-gated)** | Fetch the PR target, push a frozen `pr/*` branch, `gh pr create` after user approval. Never `origin/<base>`. |
+| `/pr-comments` | **yes (comments only, user-gated)** | Post the approved reply package + resolve threads on a PR. Never pushes refs except the `pr/*` head update in its approved package. |
 
 All merges into `<base>` go through the canonical **local** transient-worktree helper `merge_into_branch_local` (defined in `base-push/SKILL.md`) — a throwaway worktree checked out on `<base>` so the merge never disturbs the caller's worktree, with no fetch and no push. Consequence: local `<base>` is normally *ahead* of `origin/<base>`; that's the expected steady state, not drift. Never check out the literal base branch in a worktree (it breaks `worktree add <base>` for everyone) — the coordinator agent rides a dedicated `<base>-cc` branch (or a detached `origin/<base>`) for a base-tracking worktree.
 

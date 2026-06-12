@@ -51,6 +51,7 @@ plan:                        # optional: docs/todo_plans/<slug>.md
 plan_review:                 # set by the plan-review gate: "green (<agent>, YYYY-MM-DD)" | "skipped (<reason>)"
                              # validated by gen-todos when present; complex plans get one before implementation
 spec:                        # optional: docs/specs/NNN-<slug>.md (if the project uses specs)
+pr:                          # set by /open-pr: the GitHub PR number that ships this work (validated when present)
 # on close, the archived file also carries:
 # completed: 2026-01-02
 # commits: [<sha>, …]
@@ -175,6 +176,10 @@ from the correct step by inspecting git state:
 3. Run the generator; stage the moved file + the regenerated index.
 4. The closing commit references the ID (`Closes: <ID>`). `cancel` does NOT revert committed
    code — that's a separate `git revert` / follow-up TODO.
+5. **Offer a GitHub PR** (for `done`): ask the user "open a PR for this work?" → yes invokes
+   `/open-pr <ID>` (dedicated frozen `pr/*` branch scoped from this TODO's `commits:`; that
+   skill writes the `pr:` back-pointer). Skip the ask when a `pr:` already exists or the work
+   is internal-only. Under `/afk`, asked only via its `--pr-on-close` flag.
 
 ### `defer <ID> <milestone>` — park for a later milestone
 Set **`status: deferred`** AND `milestone` to the new value, bump `updated`, optionally add a
@@ -251,7 +256,8 @@ frontmatter, bump `updated`, then run the generator.
    `agent-send` to a review agent); address feedback with follow-up commits. (The diff review
    is unchanged by the plan-review gate — the gate is additional and earlier.)
 9. **Close** — after review + the user's explicit go to ship: run `/todo continue` (promote →
-   notify tester → archive). `done`-ing the TODO is the LAST step, after the work ships.
+   notify tester → archive). `done`-ing the TODO is the LAST step, after the work ships;
+   it ends by **offering `/open-pr <ID>`** when the work should also go up as a GitHub PR.
 
 > Merge-to-base / `/base-push` / tester-notification stay gated on the user's explicit
 > approval. Closing the TODO is the final step.
@@ -294,7 +300,7 @@ re-enter the owning `define-*` skill in update mode rather than forcing it.
 | `/todo start <ID>` | → in-progress (+ optional plan) |
 | `/todo <ID>` / `/todo do the <keyword> todo` | locate + plan + implement → doc-sync → STOP for review |
 | `/todo continue` | promote → notify tester → archive (idempotent) |
-| `/todo done <ID>` / `cancel <ID>` | close → move to completed/ |
+| `/todo done <ID>` / `cancel <ID>` | close → move to completed/ → offer `/open-pr <ID>` |
 | `/todo defer <ID> <milestone>` | change milestone, ID unchanged |
 | `/todo block <ID> <blocker>` / `unblock <ID>` | dependency / status |
 | `/todo reopen <ID>` | move back from completed/, status open |

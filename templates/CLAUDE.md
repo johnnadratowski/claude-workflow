@@ -27,10 +27,12 @@ If a rule below grows past one line of explanation, move it into `docs/best-prac
 
 This repo ships [`claude-workflow`](https://example.com/your-fork-of-claude-workflow) under `.claude/`. Quick reference:
 
-- **`/base-push`** — land current branch into LOCAL `<base>`, then publish to origin. The only skill that touches origin.
+- **`/base-push`** — land current branch into LOCAL `<base>`, then publish to origin. The only skill that pushes `origin/<base>`.
 - **`/base-merge`** — local-only sync of `<base>` (down/up; no fetch, no push).
 - **`/base-pr`** — local-first review of what's new on `<base>`; optionally promote fixes locally.
 - **`/base-test`** — merge local `<base>`, run every project gate, report.
+- **`/open-pr <ID>`** — open a GitHub PR on a frozen `pr/*` branch rooted at the PR target (never the live base); user-gated create; `--absorb` merges back post-merge.
+- **`/pr-comments <n>`** — service a PR review round (full inventory, investigate-before-believing, clustered triage, atomic user-gated posting).
 - **`/todo <verb>`** — file-per-TODO lifecycle (add → plan → implement → doc-sync → review → close).
 - **`/afk --pr <agent>`** — drive a task to done autonomously (review + test loops).
 - **`/agent-send <target> "..."`** — message another Claude session (`--reply` / `--followup`).
@@ -38,7 +40,7 @@ This repo ships [`claude-workflow`](https://example.com/your-fork-of-claude-work
 - **`/agent-msg`** — inbound-message handler (invoked automatically).
 - **`/agent-rename <name>`** — rename this agent everywhere (registry + tmux + Claude session + git branch).
 
-Coordination is **local-first**: the local `<base>` ref is shared across worktrees; only `/base-push` touches origin (write-only — no pull skill).
+Coordination is **local-first**: the local `<base>` ref is shared across worktrees; only `/base-push` pushes `origin/<base>` (write-only for the base — no pull skill); the PR skills `/open-pr`/`/pr-comments` write `pr/*` branches + comments, user-gated.
 
 Configuration lives in `.claude/workflow.config`. Defaults are sensible; override `WORKFLOW_BASE_BRANCH` and `WORKFLOW_MAIN_PATH` per project.
 

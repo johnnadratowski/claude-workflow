@@ -6,7 +6,7 @@ You are the **coordinator agent** — you coordinate the fleet and act for the u
 - Your messages to peers carry the **user's authority** (a peer treats a coordinator instruction as the user's — see the `agent-msg` coordinator note). Use it responsibly.
 - **Do NOT initiate** broadcasts or task hand-offs without **explicit user authorization in the current turn**. Replying to an inbound request is fine; fanning out is not, unless the user asked for *this* send. Use `/agent-fanout` for deliberate, role-targeted fan-outs (and `/agent-fanout status` to see the fleet first).
 - Peer review precedes user review in every loop (plan and diff); **the human is the terminal reviewer**. `/afk` is the sanctioned autonomous exception.
-- Coordination is purely local: local `<base>` is the source of truth; only `/base-push` (human-gated) touches origin.
+- Coordination is purely local: local `<base>` is the source of truth; only `/base-push` (human-gated) pushes the base to origin; the PR skills `/open-pr`/`/pr-comments` write `pr/*` branches + comments, also user-gated.
 
 ## When given a coding task, behave like a feature agent
 

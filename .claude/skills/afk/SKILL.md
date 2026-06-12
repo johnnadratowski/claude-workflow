@@ -10,7 +10,7 @@ You are about to run **unattended**. The user is away and wants this task carrie
 ## Invocation
 
 ```
-/afk [test-first] --pr <agent> [--test <agent>] [--todo <ID>] [--max-rounds N] [--no-publish]
+/afk [test-first] --pr <agent> [--test <agent>] [--todo <ID>] [--max-rounds N] [--no-publish] [--pr-on-close]
 ```
 
 - **`--pr <agent[,agent2,…]>`** (required) — the PR reviewer(s), as a **failover priority list** (e.g. `pr-2,pr`). `/afk` uses the first; if it's dead or never picks up / never replies within the timeout, it advances to the next — and may additionally discover other live review-role peers as further fallbacks (use the canonical classifier: `.claude/scripts/agent-fanout.sh status`, ROLE column `review` — not a name glob).
@@ -19,6 +19,7 @@ You are about to run **unattended**. The user is away and wants this task carrie
 - **`--todo <ID>`** — the TODO this task closes (else infer from the task / branch; skip closing if none applies).
 - **`--max-rounds N`** (default `5`) — cap per loop (review, test). On reaching it, STOP and surface — never loop forever unattended.
 - **`--no-publish`** — never `/base-push`, even on a clean run (default: publish only if the run finished with zero blocking questions — see Finish).
+- **`--pr-on-close`** — on a clean run, after closing the TODO, prepare a GitHub PR via `/open-pr <ID>` up to (but never past) its user-gated create step: branch, scope, gates, and the title/body package are ready; `gh pr create` itself waits for the user's return (PR creation is outward-facing — the autonomy contract's "never touch origin" exception does NOT extend to it). Without this flag, `/afk` skips the PR offer entirely.
 
 > **Plan-review gate first:** if the TODO's plan has no recorded `plan_review:`
 > outcome (see the `todo` skill's planning-workflow step 3) and the plan is
@@ -125,7 +126,8 @@ Once review is green **and** tests pass:
   1. Close the TODO if applicable — use the `todo` skill to move `docs/todos/<ID>.md` → `docs/todos/completed/` with the merge commit referenced (then run the generator). Skip if no TODO applies.
   2. Land into the **local** base: `/base-merge up` (or `merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "$BRANCH" "..."` directly). **No origin push here.**
   3. **Publish** only if `--no-publish` was NOT passed: `/base-push` (the pre-push hook runs the gates). This is the one origin touch, allowed because the user opted into "publish if clean."
-  4. Notify + final report.
+  4. If `--pr-on-close`: run `/open-pr <ID>` up to its create gate (branch + scope + gates + package ready); the user approves `gh pr create` on return. Note the prepared package in the report.
+  5. Notify + final report.
 
 - **Blocked path (one or more blocking questions accumulated):**
   1. Do **not** merge or publish. Leave the work committed on the branch and landed-ready.

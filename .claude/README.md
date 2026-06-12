@@ -41,10 +41,12 @@ writes it as `<base>`.)
 ### Git workflow (local-first)
 | Skill | What it does |
 |---|---|
-| `/base-push` | Land the current branch into **local** `<base>`, then publish to `origin`. The **only** skill that touches origin. Defines the `merge_into_branch_local` helper. |
+| `/base-push` | Land the current branch into **local** `<base>`, then publish to `origin`. The **only** skill that pushes `origin/<base>`. Defines the `merge_into_branch_local` helper. |
 | `/base-merge` | Local-only sync of `<base>` ↔ the current branch (`down`/`up`); no network. |
 | `/base-pr` | In-place PR-style review of what's new on local `<base>` (design / security / **doc-drift incl. architecture**); optionally apply fixes + promote locally. `--pr <n>` instead reviews a **GitHub PR** read-only and reports findings in the terminal (via `gh`, no posting). |
 | `/base-test` | Merge local `<base>` into the current branch, run every project gate. Reports; no push. |
+| `/open-pr` | Open a GitHub PR on a dedicated **frozen `pr/*` branch** rooted at the PR target (never the base!) — scoped from the TODO ledger's `commits:` or `--snapshot`. Create is user-gated; `--absorb` merges the merged PR back into the local base. |
+| `/pr-comments` | Service a PR review round: full inventory, investigate-before-believing, clustered triage, internal-flow fixes + TODO linkage, peer package audit, **atomic user-gated posting**. |
 
 ### Inter-agent comms → [`../docs/inter-agent-comms.md`](../docs/inter-agent-comms.md)
 | Skill | What it does |

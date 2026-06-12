@@ -192,7 +192,7 @@ Stop immediately and leave state as-is on:
 
 ## Companion Skills
 
-- **`base-push`** — advance local `<base>` AND publish to `origin`. The only skill that touches origin. Defines `merge_into_branch_local`.
+- **`base-push`** — advance local `<base>` AND publish to `origin`. The only skill that pushes `origin/<base>` (the PR lifecycle skills `/open-pr`/`/pr-comments` write only `pr/*` branches + comments, user-gated). Defines `merge_into_branch_local`.
 - **`base-pr`** — PR-style review of pending changes on local `<base>`, in the `<base>-review` sandbox.
 - **`base-test`** — full gate sweep against `<base>-test`.
 
