@@ -86,10 +86,12 @@ Auto-generate, then show the user (step 5):
 - **Body**:
   - **TODO tag block** — `TODO: <ID>` + link to `docs/todos/<ID>.md` (or `completed/<ID>.md`), plan link. This block is the single tagging implementation other skills call back into (see Tagging below).
   - **Review guide derived from the plan** — focus files (the meat) vs skip list (generated artifacts, machinery), in the reviewer's terms.
-  - **Provenance** — `plan_review:` record, diff-review GREEN (which agent, date), gates evidence (what ran, result).
+  - **Provenance** — `plan_review:` record, diff-review GREEN (which agent, date), gates evidence (what ran, result). This block doubles as the agent-prepared provenance (the body is agent-drafted, user-approved at create).
   - **Merge guidance** — merge-commit only (never squash/rebase a branch whose commits are twins of base-branch commits; squash re-writes them and breaks the absorb).
 - **Labels**: `todo:<ID>`, plus labels derived from the TODO's `area`/`tags`, plus `--label` extras. Snapshot mode: label `batch`.
 - **Reviewers** from `--reviewer`.
+
+Any *comment* `/open-pr` later posts on the PR (not the body) carries the same agent-authored marker `/pr-comments` uses (`<!-- agent-authored:pr-comments -->`), so a future review round can classify thread authorship consistently.
 
 ### 5. Create — USER-GATED
 
@@ -144,11 +146,14 @@ merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "origin/$TARGET" \
 
 ---
 
-**Skill Version**: 1.0.0
+**Skill Version**: 1.1.0
 **Category**: Workflow, GitHub
 
 ## Changelog
 
+- **1.1.0** — Review-round dogfood: posted comments carry the shared
+  `agent-authored:pr-comments` marker so `/pr-comments` rounds can classify
+  thread authorship; provenance block noted as the agent-prepared record.
 - **1.0.0** — Initial: frozen `pr/*` branches off the PR target, scoped-from-ledger
   (default) + `--snapshot` modes, merge-SHA → path-split rule, independent gating,
   user-gated create, TODO tagging + `pr:` back-pointer ownership, `--absorb`,

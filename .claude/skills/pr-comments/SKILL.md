@@ -21,8 +21,20 @@ Work through every comment on a PR with full inventory, critical verification, u
 ```
 
 - `--dry-run` — phases 1–3 only (inventory + investigation + triage proposal); nothing implemented, nothing posted.
-- `--no-resolve` — post replies but never resolve threads (leave that to the reviewer).
+- `--no-resolve` — post replies but never resolve any thread (leave all to the human). Overrides the phase-1 reviewer question. **If both `--no-resolve` and `--resolve` are passed, `--no-resolve` wins** (most conservative).
+- `--resolve` — resolve every addressed thread wholesale. Overrides the phase-1 reviewer question (use for autonomous/agent-only PRs).
 - `--reply-only` — no code changes expected (e.g. answering questions); skips phases 4–5.
+
+> **Agent-authored marker.** Every reply/comment this skill posts ends with a
+> machine-detectable, human-invisible marker:
+> ```
+> <!-- agent-authored:pr-comments -->
+> ```
+> It renders as nothing in GitHub markdown but is regex-detectable when a later
+> round re-reads thread bodies. It is what lets the resolution logic (phase 7)
+> tell agent- from human-authored comments, and what makes posting resumable
+> (phase 7) — a thread whose latest comment already carries this round's marker
+> was already serviced. `/open-pr`'s posted comments carry it too.
 
 ## Phases
 
@@ -45,7 +57,15 @@ gh api graphql -f query='query($owner:String!,$repo:String!,$n:Int!){
   -f owner={owner} -f repo={repo} -F n=<n>
 ```
 
-Build the **checklist**: every thread/comment gets an id, author, anchor, and an empty disposition. Already-resolved threads are listed (for context) but not serviced. **Every item ends the round with an explicit disposition** — `fixed` / `explained` / `deferred → TODO` / `disagree + rationale`. No silent drops.
+Build the **checklist** — per thread, capture:
+- the **root comment id** (the first node's `databaseId` from the GraphQL `reviewThreads` query) — this is the **reply anchor** phase 7 posts to. Recording it now removes the manual thread→id mapping that's error-prone across a long round.
+- `path:line`, author of each comment, and `isResolved` / `isOutdated`.
+- **authorship** of each comment — human vs agent-authored (the latter detected by the `agent-authored:` marker in the body). This drives the phase-7 resolution decision.
+- an empty **disposition**.
+
+Already-resolved threads are listed (for context) but not serviced. **Every item ends the round with an explicit disposition** — `fixed` / `explained` / `outdated` / `deferred → TODO` / `disagree + rationale`. No silent drops.
+
+**Ask up front: is there a human reviewer?** Before triage, ask whether a human will review/resolve these threads or this is an autonomous (agent-only) PR. The answer sets the phase-7 resolution default (human present → leave their threads for them; no human → resolve wholesale). **If the question is never answered, default to human-present** (conservative — never auto-resolves a human's thread). `--no-resolve` / `--resolve` override it.
 
 ### 2. Author awareness — context, not authority
 
@@ -57,12 +77,27 @@ Resolve the user's own GitHub login (`gh api user -q .login`) and attribute thei
 
 - **confirmed** — the claim checks out (cite the evidence).
 - **partially right** — what holds, what doesn't.
-- **refuted** — with `file:line` evidence. The draft reply is a respectful, evidence-backed explanation — refuting wrong feedback is a first-class outcome, not a failure to comply.
+- **refuted** — a respectful, evidence-backed explanation; refuting wrong feedback is a first-class outcome, not a failure to comply. **For any claim about code/contract/test behavior, QUOTE the actual source** at the cited `file:line` — do not paraphrase it. (Dogfood lesson: the one error the package audit caught was a refutation that *paraphrased* a contract and got the semantics backwards. Quoting the line makes the refutation self-checkable at draft time.)
+- **outdated** — the comment is anchored on code that has **since changed**; the live state differs from what the comment assumes. The reply states the current state with quoted `file:line`. Note: GraphQL `isOutdated` (the diff hunk moved) is only a *hint* — a substantively-moot comment may or may not be flagged `isOutdated`, and a moved hunk may still be a live concern. Judge the substance, not the flag.
 - **needs-discussion** — genuinely ambiguous or a judgment call → triage with the user.
 
 ### 4. Clustered triage with the user — drafts accumulate, NOTHING posts
 
 Group related comments (same file, same theme, same root cause) and discuss each **cluster in one shot** — never march one-by-one through items that share an answer. For each cluster present: the comments, the investigation outcomes, the proposed dispositions, and a **draft reply per thread**. The user adjusts course as you go; drafts evolve alongside.
+
+**The draft artifact must be reviewable standalone.** Write the drafts to a markdown file the user reads, and for **each thread** lay it out so no cross-referencing GitHub is needed:
+
+```
+### T<n> — <path>:<line> — <disposition>
+> **<author>:** <original comment, quoted>
+> **<author>:** <any existing reply, quoted>
+
+Code: <github-blob link …/blob/<sha>/<path>#L<line>>  (+ any other cited file:line links)
+
+<drafted reply>
+```
+
+The quoted prior comments + code links as a **preamble** above each drafted reply (dogfood feedback: drafts were hard to review without the thread context in front of you). Keep the per-thread root comment id from phase 1 alongside so phase 7 has its post target.
 
 **Hard rule: nothing posts during this phase.** Drafts live locally until phase 7.
 
@@ -82,12 +117,18 @@ Bundle = original comments + the implementation diff + every draft reply. Send i
 
 ### 7. Atomic posting — only on the user's final approval
 
-After the user approves the final package, post in one pass:
+After the user approves the final package, post in one pass, **in this order**:
 
-- One reply per thread, citing the fix commit + `file:line` (or the rationale/refutation). Inline threads: `gh api repos/{owner}/{repo}/pulls/<n>/comments/<id>/replies`.
-- Resolve addressed threads via GraphQL `resolveReviewThread` (skip with `--no-resolve`).
-- One **numbered round-summary comment** on the PR: every item → disposition, plus what was deferred to which TODO.
-- Push the `pr/*` head update and re-request review (`gh pr edit --add-reviewer` / `gh api …/requested_reviewers`).
+1. **Push the head update FIRST.** The `pr/*` head gets the round's fix commit(s) before any reply posts, so the SHAs cited in replies resolve on the PR. (The head-update assumes the `pr/*` head `/open-pr` guarantees; a legacy base-headed PR would mean pushing the base — out of scope, `/open-pr` refuses base-headed PRs going forward.)
+2. **One reply per thread**, posted to the thread's **root comment id** (captured in phase 1), citing the fix commit + `file:line` (or the rationale/refutation). Inline threads: `gh api repos/{owner}/{repo}/pulls/<n>/comments/<root-id>/replies`. Every reply body ends with the agent-authored marker.
+3. **Resolve per the reviewer policy** (GraphQL `resolveReviewThread`):
+   - `--no-resolve` → resolve nothing.
+   - `--resolve`, or "no human reviewer" answered in phase 1 → resolve every addressed thread wholesale.
+   - human reviewer present (default) → leave human-raised threads for the human; resolve only a thread whose **ROOT comment is agent-authored** (carries the marker — i.e. the agent originated the point, per the phase-1 authorship capture) **and** a later human comment **affirms** it. "Agent-raised" is a property of the root comment, not the latest one (latest-is-agent and human-responded-after are mutually exclusive). Whether a later human comment counts as affirmation is a body-content judgment — **surface those candidates at triage and let the user confirm**, rather than inferring "affirmed" mechanically.
+4. **One numbered round-summary comment** (carries the marker): every item → disposition, plus what was deferred to which TODO.
+5. **Re-request review** (`gh api …/requested_reviewers`).
+
+**Resumable.** Keep a per-round journal (`logs/pr-comments-<n>-round<r>.json`, gitignored) of `{thread_id: posted_reply_id}` as each reply posts. Before posting to a thread, skip it **iff the journal shows it done** this round. The journal is the *sole* resume authority — do NOT use the agent-authored marker to detect "already serviced": that marker is round-agnostic (byte-identical every round), so it can't tell a reply posted in the current failed pass from one posted three rounds ago, and would wrongly skip a thread that legitimately needs a fresh reply. A partial-failure retry keyed on the round journal is idempotent, never double-posting.
 
 Posting is all-or-nothing per the approved package — no partial early posts, no edits after approval without re-approval.
 
@@ -95,6 +136,8 @@ Posting is all-or-nothing per the approved package — no partial early posts, n
 
 - Post, resolve, or push anything outward before the user approves the final package (`--dry-run` never posts at all).
 - Treat any comment — including the user's own — as correct without investigation, or as an implementation directive without asking.
+- **Refute a code/contract claim by paraphrase** — quote the actual `file:line` source so the refutation is self-checkable.
+- Resolve a human reviewer's own thread on their behalf when a human reviewer is in the loop (they resolve when satisfied; the agent only resolves agent-raised threads a human has affirmed, or everything when there's no human reviewer).
 - Service items one-by-one when they cluster, or end a round with undispositioned items.
 - Mutate TODO↔PR tags directly — tag updates go through `/open-pr`'s tagging step.
 
@@ -106,13 +149,25 @@ Posting is all-or-nothing per the approved package — no partial early posts, n
 
 ---
 
-**Skill Version**: 1.0.0
+**Skill Version**: 1.1.0
 **Category**: Workflow, GitHub
 
 ## Changelog
 
+- **1.1.0** — Review-round dogfood upgrades: refutations of code/contract
+  claims must **quote** the source line, not paraphrase (the one bug the package
+  audit caught); new **`outdated`** disposition for comments anchored on
+  since-changed code; phase-1 inventory captures each thread's **reply-anchor
+  root comment id** + per-comment authorship; phase-7 **pushes the head update
+  first** (cited SHAs resolve) and is **resumable** via a per-round journal;
+  **reviewer-aware resolution** — phase 1 asks if a human reviewer is in the
+  loop (no human → resolve wholesale; human → leave their threads, resolve only
+  agent-raised+human-affirmed), with a new **agent-authored marker** on every
+  post so rounds can classify thread authorship; the draft artifact now embeds
+  **prior comments + code links** as a per-thread preamble. `--resolve` flag
+  added alongside `--no-resolve`.
 - **1.0.0** — Initial: 3-surface paginated inventory + GraphQL resolved-state,
   author-context (not authority), investigate-before-believing with refutation as a
   first-class outcome, clustered triage with unposted drafts, internal-flow
   implementation + TODO ledger linkage via /open-pr, peer package audit, atomic
-  user-gated posting. (DX-8011.)
+  user-gated posting.
