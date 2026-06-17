@@ -61,12 +61,25 @@ git fetch origin "$TARGET"
 
 Branch name: `pr/<id-lowercased>-<slug>` (scoped; multi-ID uses the first ID + a joint slug) or `pr/batch-<date>-<slug>` (snapshot).
 
-- **Scoped**: `git branch "pr/<…>" origin/$TARGET`
-- **Snapshot**: `git branch "pr/<…>" <ref>` — cut AT the source SHA; the live ref keeps moving, the PR branch doesn't.
+**Switch in place — do NOT use a transient worktree.** A `pr/*` branch is private and single-use, so it can be checked out in the caller's own worktree; the tree is already clean (the hard-refusal above), so the switch is safe. Remember the caller's branch:
+
+```bash
+CALLER=$(git rev-parse --abbrev-ref HEAD)
+git checkout -b "pr/<…>" "origin/$TARGET"     # scoped: root at the fetched target
+# snapshot: git checkout -b "pr/<…>" <ref>    # cut AT the source SHA; the live ref keeps moving, this branch doesn't
+```
+
+**Return timing is freeze-critical** — steps 2–5 (scope, gate, push, create) all run while sitting ON the `pr/*` branch; the return to `$CALLER` happens **after step 5's push + create and before step 6's `pr:` ledger commit** (step 6 performs it as its first action), so the back-pointer never lands on the frozen `pr/*` branch. On **any failure**, return immediately and clean the tree first so the checkout doesn't carry/block on partial state:
+- cherry-pick conflict (step 2 plain path) → `git cherry-pick --abort`, then `git checkout "$CALLER"`.
+- path-split fallback mid-flight (step 2 staged `git checkout <base> -- …` into the index) → `git checkout -f "$CALLER"` (or `git reset --hard` first) — you're abandoning the `pr/*` branch, so discarding its staged state is correct.
+
+> **Why in-place, not a worktree?** The transient worktree in `merge_into_branch_local` is load-bearing only because the **base** branch (`<base>`) must never be checked out fleet-wide (it breaks `worktree add <base>` for every worktree sharing the `.git`). A private `pr/*` branch has no such constraint. In-place is simpler **and** keeps the caller's untracked files present — notably `server/.env` (and any other gitignored env) — so the **pre-push hook's env-dependent gates pass**; a fresh worktree lacks them and the hook fails at push. The worktree stays ONLY on the `--absorb` path (step 7), which merges into the base.
 
 ### 2. Scope the content (scoped mode only)
 
 Read each named TODO's `commits:` frontmatter (active or `completed/`). That list is the scope.
+
+> **Ledger-timing precondition.** `commits:` is normally populated at TODO *close*, so opening a PR for **in-progress** work may find it empty. Before scoping, ensure the work commits are recorded — or pass them explicitly via `--commits <sha…>`, or derive them with `git log --reverse --format=%H --grep "<ID>" "origin/$TARGET..HEAD"`. **Do not** fall back to a raw branch-range (`origin/$TARGET..HEAD`): a long-lived feature/base branch carries unrelated history (the whole `<base>` lineage), so the range is not the scope — the ledger (or `--commits`) is.
 
 - **Plain commits** → `git cherry-pick` onto the `pr/*` branch, oldest-first across all named IDs.
 - **A merge SHA anywhere in scope is an explicit fallback trigger** — do NOT attempt `-m`/`-m 1` cherry-picks. Fall back to the **path-based split**: `git checkout <base> -- <paths>` for the TODO's files, with **dependency-closure discipline** — if a brought-over file imports something only present on `<base>`, the dependency's files join the set (whole files, never hybrid states), and the gates in step 3 prove closure. Same procedure as a dependency-closed path split of a shared branch.
@@ -74,9 +87,13 @@ Read each named TODO's `commits:` frontmatter (active or `completed/`). That lis
 
 **Twin-content commits are expected, not a problem**: the `pr/*` branch re-creates content that also exists on `<base>`. Under the `<base> ⊇ <target>` invariant (the target only advances from base-derived content, and the base absorbs the target right after — step 7), the eventual merge-back is a clean no-op.
 
-### 3. Gate independently
+### 3. Regenerate artifacts, then gate independently
 
-Run the project's CI-mirror gates **on the `pr/*` branch**. A scoped branch must be green **standing on the target alone** — this is what catches hidden dependencies on unreviewed base-branch content (this reliably catches real ones). Failures mean the dependency closure is incomplete (go back to step 2) or the work genuinely depends on another TODO — say so and ask whether to widen scope or block.
+**First, regenerate generated artifacts on the `pr/*` branch and commit** — `pnpm gen:todos`, swagger, sql-types, and any other codegen the scoped change touches. A generated file produced against the *source* branch's state (the cherry-pick carries it verbatim) can drift on the master-rooted branch and trip the drift guard; regenerating reconciles it to the target's state + the scoped change. (This can stay hidden when the source and target generated state happen to match — regenerate so it never bites.)
+
+Then run the project's CI-mirror gates **on the `pr/*` branch**. A scoped branch must be green **standing on the target alone** — this is what catches hidden dependencies on unreviewed base-branch content (this reliably catches real ones). Failures mean the dependency closure is incomplete (go back to step 2) or the work genuinely depends on another TODO — say so and ask whether to widen scope or block.
+
+> **Distinguish your failures from pre-existing target defects.** A gate that reds on the `pr/*` branch **and also reds on the pristine `origin/<target>`** is a pre-existing defect, not this PR's to fix — record it in the provenance block and move on; do NOT block the PR or edit unrelated files to chase it. Only a failure *introduced by the scoped change* blocks. (e.g. a formatter or lint that already fails on a file the target had broken before this PR — not in your diff.) Note also that the push in step 5 re-runs the local pre-push hook (the full TS gate sweep); for a docs-only change that's heavier than the change warrants but is unavoidable through the hook — the in-place switch (step 1) is what keeps the env files present so it passes.
 
 ### 4. Compose the PR package
 
@@ -88,10 +105,10 @@ Auto-generate, then show the user (step 5):
   - **Review guide derived from the plan** — focus files (the meat) vs skip list (generated artifacts, machinery), in the reviewer's terms.
   - **Provenance** — `plan_review:` record, diff-review GREEN (which agent, date), gates evidence (what ran, result). This block doubles as the agent-prepared provenance (the body is agent-drafted, user-approved at create).
   - **Merge guidance** — merge-commit only (never squash/rebase a branch whose commits are twins of base-branch commits; squash re-writes them and breaks the absorb).
-- **Labels**: `todo:<ID>`, plus labels derived from the TODO's `area`/`tags`, plus `--label` extras. Snapshot mode: label `batch`.
-- **Reviewers** from `--reviewer`.
 
 Any *comment* `/open-pr` later posts on the PR (not the body) carries the same agent-authored marker `/pr-comments` uses (`<!-- agent-authored:pr-comments -->`), so a future review round can classify thread authorship consistently.
+- **Labels**: `todo:<ID>`, plus labels derived from the TODO's `area`/`tags`, plus `--label` extras. Snapshot mode: label `batch`. **`gh pr create --label` errors on a label that doesn't exist in the repo** — before create, `gh label list` and `gh label create` the missing ones (or filter to existing). Labels are best-effort convenience; the body's **TODO tag block is the canonical linkage**, so never block create on a label gap.
+- **Reviewers** from `--reviewer`.
 
 ### 5. Create — USER-GATED
 
@@ -108,7 +125,8 @@ Same terminal-reviewer principle as `/pr-comments`' atomic posting — no auto-c
 
 **This skill owns TODO↔PR tagging** — one implementation, reused everywhere (`/pr-comments` calls back into this step when TODO state changes so the PR's tag block stays true):
 
-- Write `pr: <n>` into each in-scope TODO's frontmatter (active or completed), bump `updated`, run the TODO index generator (`node .claude/scripts/gen-todos.mjs` — validates the field), commit. On PR **merge**, append the target-branch merge SHA to the TODO's `commits:` so the ledger records where it shipped. `pr:` is single-valued — a second PR for the same TODO (e.g. a reopen shipped separately) overwrites it to the **latest**; earlier PRs stay discoverable via `commits:` and the PR-side `todo:<ID>` label.
+- **First, return to the caller's branch**: `git checkout "$CALLER"` (the tree is clean — step 3 committed the regen and gates are read-only; assert if unsure). This is the freeze-critical return from step 1's timing note — do it here, before the commit below, so the `pr:` bump can't land on the frozen `pr/*` branch.
+- Write `pr: <n>` into each in-scope TODO's frontmatter (active or completed), bump `updated`, run the TODO index generator (`node .claude/scripts/gen-todos.mjs` — validates the field), commit. **This commit lands on the source/base side** — the branch that owns the TODO ledger (e.g. `<base>` / the caller's branch you just returned to). **Never** commit it onto the frozen `pr/*` branch (that would un-freeze the reviewed content). On PR **merge**, append the target-branch merge SHA to the TODO's `commits:` so the ledger records where it shipped. `pr:` is single-valued — a second PR for the same TODO (e.g. a reopen shipped separately) overwrites it to the **latest**; earlier PRs stay discoverable via `commits:` and the PR-side `todo:<ID>` label.
 - **Snapshot/batch PRs**: the body lists every TODO whose `commits:` fall inside `<target>..<SHA>`; each of those TODOs gets `pr: <n>`. Same field, many writers — "which PR shipped this" stays answerable in both modes.
 - **No good TODO id?** Tagging is optional — but the PR is then **clearly marked agent-created-without-TODO**: label `agent-no-todo` + a body banner line. If the work plausibly warrants a TODO, RECOMMEND minting one to the user before creating.
 
@@ -135,6 +153,9 @@ merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "origin/$TARGET" \
 - Use `<base>` or `<target>` as a PR head — refused, no override.
 - Run `gh pr create` (or push the `pr/*` branch) before the user approves the package.
 - Push `origin/<base>` — only `/base-push` does that, and only human-gated.
+- Spin up a transient worktree for the `pr/*` branch — switch in place (step 1); the worktree is only for the `--absorb` base merge.
+- Block the PR on a gate that also reds on the pristine `origin/<target>` (pre-existing defect) or on a missing label (best-effort; the body tag block is canonical).
+- Commit the `pr:` back-pointer onto the frozen `pr/*` branch — it goes on the source/base side.
 - Squash or rebase a `pr/*` branch.
 - Cherry-pick merge SHAs with `-m` — merge SHAs always route to the path-split fallback.
 
@@ -146,11 +167,24 @@ merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "origin/$TARGET" \
 
 ---
 
-**Skill Version**: 1.1.0
+**Skill Version**: 1.2.0
 **Category**: Workflow, GitHub
 
 ## Changelog
 
+- **1.2.0** — First end-to-end dogfood hardening: the `pr/*` branch is
+  now cut **in place** (`git checkout -b … origin/<target>` in the caller's
+  worktree, return with `git checkout "$CALLER"`) instead of a transient
+  worktree — simpler, and it keeps untracked env files (`server/.env`) present
+  so the pre-push hook's env-dependent gates pass (the worktree lacked them and
+  failed at push). Added: `commits:`-ledger timing precondition + `--commits`/
+  `git log --grep` fallback (the ledger is empty mid-work); mandatory
+  **artifact regeneration after cherry-pick** before gating (a generated file
+  drifts on the master-rooted branch); **gate-vs-target baseline** (a failure
+  also present on `origin/<target>` is pre-existing, not this PR's); **label
+  existence** handling (`gh label create` missing, or filter — body tag block is
+  canonical); `pr:` back-pointer explicitly commits on the **source/base side**,
+  never the frozen branch. The transient worktree remains only on `--absorb`.
 - **1.1.0** — Review-round dogfood: posted comments carry the shared
   `agent-authored:pr-comments` marker so `/pr-comments` rounds can classify
   thread authorship; provenance block noted as the agent-prepared record.
