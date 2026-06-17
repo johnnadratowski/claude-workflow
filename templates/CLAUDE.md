@@ -42,7 +42,9 @@ This repo ships [`claude-workflow`](https://example.com/your-fork-of-claude-work
 
 Coordination is **local-first**: the local `<base>` ref is shared across worktrees; only `/base-push` pushes `origin/<base>` (write-only for the base — no pull skill); the PR skills `/open-pr`/`/pr-comments` write `pr/*` branches + comments, user-gated.
 
-Configuration lives in `.claude/workflow.config`. Defaults are sensible; override `WORKFLOW_BASE_BRANCH` and `WORKFLOW_MAIN_PATH` per project.
+Configuration lives in `.claude/workflow.config`. Defaults are sensible; override `WORKFLOW_BASE_BRANCH` and `WORKFLOW_MAIN_PATH` per project. Per-engineer overrides (e.g. `WORKFLOW_TODO_NS`, the TODO-ID namespace) go in the gitignored `.claude/workflow.config.local`.
+
+> **One-time per clone:** run `.claude/scripts/setup-git-merge-drivers.sh` (wire it into this project's install/postinstall — e.g. a `prepare` script) so the `merge=ours` entry on the generated `docs/TODO.md` takes effect. Without it the index can conflict on merge — safe, but the base-* merge paths assume it's registered.
 
 ## Common workflows
 

@@ -1,6 +1,6 @@
 ---
 name: todo
-description: Track substantive work as one file per TODO under docs/todos/ with structured frontmatter, a stable lane-namespaced ID, a generated docs/TODO.md index, and a completed/ archive. Drives the full lifecycle — add → plan → implement → doc-sync (incl. architecture) → review → close — and regenerates the index after every mutation. The TODO files are the tracker (no external ticket system). Use for any feature, fix, refactor, or investigation.
+description: Track substantive work as one file per TODO under docs/todos/ with structured frontmatter, a stable namespaced ID, a generated docs/TODO.md index, and a completed/ archive. Drives the full lifecycle — add → plan → implement → doc-sync (incl. architecture) → review → close — and regenerates the index after every mutation. The TODO files are the tracker (no external ticket system). Use for any feature, fix, refactor, or investigation.
 ---
 
 # todo — file-per-TODO lifecycle
@@ -9,7 +9,7 @@ description: Track substantive work as one file per TODO under docs/todos/ with 
 
 The TODO system tracks every substantive unit of work as a **file-per-TODO** with
 structured frontmatter (status, priority, area, milestone, dates, dependencies),
-a **stable ID** (`AREA-<lane>NNN`), a **generated published index**, and a **completed
+a **stable ID** (`AREA-<NS>-<lane>NNN`), a **generated published index**, and a **completed
 archive** (closed TODOs are moved, never deleted). This skill is how you create,
 move through, query, and close those TODOs. **The TODO files ARE the tracker** — there
 is no separate external ticketing system to keep in sync.
@@ -37,7 +37,7 @@ Each TODO file is frontmatter + body:
 
 ```markdown
 ---
-id: SEC-2014                 # AREA-<lane>NNN (lane 2), stable forever (never changes, even on defer)
+id: SEC-jn-8001              # AREA-<NS>-<lane>NNN, stable forever (never changes, even on defer)
 title: Short imperative title
 status: open                 # open | in-progress | blocked | deferred | done | cancelled
 priority: high               # critical | high | medium | low
@@ -75,39 +75,58 @@ help tailor the taxonomy + milestones to the project.)
 
 ## ID allocation
 
-`AREA-<lane><NNN>`: the area's prefix from `milestones.json` + **this worktree's lane
-number** + a zero-padded 3-digit sequence, **scoped per (area, lane)**.
+`AREA-<NS>-<lane>NNN`: the area's prefix from `milestones.json` + a **per-engineer
+namespace** `<NS>` + **this worktree's lane number** + a zero-padded 3-digit sequence,
+**scoped per (area, NS, lane)**. Example: `SEC-jn-8001` (namespace `jn`, lane 8, sequence 001).
 
-**Why the lane prefix:** worktrees mint IDs in parallel with no shared lock, so a bare
-per-area sequence collides — two worktrees both grab "the next `NNN`" and ship a duplicate
-that breaks the generator + CI for everyone. Prefixing the lane namespaces the ID space —
-lane 2 mints `SEC-2001`, lane 3 mints `SEC-3001`, never the same string. The generator
-still validates uniqueness as a backstop for the rare same-lane parallel mint.
+**Two namespacing axes, both needed:**
+- **`<NS>` (per-engineer)** guards against collisions *across clones* — a second engineer
+  mints on their own machine with no shared lock, so without a per-engineer namespace their
+  `SEC-0001` would collide with yours and a TODO could be lost on merge.
+- **`<lane>` (per-worktree)** guards against collisions *within one engineer's machine* —
+  parallel worktrees all share one git identity (so the same `<NS>`), and mint in parallel
+  with no lock; the lane keeps them disjoint. NS does not subsume the lane, nor vice-versa.
+  The generator still validates uniqueness as a backstop for the rare same-(NS, lane)
+  parallel mint.
 
-**Step 1 — lane number:** read `WORKFLOW_TODO_LANE` (set per-worktree in
+**Step 1 — namespace `NS`:** resolved by `_config.sh` as `WORKFLOW_TODO_NS`. Precedence:
+the explicit per-clone knob (**recommended** — set `WORKFLOW_TODO_NS` in the gitignored
+`.claude/workflow.config.local`, e.g. `WORKFLOW_TODO_NS="jn"`) → else the full local-part
+of `git config user.email` (lowercased, alnum-only — collision-safe but long, so most
+engineers set the short knob) → else `0`.
+
+```bash
+ROOT=$(git rev-parse --show-toplevel)
+source "$ROOT/.claude/scripts/_config.sh"     # exports WORKFLOW_TODO_NS
+NS="$WORKFLOW_TODO_NS"
+```
+
+**Step 2 — lane number:** read `WORKFLOW_TODO_LANE` (set per-worktree in
 `.claude/workflow.config`); **if unset, use `0`**. Give each parallel worktree a distinct
 lane to make cross-worktree collisions structurally impossible.
 
 ```bash
-source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
 LANE="${WORKFLOW_TODO_LANE:-0}"
 ```
 
-**Step 2 — next sequence:** scan existing IDs across BOTH `docs/todos/` and
-`docs/todos/completed/` for that prefix **and this lane**, take `max + 1` (start `001`):
+**Step 3 — next sequence:** scan existing IDs across BOTH `docs/todos/` and
+`docs/todos/completed/` for that prefix **and this NS and lane**, take `max + 1` (start `001`):
 
 ```bash
-ls docs/todos docs/todos/completed 2>/dev/null | grep -oE "^SEC-${LANE}[0-9]{3}" | sort | tail -1
-# → e.g. SEC-2003 ⇒ mint SEC-2004.  None yet ⇒ SEC-${LANE}001.
+ls docs/todos docs/todos/completed 2>/dev/null | grep -oE "^SEC-${NS}-${LANE}[0-9]{3}" | sort | tail -1
+# → e.g. SEC-jn-8003 ⇒ mint SEC-jn-8004.  None yet ⇒ SEC-${NS}-${LANE}001.
 ```
 
-So lane 2 mints `SEC-2001` / `DX-2001`; lane 3 mints `SEC-3001`; an un-laned context
-(lane 0) mints `SEC-0001`. Double-digit lanes simply widen the ID (`SEC-10001`).
+So engineer `jn` in lane 8 mints `SEC-jn-8001` / `DX-jn-8001`; engineer `pk` in lane 0
+mints `SEC-pk-001` — never the same string as `jn`'s, across machines OR worktrees.
+Double-digit lanes simply widen the numeric tail (`SEC-jn-10001`).
 
-**Legacy bare 3-digit IDs** (`AREA-NNN`) stay valid — the generator's `ID_RE` accepts both
-`\d{3}` and the lane-prefixed `\d{4,}` forms. **Never renumber an existing ID.** IDs are
-**immutable** — deferring, blocking, or re-scoping never changes the ID, so commit
-references stay valid forever.
+**Legacy IDs** (bare `AREA-NNN` / `AREA-<lane>NNN` like `SEC-002`, `DX-8011`, minted before
+the NS scheme) stay valid and untouched — `ID_RE` (`/^[A-Z]+-([a-z0-9]+-)?\d{3,}$/`) accepts
+both the NS-prefixed and legacy forms; the dash before the numeric tail disambiguates them.
+The seq scan keys on `NS-LANE`, so legacy and new sequences are independent. **Never
+renumber an existing ID.** IDs are **immutable** — deferring, blocking, or re-scoping never
+changes the ID, so commit references stay valid forever.
 
 ## After ANY mutation: keep the index live + validate
 
@@ -138,7 +157,7 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
 2. Decide `area` (→ prefix), `priority` (auto-suggest from area, confirm), `milestone`,
    `tags`. If a `docs/specs/` spec covers this work, set `spec:` to its path (auto-detect via
    the title matching `[Ss]pec[\s_-]?0*(\d+)` against `docs/specs/*.md`).
-3. Mint the next `AREA-<lane>NNN` (detect lane + scan existing — see ID allocation).
+3. Mint the next `AREA-<NS>-<lane>NNN` (resolve NS + lane + scan existing — see ID allocation).
 4. Write `docs/todos/<ID>.md` with frontmatter (`status: open`, `created`/`updated` = today)
    + body.
 5. Run the generator; report the new ID.
@@ -296,7 +315,7 @@ re-enter the owning `define-*` skill in update mode rather than forcing it.
 
 | Input | Action |
 |-------|--------|
-| `/todo add <desc>` (or any substantive work request) | mint `AREA-<lane>NNN`, write file, regenerate |
+| `/todo add <desc>` (or any substantive work request) | mint `AREA-<NS>-<lane>NNN`, write file, regenerate |
 | `/todo start <ID>` | → in-progress (+ optional plan) |
 | `/todo <ID>` / `/todo do the <keyword> todo` | locate + plan + implement → doc-sync → STOP for review |
 | `/todo continue` | promote → notify tester → archive (idempotent) |
@@ -319,3 +338,25 @@ After every mutating verb: `node .claude/scripts/gen-todos.mjs` + stage the file
 - **`define-qa`** — owns `docs/testing.md`.
 - **`define-deploy`** — owns `docs/security.md` + `docs/deployment.md`.
 - **`define-tickets`** — shapes the TODO taxonomy (`docs/todos/milestones.json`: areas, priorities, milestones). The TODO files themselves are the tracker — there is no separate `/tickets` skill.
+
+---
+
+**Skill Version**: 1.1.0
+**Category**: Workflow, Task Management
+
+## Changelog
+
+- **1.1.0** — IDs gain a **per-engineer namespace**: `AREA-<NS>-<lane>NNN` (e.g.
+  `SEC-jn-8001`). `<NS>` resolves via `_config.sh`'s `WORKFLOW_TODO_NS` — the
+  explicit per-clone knob (recommended; `.claude/workflow.config.local`) → full
+  `git user.email` local-part → `0`. The lane stays (per-worktree, intra-engineer);
+  NS is the cross-engineer/cross-clone guard so a second engineer's IDs can't
+  collide with the fleet's and get lost on merge. `ID_RE` widened to
+  `/^[A-Z]+-([a-z0-9]+-)?\d{3,}$/`; legacy bare/lane IDs grandfathered, never
+  renumbered. Pairs with the `merge=ours` + post-merge regenerate change so
+  `docs/TODO.md` stops conflicting on every merge (`.gitattributes` +
+  `regen_merged_artifacts` in the base-* merge paths).
+- **1.0.0** — File-per-TODO lifecycle: stable lane-namespaced `AREA-<lane>NNN`
+  IDs, frontmatter taxonomy in `milestones.json`, generated `docs/TODO.md` index +
+  validator, generator-managed cross-links, the add → plan → implement → doc-sync
+  → review → close workflow, and the plan-review peer gate.

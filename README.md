@@ -119,6 +119,18 @@ You should see `<your-branch>.<claude-pid>` listed.
 
 To test inter-agent comms, open a SECOND tmux pane and start another `claude` in a different worktree. Then from either session, ask Claude to use the `/agent-send` skill to message the other.
 
+### 6. Register the `merge=ours` driver (per clone)
+
+`docs/TODO.md` is a **generated artifact** that gets re-derived from `docs/todos/*.md`. The shipped `.gitattributes` marks it `merge=ours` so it never produces a textual merge conflict — the base-* merge paths regenerate it after the merge instead. But **`merge=ours` is inert until the driver is registered locally**: git refuses to auto-run a committed merge driver (code-exec safety), so each clone must opt in once:
+
+```bash
+.claude/scripts/setup-git-merge-drivers.sh   # runs `git config merge.ours.driver true`
+```
+
+Run it **once per clone** (the config lives in the shared `.git` common dir, so it also covers every worktree). The idiomatic way to make it automatic is to wire it into your project's own install/postinstall step — e.g. a `package.json` `prepare` script that runs `./.claude/scripts/setup-git-merge-drivers.sh`, or an equivalent hook for your toolchain — so a fresh clone registers the driver on first install.
+
+Until it's registered, merges fall back to a normal (possibly-conflicting) merge of `docs/TODO.md` — safe, not silently wrong, but you lose the no-conflict guarantee.
+
 ## Troubleshooting
 
 - **No log entries in `~/.claude/debug/register-agent.log`** — the SessionStart hook isn't firing. Check `/hooks` from inside a Claude session; if "SessionStart" shows no entries, the hook isn't loading. Verify (a) it's in **user-level** `~/.claude/settings.json`, not the project one; (b) the JSON parses (`jq . ~/.claude/settings.json`).
@@ -152,6 +164,10 @@ To test inter-agent comms, open a SECOND tmux pane and start another `claude` in
 │   ├── agent-msg.sh             Backing script for /agent-msg (read+delete; or `drain` the mailbox).
 │   ├── inbox-watcher.sh         Opt-in poller that re-nudges parked agents.
 │   ├── agent-rename.sh          Backing script for /agent-rename.
+│   ├── setup-git-merge-drivers.sh  Registers the `merge.ours` driver per clone
+│   │                             (`git config merge.ours.driver true`) so the
+│   │                             `merge=ours` .gitattributes entries take effect.
+│   │                             Run once per clone — see Install step 6.
 │   └── gen-todos.mjs            Generates docs/TODO.md from docs/todos/ + validates.
 ├── skills/
 │   ├── agent-msg/               Inbound-message handler (banner + branch).
@@ -223,7 +239,7 @@ docs/
 | **`/agent-broadcast --stdin <<'BODY'…`** | Fan one message out to ALL live peers (`--exclude`, `--followup`, `--dry-run`). Reuses `/agent-send` per recipient. High blast-radius — requires explicit user authorization. |
 | **`/agent-fanout <status\|msg\|merge-down\|restart>`** | Fleet orchestration: read-only `status` snapshot (roles/busy/branch), role-targeted message fan-out, canned post-`/base-push` `merge-down` sync, and idle-gated `restart` (kill the pane's claude, relaunch `claude --resume` to preserve context). Messages need explicit authorization; restarts always confirm first. |
 | **`/agent-rename <new-name>`** | Rename this agent everywhere: registry file in `~/.claude/running-agents/`, persistent base-branch file in `~/.claude/agents/`, tmux pane title, tmux window name, Claude session label (via the built-in `/rename`), and the local git branch (`git branch -m`). |
-| **`/todo <verb-or-text>`** | File-per-TODO lifecycle manager. `add` mints a stable `AREA-<lane>NNN` ID and writes `docs/todos/<ID>.md`; the spine is add → plan → implement → **doc-sync (incl. architecture)** → review → `continue` (promote + notify tester) → close (archive to `completed/`). Regenerates `docs/TODO.md` + validates frontmatter after every mutation. The TODO files are the tracker — no external ticket system. |
+| **`/todo <verb-or-text>`** | File-per-TODO lifecycle manager. `add` mints a stable `AREA-<NS>-<lane>NNN` ID (per-engineer `<NS>` + per-worktree `<lane>` = collision-free across clones AND parallel worktrees) and writes `docs/todos/<ID>.md`; the spine is add → plan → implement → **doc-sync (incl. architecture)** → review → `continue` (promote + notify tester) → close (archive to `completed/`). Regenerates `docs/TODO.md` + validates frontmatter after every mutation. The TODO files are the tracker — no external ticket system. |
 | **`/afk --pr <agent> [--test <agent>]`** | Autonomous driver. Carries the current task to done unattended: implement → doc-sync → review loop (with a peer reviewer, failover) → test loop → land into local `<base>` (publish if clean). Stops and notifies only for genuinely blocking questions or non-converging loops. |
 | **`/define-project`** (+ `define-product` / `define-architect` / `define-qa` / `define-deploy` / `define-tickets`) | Interactive project-definition orchestrator. Drives product → architecture → QA → deploy/security → TODO-taxonomy dialogs, each with subagent critical review + signoff, populating `docs/` and scaffolding code/tests/CI. Run by `/base-initialize`; re-enterable later. |
 | **`/add-worktree <name>`** | Create a new git worktree at `<parent>/<repo>-<name>`. Optionally on a new branch (default), an existing branch (`--branch <name>`), or from a non-default ref (`--from <ref>`). Optionally copies env files (`WORKFLOW_WORKTREE_COPY_FILES`) and runs a setup command (`WORKFLOW_WORKTREE_SETUP_CMD`) from config. |
@@ -372,7 +388,8 @@ So a config default acts as the *starting* identity but a later `/agent-rename` 
 | `WORKFLOW_MAIN_PATH` | `merge_into_branch_local` helper inside `base-push` |
 | `WORKFLOW_AGENT_*` | `register-agent.sh` only (via `_config.sh`) |
 | `WORKFLOW_TESTING_AGENT` | `todo` (`continue`), `afk` |
-| `WORKFLOW_TODO_LANE` | `todo` (ID allocation) |
+| `WORKFLOW_TODO_LANE` | `todo` (ID allocation — per-worktree lane) |
+| `WORKFLOW_TODO_NS` | `_config.sh`, `todo` (ID allocation — per-engineer namespace; set per-clone in `.claude/workflow.config.local`) |
 | `AGENT_INBOX_GC_DAYS` | `drain-inbox.sh` |
 
 ## Caveats

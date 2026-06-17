@@ -105,15 +105,29 @@ Read-only — no refs modified, no network. The drift line in the final report c
 
 ### 3. Down-merge (if `DIRECTION` is `down` or `both`)
 
+`--no-commit` so the merge=ours generated artifacts are reconciled into the merge commit (see `regen_merged_artifacts`, defined in `/base-push`):
+
 ```bash
-git merge --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH" -m "Merge branch '$WORKFLOW_BASE_BRANCH' into $ORIGINAL_BRANCH (local sync)"
+if git merge --no-commit --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH"; then
+  if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then   # something merged (not already-up-to-date)
+    regen_merged_artifacts "$(git rev-parse --show-toplevel)" \
+      || { echo "artifact regen failed; resolve in $PWD"; exit 1; }
+    git commit --no-edit -m "Merge branch '$WORKFLOW_BASE_BRANCH' into $ORIGINAL_BRANCH (local sync)"
+  fi
+else
+  # Conflict — STOP. Do NOT proceed to the up-merge (DIRECTION=both) from a
+  # conflict-markered tree. Resolve, regenerate (node .claude/scripts/gen-todos.mjs),
+  # commit, then re-run — or `git merge --abort`.
+  echo "Down-merge conflict — resolve, regenerate, commit; do not advance the base. Aborting."; exit 1
+fi
 ```
 
 Notes:
 
 - We merge local `<base>` (`refs/heads/<base>`), the fleet's source of truth — never `origin/<base>`. The `refs/heads/` form resolves cleanly even when `<base>` is checked out in another worktree (git allows merging *from* such a branch; it only blocks *checkout* of it).
-- On "Already up to date" — git exits without creating a commit. Report and continue.
-- On conflict — stop. The caller's working tree has conflict markers; the user resolves manually (`git add`, `git commit`) or `git merge --abort`. **Do not** proceed to the up-merge if down conflicted — local `<base>` shouldn't be advanced from a half-merged state.
+- **`merge=ours` + regenerate** — `docs/TODO.md` is `merge=ours` (`.gitattributes`), so the down-merge keeps the caller's stale index instead of conflicting on it; `regen_merged_artifacts` rebuilds it (and the `docs/todos` back-links) from the merged tree and folds it into the merge commit, so the index reflects the base's new TODOs and the drift-guard passes. (Driver registered per clone — `git config merge.ours.driver true`, via `.claude/scripts/setup-git-merge-drivers.sh`.)
+- On "Already up to date" — `git merge --no-commit` exits 0 without setting `MERGE_HEAD`; the guard skips the commit. Report and continue.
+- On conflict — `git merge` exits non-zero; stop. The caller's working tree has conflict markers; the user resolves manually, **regenerates** (`node .claude/scripts/gen-todos.mjs`), then `git add`/`git commit` (or `git merge --abort`). **Do not** proceed to the up-merge if down conflicted — local `<base>` shouldn't be advanced from a half-merged state.
 
 ### 4. Up-merge (if `DIRECTION` is `up` or `both`)
 
@@ -186,7 +200,7 @@ Stop immediately and leave state as-is on:
 | ------------------ | ----------------------------------------------------------------------------------------------- |
 | Capture            | `ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)`                                            |
 | Refuse if forbidden| `$ORIGINAL_BRANCH ∉ {<base>, <base>-review, <base>-test}`                                       |
-| Down               | `git merge --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH" -m "…"`                                   |
+| Down               | `git merge --no-commit --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH"` → `regen_merged_artifacts` → commit |
 | Up (no push!)      | `merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "$ORIGINAL_BRANCH" "…"`                        |
 | Drift line         | `git rev-list --count origin/<base>..<base>` (ahead) + `<base>..origin/<base>` (behind)         |
 

@@ -90,9 +90,19 @@ Everything below runs with `cwd = $WT_ROOT`.
 
 **Default behavior — runs every invocation unless the caller used a sync opt-out signal.** This is the single most important step for the skill's contract: gates run against the current branch **with the latest local `$WORKFLOW_BASE_BRANCH` merged in**, not against whatever the branch was sitting on before.
 
+`--no-commit` so the merge=ours generated artifacts are reconciled into the merge commit **before the gates run** — otherwise a drift-guard gate reds on the stale `merge=ours` index (`regen_merged_artifacts` is defined in `/base-push`):
+
 ```bash
 PRE_MERGE_SHA="$(git rev-parse HEAD)"
-git merge --no-ff "$WORKFLOW_BASE_BRANCH" -m "Merge branch '$WORKFLOW_BASE_BRANCH' into $CURRENT_BRANCH"
+if git merge --no-commit --no-ff "$WORKFLOW_BASE_BRANCH"; then
+  if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then   # something merged
+    regen_merged_artifacts "$(git rev-parse --show-toplevel)" \
+      || { echo "artifact regen failed; resolve in $PWD"; exit 1; }
+    git commit --no-edit -m "Merge branch '$WORKFLOW_BASE_BRANCH' into $CURRENT_BRANCH"
+  fi
+else
+  echo "Merge conflict — resolve, regenerate (node .claude/scripts/gen-todos.mjs), commit, then re-run."; exit 1
+fi
 CANDIDATE_SHA="$(git rev-parse HEAD)"
 ```
 
@@ -101,7 +111,8 @@ Notes:
 - The merge source is **local `$WORKFLOW_BASE_BRANCH`** (`refs/heads/$WORKFLOW_BASE_BRANCH`), not `origin/<base>`. Unpushed commits on local are in scope.
 - **No fetch** — the local-first model never reads origin during a test run. Local `<base>` already reflects everything peers have advanced via `/base-push` / `/base-merge up` (shared `.git`).
 - `--no-ff` keeps merge topology consistent.
-- If the merge produces conflicts, **stop**, report the conflicted paths, and ask the user how to resolve. Do not auto-resolve.
+- **`merge=ours` + regenerate** — `docs/TODO.md` is `merge=ours` (`.gitattributes`), so without the regenerate the merge keeps this branch's stale `docs/TODO.md` and a drift-guard gate (`gen-todos.mjs` + `git diff --exit-code -- docs/TODO.md docs/todos`) would fail on the staleness after essentially every base merge that added a TODO. `regen_merged_artifacts` rebuilds the index on the merged tree so the gate sees a correct, clean index. (Driver registered per clone — `git config merge.ours.driver true`, via `.claude/scripts/setup-git-merge-drivers.sh`.)
+- If the merge produces conflicts, **stop**, report the conflicted paths, and ask the user how to resolve (resolve → regenerate → commit). Do not auto-resolve.
 - If the current branch is already up to date with local base, git will say "Already up to date" — proceed; `CANDIDATE_SHA` will equal `PRE_MERGE_SHA`.
 
 **Note the local-vs-origin gap if any:** check `git log --oneline origin/$WORKFLOW_BASE_BRANCH..$WORKFLOW_BASE_BRANCH` (read-only against the cached origin ref — no fetch) — if non-empty, the merged local base includes unpushed commits. Surface this in the final report.
@@ -265,7 +276,7 @@ Tell the user:
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Load config             | `source $(git rev-parse --show-toplevel)/.claude/scripts/_config.sh`                                                                             |
 | Preflight               | branch ∉ {main, master, $WORKFLOW_BASE_BRANCH}; clean tree; `git rev-parse --verify $WORKFLOW_BASE_BRANCH`; project-specific prerequisites       |
-| Sync (default; opt-out) | `git merge --no-ff $WORKFLOW_BASE_BRANCH` (no fetch) — every invocation unless caller said "skip sync" / "test as-is"                            |
+| Sync (default; opt-out) | `git merge --no-commit --no-ff $WORKFLOW_BASE_BRANCH` → `regen_merged_artifacts` → commit (no fetch) — every invocation unless caller said "skip sync" / "test as-is" |
 | Note unpushed gap       | `git log --oneline origin/$WORKFLOW_BASE_BRANCH..$WORKFLOW_BASE_BRANCH` — surface count in the final report                                      |
 | Run gates               | Section 3 — project-specific commands per gate                                                                                                  |
 | Diagnostics on failure  | `git log --oneline "$PRE_MERGE_SHA..$CANDIDATE_SHA"`, `git diff --stat "$PRE_MERGE_SHA..$CANDIDATE_SHA"`, project-specific log paths              |

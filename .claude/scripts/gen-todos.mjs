@@ -38,10 +38,13 @@ const INDEX_FILE = join(ROOT, 'docs', 'TODO.md')
 const TAXONOMY_FILE = join(TODOS_DIR, 'milestones.json')
 
 const REQUIRED = ['id', 'title', 'status', 'priority', 'area', 'milestone', 'created']
-// Lane-namespaced IDs: AREA-<lane>NNN (e.g. SEC-2001 in lane 2; SEC-0001 un-laned).
-// \d{3,} accepts both legacy bare 3-digit IDs (SEC-002) and the lane-prefixed form
-// (4+ digits). See the /todo skill's "ID allocation" section.
-const ID_RE = /^[A-Z]+-\d{3,}$/
+// IDs: AREA-<NS>-<lane>NNN (e.g. SEC-jn-8001 — namespace `jn`, lane 8, seq 001).
+// The optional `<ns>-` group is the per-engineer cross-collision namespace; the
+// numeric tail folds lane+seq as before. The dash before the numeric tail keeps
+// new IDs unambiguous from legacy bare `AREA-NNN` / `AREA-<lane>NNN` (e.g.
+// SEC-002, SEC-2001), which still match via the optional group. Never renumber an
+// existing ID. See the /todo skill's "ID allocation" section.
+const ID_RE = /^[A-Z]+-([a-z0-9]+-)?\d{3,}$/
 // Array-valued frontmatter keys, written inline as `[a, b, c]`. NOTE: values are
 // split on a bare comma, so an individual element must not itself contain a comma
 // (fine for ids/tags/shas — the controlled vocabulary this system uses).
@@ -189,7 +192,7 @@ for (const t of all) {
   if (fm.id) {
     if (!ID_RE.test(fm.id))
       errors.push(
-        `${where}: id '${fm.id}' must match AREA-[lane]NNN (e.g. SEC-001 legacy, SEC-2001 lane-2)`,
+        `${where}: id '${fm.id}' must match AREA-[<ns>-]<lane>NNN (e.g. SEC-jn-8001; legacy SEC-001 / SEC-2001 still valid)`,
       )
     if (seenIds.has(fm.id))
       errors.push(`${where}: duplicate id '${fm.id}' (also in ${seenIds.get(fm.id)})`)

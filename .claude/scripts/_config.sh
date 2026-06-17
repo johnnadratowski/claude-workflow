@@ -33,6 +33,14 @@ if [ -f "$_workflow_root/.claude/workflow.config" ]; then
   . "$_workflow_root/.claude/workflow.config"
 fi
 
+# Per-clone overrides (gitignored, NOT shared). Sourced AFTER the committed
+# config so an engineer can set per-machine values (e.g. WORKFLOW_TODO_NS) that
+# differ from the repo default, and BEFORE the env re-apply so env still wins.
+if [ -f "$_workflow_root/.claude/workflow.config.local" ]; then
+  # shellcheck disable=SC1090,SC1091
+  . "$_workflow_root/.claude/workflow.config.local"
+fi
+
 # Env wins over config: re-apply anything that was already in the environment.
 if [ -n "$_wf_overrides" ]; then
   while IFS= read -r _wf_line; do
@@ -42,5 +50,21 @@ $_wf_overrides
 WF_EOF
 fi
 
-export WORKFLOW_BASE_BRANCH WORKFLOW_MAIN_PATH
-unset _workflow_root _wf_overrides _wf_line
+# WORKFLOW_TODO_NS — per-clone/per-engineer TODO-ID namespace (cross-engineer
+# collision guard; see the /todo skill's "ID allocation"). Precedence:
+#   1. explicit knob (env, or .claude/workflow.config.local) — RECOMMENDED;
+#   2. else derived from `git config user.email` — the FULL local-part, lowercased,
+#      alnum-only (e.g. jane.doe@… → janedoe). Full, not truncated: a short cut
+#      collides on common prefixes (john.smith / john.doe), which would remint the
+#      very collision this guards against;
+#   3. else "0" (CI / no git identity — matches the un-laned lane fallback).
+if [ -z "${WORKFLOW_TODO_NS:-}" ]; then
+  _wf_ns_email="$(git -C "$_workflow_root" config user.email 2>/dev/null || true)"
+  if [ -n "$_wf_ns_email" ]; then
+    WORKFLOW_TODO_NS="$(printf '%s' "${_wf_ns_email%@*}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')"
+  fi
+fi
+: "${WORKFLOW_TODO_NS:=0}"
+
+export WORKFLOW_BASE_BRANCH WORKFLOW_MAIN_PATH WORKFLOW_TODO_NS
+unset _workflow_root _wf_overrides _wf_line _wf_ns_email

@@ -84,17 +84,52 @@ merge_into_branch_local() {
     return 1
   fi
 
-  # Merge the LOCAL source. The merge commit advances refs/heads/TARGET because
-  # the worktree is attached to that branch.
-  if ! git -C "$TMP_WT" merge --no-ff "$SOURCE_REF" -m "$MSG"; then
+  # Merge the LOCAL source WITHOUT committing yet, so generated artifacts can be
+  # reconciled on the fully-materialized tree and folded into the merge commit.
+  # The merge commit (created below) advances refs/heads/TARGET because the
+  # worktree is attached to that branch.
+  if ! git -C "$TMP_WT" merge --no-commit --no-ff "$SOURCE_REF"; then
     echo "Merge conflict in transient worktree at: $TMP_WT"
     echo "Resolve + commit there, then: git -C $MAIN_PATH worktree remove $TMP_WT"
     return 2   # leave the worktree on disk for manual resolution
   fi
 
+  # Clean merge. If anything was actually merged (MERGE_HEAD set — i.e. not
+  # already-up-to-date), regenerate the generated artifacts on this materialized
+  # tree and fold them into the merge commit. See regen_merged_artifacts below.
+  if git -C "$TMP_WT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    regen_merged_artifacts "$TMP_WT" || { echo "artifact regen failed"; return 2; }
+    git -C "$TMP_WT" commit --no-edit -m "$MSG" || return 2
+  fi
+
   git -C "$MAIN_PATH" worktree remove "$TMP_WT"
   rm -rf "$TMP_PARENT"
   return 0
+}
+
+# regen_merged_artifacts WORKTREE
+#
+# Regenerate the merge=ours generated artifacts on an already-merged, NOT-yet-
+# committed tree and stage them, so they land IN the merge commit. Call AFTER a
+# successful `git merge --no-commit` and BEFORE the commit, from EVERY
+# auto-committing merge path that brings base content in (merge_into_branch_local
+# here, plus /base-merge's down-merge and /base-test's pre-test base merge).
+#
+# Why: docs/TODO.md is `merge=ours` in .gitattributes, so a merge keeps the
+# CURRENT branch's stale copy instead of conflicting. A CI/base-test drift-guard
+# (`gen-todos.mjs` + `git diff --exit-code -- docs/TODO.md docs/todos`) would then
+# fail on the stale index. Regenerating here makes the committed artifact
+# correct. Pure-node (`gen-todos.mjs` imports only node builtins), so it runs in
+# a bare transient worktree with no project dependencies installed.
+#
+# Stages BOTH docs/TODO.md AND docs/todos: gen-todos also rewrites the managed
+# back-link block inside docs/todos/*.md on any delta, and the drift-guard checks
+# that whole set — staging only the index would leave docs/todos dirty and
+# re-trip the guard.
+regen_merged_artifacts() {
+  local WT="$1"
+  ( cd "$WT" && node .claude/scripts/gen-todos.mjs ) || return 1
+  git -C "$WT" add docs/TODO.md docs/todos
 }
 ```
 
@@ -103,6 +138,7 @@ Design decisions baked into the helper:
 - **`LOCAL_SOURCE` is a local branch, never `origin/<branch>`.** Coordination is purely local; a peer's work is mergeable as soon as it's *committed* (shared `.git`), with no push required.
 - **The merge commit lands on `refs/heads/TARGET` directly** because the transient worktree is branch-attached (no `--detach`). The caller's own worktree HEAD is never touched.
 - **`--no-ff` is mandatory.** Matches the repo's merge topology.
+- **`--no-commit` then regenerate then commit.** Generated artifacts (`docs/TODO.md`) are `merge=ours` in `.gitattributes` — a merge keeps the current branch's stale copy rather than conflicting. `regen_merged_artifacts` rebuilds `docs/TODO.md` on the materialized tree and folds it into the merge commit, so the committed index is correct and the drift-guard passes. Every auto-committing merge path (this helper, `/base-merge` down, `/base-test`'s base merge) MUST run that reconcile — see the helper's doc comment. (The `merge=ours` driver must be registered per clone — `git config merge.ours.driver true`, via `.claude/scripts/setup-git-merge-drivers.sh`; otherwise the merge falls back to a normal, possibly-conflicting one — safe.)
 - **Conflicts leave the transient worktree intact** at a printed path — the failure mode is "an extra directory to resolve," never "the caller's tree is mid-conflict."
 - **No `origin` inside the helper.** Publishing is `/base-push`'s separate final step.
 
