@@ -16,9 +16,19 @@
 // this script until it finds docs/todos, so it works whether it lives at
 // scripts/ or .claude/scripts/.
 
-import { readdirSync, readFileSync, writeFileSync, statSync, existsSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync, renameSync, statSync, existsSync } from 'node:fs'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+// Atomic write: write to a sibling temp file then rename over the target. A
+// crash mid-write (OOM/SIGINT/disk-full) then leaves the original intact rather
+// than a truncated docs/TODO.md or — worse — a truncated per-TODO body file (the
+// hand-written source of truth). rename(2) within a directory is atomic.
+function writeFileAtomic(file, data) {
+  const tmp = `${file}.tmp-${process.pid}`
+  writeFileSync(tmp, data)
+  renameSync(tmp, file)
+}
 
 function findRoot(start) {
   let dir = start
@@ -325,11 +335,11 @@ if (process.argv.includes('--check')) {
     `✓ ${active.length} active, ${completed.length} completed — index + back-links in sync, frontmatter valid.`,
   )
 } else {
-  writeFileSync(INDEX_FILE, output)
+  writeFileAtomic(INDEX_FILE, output)
   let rewritten = 0
   for (const f of fileRenders) {
     if (f.have !== f.want) {
-      writeFileSync(f.full, f.want)
+      writeFileAtomic(f.full, f.want)
       rewritten++
     }
   }

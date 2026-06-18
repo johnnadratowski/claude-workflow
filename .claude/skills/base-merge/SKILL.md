@@ -12,7 +12,7 @@ Local `<base>` is the single coordination ref for the whole fleet (every worktre
 Two directions, both off by default unless you opt in. **Both halves operate on local `refs/heads/<base>`:**
 
 - **down**: merge local `<base>` into the current branch.
-- **up**: advance local `<base>` to include the current branch's commits, via the canonical `merge_into_branch_local` helper (defined in `/base-push`) — a transient worktree, no push.
+- **up**: advance local `<base>` to include the current branch's commits, via the canonical `merge_into_branch_local` helper (in `.claude/scripts/merge-helpers.sh`) — a transient worktree, no push.
 
 Default invocation does both (down, then up) — that's the "keep them in sync" use case the skill is named for.
 
@@ -65,11 +65,14 @@ The "ahead" count is the normal state (work assembled locally, not yet published
 
 ## Execution Steps
 
-### 0. Load workflow config
+### 0. Load workflow config + merge helpers
 
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
+source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"
 ```
+
+`merge-helpers.sh` defines `merge_into_branch_local` + `regen_merged_artifacts` (the down-merge below uses the latter; the up-merge uses the former).
 
 ### 1. Capture state and refuse the wrong starting branches
 
@@ -105,19 +108,25 @@ Read-only — no refs modified, no network. The drift line in the final report c
 
 ### 3. Down-merge (if `DIRECTION` is `down` or `both`)
 
-`--no-commit` so the merge=ours generated artifacts are reconciled into the merge commit (see `regen_merged_artifacts`, defined in `/base-push`):
+`--no-commit` so the merge=ours generated artifacts are reconciled into the merge commit (via `regen_merged_artifacts`, sourced from `.claude/scripts/merge-helpers.sh` in step 0):
 
 ```bash
 if git merge --no-commit --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH"; then
   if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then   # something merged (not already-up-to-date)
-    regen_merged_artifacts "$(git rev-parse --show-toplevel)" \
-      || { echo "artifact regen failed; resolve in $PWD"; exit 1; }
+    if ! regen_merged_artifacts "$(git rev-parse --show-toplevel)"; then
+      # Merge was clean; artifact regen (docs/TODO.md + back-links) failed. This
+      # is an IN-PLACE merge, so there is no transient worktree — reset the
+      # caller's tree and stop. Do NOT advance the base.
+      echo "Artifact regen failed after a clean down-merge. Run 'git merge --abort'"
+      echo "(resets to your pre-merge HEAD), fix the cause, and re-run /base-merge."
+      exit 1
+    fi
     git commit --no-edit -m "Merge branch '$WORKFLOW_BASE_BRANCH' into $ORIGINAL_BRANCH (local sync)"
   fi
 else
   # Conflict — STOP. Do NOT proceed to the up-merge (DIRECTION=both) from a
   # conflict-markered tree. Resolve, regenerate (node .claude/scripts/gen-todos.mjs),
-  # commit, then re-run — or `git merge --abort`.
+  # commit, then re-run — or `git merge --abort` to reset to your pre-merge HEAD.
   echo "Down-merge conflict — resolve, regenerate, commit; do not advance the base. Aborting."; exit 1
 fi
 ```
@@ -131,7 +140,7 @@ Notes:
 
 ### 4. Up-merge (if `DIRECTION` is `up` or `both`)
 
-Use the canonical `merge_into_branch_local` helper (defined in `/base-push`'s SKILL.md) — a transient worktree attached to local `<base>`, merging the local current branch in, with no fetch and no push:
+Use the canonical `merge_into_branch_local` helper (sourced from `.claude/scripts/merge-helpers.sh` in step 0) — a transient worktree attached to local `<base>`, merging the local current branch in, with no fetch and no push:
 
 ```bash
 merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "$ORIGINAL_BRANCH" \
@@ -142,7 +151,7 @@ The source ref is the local branch name (`$ORIGINAL_BRANCH`) — there's no remo
 
 A conflict in the up-merge is unusual when `DIRECTION=both` (we just merged local `<base>` into the current branch in step 3, so the current branch already includes everything on local `<base>`). It's more likely when `DIRECTION=up` alone and local `<base>` has commits the current branch doesn't.
 
-Route by return code (see the helper): **0** continue; **1** worktree-add failure (base checked out somewhere, or a stale transient worktree — surface cleanup); **2** conflict, tmp worktree retained at the printed path for manual resolution. Do NOT advance local `<base>` from a half-merged state.
+Route by return code (full contract in `merge-helpers.sh` / `/base-push`): **0** continue; **1** worktree-add failure (base checked out somewhere, or a stale transient worktree — surface cleanup; no worktree to clean); **2** conflict — tmp worktree retained at the printed path for manual resolution; **3** post-merge failure (merge was clean, regen/commit failed) — tmp worktree retained at the printed path to finish the commit. On 2 or 3, do NOT advance local `<base>` from a half-merged state.
 
 ### 5. Report
 
@@ -183,8 +192,9 @@ Stop immediately and leave state as-is on:
 
 - **HEAD on a forbidden branch** (`<base>` / `<base>-review` / `<base>-test`): hard stop with the right-skill hint.
 - **Down-merge conflict**: stop in the caller's working tree, surface conflicted paths. Do NOT proceed to the up-merge.
-- **Up-merge helper return 1** (`git worktree add` fails — base checked out elsewhere, or a stale transient worktree): surface the conflict + cleanup commands, do not proceed.
-- **Up-merge helper return 2** (conflict in the tmp worktree): stop, print the tmp path, leave it on disk for manual resolution.
+- **Up-merge helper return 1** (`git worktree add` fails — base checked out elsewhere, or a stale transient worktree): surface the error + cleanup commands, do not proceed. No merge was attempted.
+- **Up-merge helper return 2** (conflict in the tmp worktree): stop, print the tmp path, leave it on disk for manual conflict resolution.
+- **Up-merge helper return 3** (post-merge regen/commit failure): stop, print the tmp path. The merge was clean — finish the commit there; there are no conflicts.
 
 ## What This Skill Will NOT Do
 
@@ -206,9 +216,22 @@ Stop immediately and leave state as-is on:
 
 ## Companion Skills
 
-- **`base-push`** — advance local `<base>` AND publish to `origin`. The only skill that pushes `origin/<base>` (the PR lifecycle skills `/open-pr`/`/pr-comments` write only `pr/*` branches + comments, user-gated). Defines `merge_into_branch_local`.
+- **`base-push`** — advance local `<base>` AND publish to `origin`. The only skill that pushes `origin/<base>` (the PR lifecycle skills `/open-pr`/`/pr-comments` write only `pr/*` branches + comments, user-gated). Sources the same `merge_into_branch_local` from `.claude/scripts/merge-helpers.sh`.
 - **`base-pr`** — PR-style review of pending changes on local `<base>`, in the `<base>-review` sandbox.
 - **`base-test`** — full gate sweep against `<base>-test`.
+
+---
+
+**Skill Version**: 1.1.0
+**Category**: Git Workflow
+
+## Changelog
+
+- **1.1.0** — (merge-helper hardening) Step 0 now **sources
+  `.claude/scripts/merge-helpers.sh`** (the helpers were extracted there from
+  `base-push`). The down-merge routes a clean-merge regen failure to `git merge
+  --abort`; the up-merge routes the de-overloaded return code **3** (post-merge
+  regen/commit failure, worktree preserved) alongside 0/1/2.
 
 ## Difference vs. `base-push`
 

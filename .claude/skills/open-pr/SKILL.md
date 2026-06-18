@@ -41,6 +41,7 @@ Flags: --draft | --reviewer <gh-user> | --label <l> … | --title <t> | --absorb
 
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
+source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"   # merge_into_branch_local (step 7 --absorb)
 # PR target: configurable, else the repo's default branch.
 TARGET="${WORKFLOW_PR_TARGET_BRANCH:-$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')}"
 [ -n "$TARGET" ] || TARGET=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)
@@ -138,9 +139,18 @@ Offered automatically when `gh pr view <n>` shows the PR merged (and runnable la
 git fetch origin "$TARGET"
 merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "origin/$TARGET" \
   "Merge origin/$TARGET into $WORKFLOW_BASE_BRANCH (absorb PR #<n>)"
+absorb_rc=$?
 ```
 
-(`merge_into_branch_local` is the canonical transient-worktree helper defined in `base-push/SKILL.md`.) This restores `<base> ⊇ <target>` immediately so future twin-content merges stay no-ops. **It never pushes `origin/<base>`** — publishing the base remains `/base-push`'s human-gated job. Then update the TODO ledger (step 6's merge bookkeeping) and delete the remote `pr/*` branch (a repo with delete-branch-on-merge enabled — a repo setting, not configured by this skill — already did; otherwise `git push origin --delete pr/<…>` — ask first, it's a remote deletion).
+(`merge_into_branch_local` is the canonical transient-worktree helper sourced from `.claude/scripts/merge-helpers.sh` in step 0.) This restores `<base> ⊇ <target>` immediately so future twin-content merges stay no-ops. **It never pushes `origin/<base>`** — publishing the base remains `/base-push`'s human-gated job.
+
+> **Route the return code BEFORE the cleanup below — this is freeze-critical.** Only on `absorb_rc == 0` (the absorb actually landed) do you proceed to the ledger update + `pr/*` deletion. On any non-zero, **STOP**: the absorb did NOT complete, `<base> ⊇ <target>` is NOT restored, and a transient worktree may be preserved.
+> - **1** — worktree-add failure (base checked out somewhere, or a stale transient worktree). Surface the cleanup commands; nothing landed.
+> - **2** — merge conflict; transient worktree preserved at the printed path. The user resolves there.
+> - **3** — post-merge regen/commit failure; transient worktree preserved at the printed path. The user finishes the commit there.
+> In every non-zero case: do **NOT** write the merge bookkeeping and do **NOT** delete the `pr/*` branch — deleting the reviewed, merged-on-GitHub branch while the local absorb never completed would destroy the only frozen copy. Report the state and let the user finish the absorb, then re-run.
+
+**Only when `absorb_rc == 0`:** update the TODO ledger (step 6's merge bookkeeping) and delete the remote `pr/*` branch (a repo with delete-branch-on-merge enabled — a repo setting, not configured by this skill — already did; otherwise `git push origin --delete pr/<…>` — ask first, it's a remote deletion).
 
 ## Guards (warn, don't refuse)
 
@@ -162,16 +172,22 @@ merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "origin/$TARGET" \
 ## Companion Skills
 
 - **`pr-comments`** — service the review rounds this PR receives; calls back into step 6 for tag updates.
-- **`base-push`** — publish local `<base>` to `origin/<base>` (defines `merge_into_branch_local`).
+- **`base-push`** — publish local `<base>` to `origin/<base>` (`merge_into_branch_local` lives in `.claude/scripts/merge-helpers.sh`, sourced by both).
 - **`todo`** — the `commits:` ledger this skill scopes from; its close step offers `/open-pr`.
 
 ---
 
-**Skill Version**: 1.2.0
+**Skill Version**: 1.3.0
 **Category**: Workflow, GitHub
 
 ## Changelog
 
+- **1.3.0** — (merge-helper hardening) `--absorb` (step 7) now **routes
+  `merge_into_branch_local`'s return code**: only on `0` does it write the ledger
+  + delete the `pr/*` branch; on any non-zero it STOPS (the absorb didn't land,
+  `<base> ⊇ <target>` not restored) and never deletes the frozen reviewed branch.
+  Sources the helper from `.claude/scripts/merge-helpers.sh` (extracted from
+  `base-push`).
 - **1.2.0** — First end-to-end dogfood hardening: the `pr/*` branch is
   now cut **in place** (`git checkout -b … origin/<target>` in the caller's
   worktree, return with `git checkout "$CALLER"`) instead of a transient

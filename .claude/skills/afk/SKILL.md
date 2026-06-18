@@ -124,10 +124,12 @@ Once review is green **and** tests pass:
 
 - **Clean run (no blocking questions accumulated):**
   1. Close the TODO if applicable — use the `todo` skill to move `docs/todos/<ID>.md` → `docs/todos/completed/` with the merge commit referenced (then run the generator). Skip if no TODO applies.
-  2. Land into the **local** base: `/base-merge up` (or `merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "$BRANCH" "..."` directly). **No origin push here.**
-  3. **Publish** only if `--no-publish` was NOT passed: `/base-push` (the pre-push hook runs the gates). This is the one origin touch, allowed because the user opted into "publish if clean."
-  4. If `--pr-on-close`: run `/open-pr <ID>` up to its create gate (branch + scope + gates + package ready); the user approves `gh pr create` on return. Note the prepared package in the report.
-  5. Notify + final report.
+  2. **Land (and publish) through the base skills — never hand-roll the merge or push.**
+     - **Default (publish):** run **`/base-push`**. It lands the branch into local `<base>` via `merge_into_branch_local` AND publishes with the **non-fast-forward guard** — the protection a raw `git push origin <base>` skips (a raw push from the wrong CWD with no guard could mutate a frozen `origin/<base>`, e.g. the SHA backing an open PR). This is the one sanctioned origin touch, allowed because the user opted into "publish if clean."
+     - **`--no-publish`:** run **`/base-merge up`** only (lands into local `<base>`, no origin touch).
+     - **Honor the merge return codes** (`merge-helpers.sh` contract): `1` worktree-add failure · `2` conflict (worktree preserved) · `3` post-merge regen/commit failure (worktree preserved). On ANY non-zero, or on a non-fast-forward push rejection from `/base-push`, **STOP** (this is a Stop condition: "merge conflict landing into the base") and surface the state in the report — never force, never retry the push blindly.
+  3. If `--pr-on-close`: run `/open-pr <ID>` up to its create gate (branch + scope + gates + package ready); the user approves `gh pr create` on return. Note the prepared package in the report.
+  4. Notify + final report.
 
 - **Blocked path (one or more blocking questions accumulated):**
   1. Do **not** merge or publish. Leave the work committed on the branch and landed-ready.
@@ -167,3 +169,17 @@ The **final report** (terminal + appended to `$JOURNAL`):
 - Touch origin except the optional final `/base-push` on a clean run.
 - Broadcast/fan-out, force-push, `--no-verify`, `--amend` published commits, or wander outside the task's scope.
 - Merge or publish when blocking questions remain — it stops and asks instead.
+
+---
+
+**Skill Version**: 1.1.0
+**Category**: Autonomy / Git Workflow
+
+## Changelog
+
+- **1.1.0** — (merge-helper hardening) Finish now lands **and** publishes through
+  the base skills — `/base-push` (default) or `/base-merge up` (`--no-publish`) —
+  never a hand-rolled `git push origin <base>` that skips the non-fast-forward
+  guard. It **honors the `merge-helpers.sh` return codes** (`1`/`2`/`3`) and a
+  non-ff push rejection: any of these is a Stop condition surfaced in the report,
+  never force-pushed or blindly retried.

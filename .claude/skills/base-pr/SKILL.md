@@ -86,6 +86,7 @@ Invoked when the user says things like:
 
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
+source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"   # merge_into_branch_local (step 10 promotion)
 BASE="${BASE:-$WORKFLOW_BASE_BRANCH}"      # overridden by --base <branch>
 ```
 
@@ -279,11 +280,12 @@ merge_into_branch_local "$BASE" "$BRANCH" \
   "Merge branch '$BRANCH' (base-pr review fixes) into $BASE"
 ```
 
-The helper is defined in `base-push/SKILL.md`. It advances **local** `<base>` in a short-lived transient worktree (no fetch, no push), so the base is never checked out in the current worktree. Because all worktrees share one `.git`, the local `$BRANCH` is mergeable as-is — no push needed. Route by return code:
+The helper is sourced from [`.claude/scripts/merge-helpers.sh`](../../scripts/merge-helpers.sh) (step 0). It advances **local** `<base>` in a short-lived transient worktree (no fetch, no push), so the base is never checked out in the current worktree. Because all worktrees share one `.git`, the local `$BRANCH` is mergeable as-is — no push needed. Route by return code (full contract in the helper script):
 
 - **0**: success — local `<base>` now includes the fix commit; continue to step 11.
-- **1**: worktree-add failure — `<base>` is checked out somewhere, or a stale transient worktree lingers. Surface the error + cleanup commands, stop.
-- **2 (conflict)**: stop. Surface the printed transient-worktree path so the user can resolve, commit, and clean up manually. The fixes are safe on the local `$BRANCH` regardless.
+- **1**: worktree-add failure — `<base>` is checked out somewhere, or a stale transient worktree lingers. Surface the error + cleanup commands, stop. No merge was attempted.
+- **2 (conflict)**: stop. Surface the printed transient-worktree path so the user can resolve the conflict markers, commit, and clean up manually. The fixes are safe on the local `$BRANCH` regardless.
+- **3 (post-merge failure)**: stop. The merge was clean — no conflicts; the artifact regen or commit failed. Surface the printed transient-worktree path so the user can finish the commit there. The fixes are safe on the local `$BRANCH` regardless.
 
 ### 11. Re-anchor the snapshot for the next review
 
@@ -347,7 +349,7 @@ Stop immediately and leave state as-is on:
 
 | Phase | Command |
 |-------|---------|
-| Load config | `source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"` · `BASE` from `--base` (default `$WORKFLOW_BASE_BRANCH`) |
+| Load config + helpers | `source .../_config.sh` then `source .../merge-helpers.sh` · `BASE` from `--base` (default `$WORKFLOW_BASE_BRANCH`) |
 | Refuse if forbidden | check `$BRANCH ∉ {$BASE, master, main}` |
 | Verify base exists locally | `git rev-parse --verify "$BASE"` |
 | Range (LOCAL base, no fetch) | `git log HEAD..$BASE` · `git diff HEAD...$BASE` |
@@ -370,7 +372,21 @@ The skill is called **`base-pr`** because the user invokes it to "review the pen
 
 ## Companion Skills
 
-- **`base-push`** — defines the `merge_into_branch_local` helper this skill uses for promotion; also the only skill that publishes the base to origin.
+- **`base-push`** — uses the same `merge_into_branch_local` helper (now in [`.claude/scripts/merge-helpers.sh`](../../scripts/merge-helpers.sh)) for promotion; also the only skill that publishes the base to origin.
 - **`base-merge`** — local-only sync of `<base>` ↔ a feature branch (no push).
 - **`base-test`** — full gate sweep against a merged-in local `<base>`.
 - **`nemesis-auditor`** — the adversarial deep-audit invoked by step 5D for high-risk diffs (wraps `feynman-auditor` + `state-inconsistency-auditor`).
+
+---
+
+**Skill Version**: 1.1.0
+**Category**: Code Review / Git Workflow
+
+## Changelog
+
+- **1.1.0** — (merge-helper hardening) Step 0 now **sources
+  `.claude/scripts/merge-helpers.sh`** (the helper was extracted there from
+  `base-push`; this skill never sourced `base-push`, so the step-10 promotion
+  call had no definition in scope). Step 10 now also routes return code **3**
+  (post-merge regen/commit failure, transient worktree preserved) alongside
+  0/1/2.

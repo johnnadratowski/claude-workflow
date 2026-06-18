@@ -101,6 +101,25 @@ is_excluded() {
   return 1
 }
 
+# Atomic install: copy src→dst via a temp file + rename, preserving the +x bit.
+# Two reasons this matters here:
+#   1. Crash-safe — dst is never observed half-written (a kill mid-cp would leave
+#      a truncated skill/script).
+#   2. SELF-OVERWRITE — this loop syncs .claude/scripts/, which INCLUDES this very
+#      file. An in-place `cp` truncates+rewrites dst's inode; when dst is the
+#      running script, bash is reading that same inode and silently stops at the
+#      shifted offset → only the first N files copied, marker stale, exit 0 (a
+#      half-done sync reported as done). rename(2) installs a NEW inode, so the
+#      live process keeps executing its original one to completion.
+atomic_install() {
+  local src="$1" dst="$2" tmp
+  mkdir -p "$(dirname "$dst")"
+  tmp="$dst.tmp.$$"
+  cp "$src" "$tmp" || return 1
+  [ -x "$src" ] && chmod +x "$tmp"
+  mv -f "$tmp" "$dst"
+}
+
 new=(); updated=(); skipped=(); diverged=(); uptodate=0
 
 while IFS= read -r rel; do
@@ -110,14 +129,14 @@ while IFS= read -r rel; do
   [ -f "$src" ] || continue
   if [ ! -f "$dst" ]; then
     new+=("$rel")
-    [ "$DRY" = 1 ] || { mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; [ -x "$src" ] && chmod +x "$dst"; }
+    [ "$DRY" = 1 ] || atomic_install "$src" "$dst"
   elif cmp -s "$src" "$dst"; then
     uptodate=$((uptodate + 1))
   elif [ -n "$LAST" ] && git -C "$UPSTREAM" cat-file -e "$LAST:$rel" 2>/dev/null \
        && git -C "$UPSTREAM" show "$LAST:$rel" 2>/dev/null | cmp -s - "$dst"; then
     # Consuming copy matches the last-synced upstream version → pristine, fast-forward.
     updated+=("$rel")
-    [ "$DRY" = 1 ] || { cp "$src" "$dst"; [ -x "$src" ] && chmod +x "$dst"; }
+    [ "$DRY" = 1 ] || atomic_install "$src" "$dst"
   else
     diverged+=("$rel")
   fi
@@ -140,7 +159,7 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 
-printf '%s\n' "$UP_HEAD" > "$MARKER_FILE"
+printf '%s\n' "$UP_HEAD" > "$MARKER_FILE.tmp.$$" && mv -f "$MARKER_FILE.tmp.$$" "$MARKER_FILE"
 echo; echo "marker → $UP_HEAD ($MARKER_FILE)"
 if [ "${#diverged[@]}" -gt 0 ]; then
   echo "⚠ ${#diverged[@]} diverged file(s) need manual reconciliation (see DIVERGED above)."

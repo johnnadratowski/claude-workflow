@@ -17,7 +17,7 @@ The agent fleet coordinates on the **local** base branch (`$WORKFLOW_BASE_BRANCH
 | `/open-pr` | **yes (`pr/*` only, user-gated)** | Fetch the PR target, push a frozen `pr/*` branch, `gh pr create` after user approval. Never `origin/<base>`. |
 | `/pr-comments` | **yes (comments only, user-gated)** | Post the approved reply package + resolve threads on a PR. Never pushes refs except the `pr/*` head update in its approved package. |
 
-All merges into `<base>` go through the canonical **local** transient-worktree helper `merge_into_branch_local` (defined in `base-push/SKILL.md`) — a throwaway worktree checked out on `<base>` so the merge never disturbs the caller's worktree, with no fetch and no push. Consequence: local `<base>` is normally *ahead* of `origin/<base>`; that's the expected steady state, not drift. Never check out the literal base branch in a worktree (it breaks `worktree add <base>` for everyone) — the coordinator agent rides a dedicated `<base>-cc` branch (or a detached `origin/<base>`) for a base-tracking worktree.
+All merges into `<base>` go through the canonical **local** transient-worktree helper `merge_into_branch_local` (defined in `.claude/scripts/merge-helpers.sh`, sourced by every base-* skill) — a throwaway worktree checked out on `<base>` so the merge never disturbs the caller's worktree, with no fetch and no push. Consequence: local `<base>` is normally *ahead* of `origin/<base>`; that's the expected steady state, not drift. Never check out the literal base branch in a worktree (it breaks `worktree add <base>` for everyone) — the coordinator agent rides a dedicated `<base>-cc` branch (or a detached `origin/<base>`) for a base-tracking worktree.
 
 ## How it works
 

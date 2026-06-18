@@ -4,8 +4,10 @@
 #
 # `merge=ours` keeps the current branch's version on a both-sided merge (no
 # conflict, no disk read). Correctness is restored by the post-merge regenerate
-# baked into the fleet's merge paths (the shared `regen_merged_artifacts` helper
-# in base-push/base-merge/base-test) for docs/TODO.md.
+# baked into the fleet's merge paths (the shared `regen_merged_artifacts` in
+# .claude/scripts/merge-helpers.sh, sourced by base-push/base-merge/base-test/
+# base-pr/open-pr) which rebuilds docs/TODO.md. The CI/base-test drift-guard
+# remains the backstop.
 #
 # IMPORTANT: `merge=ours` is INERT without the driver being registered per clone
 # (`git config merge.ours.driver true`) — it is NOT a git default. Run

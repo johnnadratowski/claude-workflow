@@ -51,6 +51,10 @@ If the signal is ambiguous (e.g., "just run the tests"), default to syncing — 
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
 # $WORKFLOW_BASE_BRANCH and $WORKFLOW_MAIN_PATH are now set
+# Sourcing merge-helpers.sh is REQUIRED — step 2 calls regen_merged_artifacts,
+# which lives there. (It used to be inline in base-push/SKILL.md, which base-test
+# never sourced, so the call was `command not found` mid-merge.)
+source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"
 ```
 
 ### 1. Preflight — branch, clean tree, prerequisites
@@ -90,18 +94,24 @@ Everything below runs with `cwd = $WT_ROOT`.
 
 **Default behavior — runs every invocation unless the caller used a sync opt-out signal.** This is the single most important step for the skill's contract: gates run against the current branch **with the latest local `$WORKFLOW_BASE_BRANCH` merged in**, not against whatever the branch was sitting on before.
 
-`--no-commit` so the merge=ours generated artifacts are reconciled into the merge commit **before the gates run** — otherwise a drift-guard gate reds on the stale `merge=ours` index (`regen_merged_artifacts` is defined in `/base-push`):
+`--no-commit` so the merge=ours generated artifacts are reconciled into the merge commit **before the gates run** — otherwise a drift-guard gate reds on the stale `merge=ours` index (`regen_merged_artifacts` is sourced from `.claude/scripts/merge-helpers.sh` in step 0):
 
 ```bash
 PRE_MERGE_SHA="$(git rev-parse HEAD)"
 if git merge --no-commit --no-ff "$WORKFLOW_BASE_BRANCH"; then
   if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then   # something merged
-    regen_merged_artifacts "$(git rev-parse --show-toplevel)" \
-      || { echo "artifact regen failed; resolve in $PWD"; exit 1; }
+    if ! regen_merged_artifacts "$(git rev-parse --show-toplevel)"; then
+      # Merge was CLEAN; artifact regen (docs/TODO.md + back-links) failed. This
+      # is an IN-PLACE merge — no transient worktree — so reset and stop.
+      echo "Artifact regen failed after a clean merge. Run 'git merge --abort'"
+      echo "(resets to PRE_MERGE_SHA=$PRE_MERGE_SHA), fix the cause, and re-run base-test."
+      exit 1
+    fi
     git commit --no-edit -m "Merge branch '$WORKFLOW_BASE_BRANCH' into $CURRENT_BRANCH"
   fi
 else
-  echo "Merge conflict — resolve, regenerate (node .claude/scripts/gen-todos.mjs), commit, then re-run."; exit 1
+  echo "Merge conflict. Run 'git merge --abort' (resets to PRE_MERGE_SHA=$PRE_MERGE_SHA),"
+  echo "or resolve, regenerate (node .claude/scripts/gen-todos.mjs), commit, then re-run."; exit 1
 fi
 CANDIDATE_SHA="$(git rev-parse HEAD)"
 ```
@@ -293,3 +303,17 @@ Tell the user:
 - **`base-push`** merges the caller's feature branch up into local `<base>` and publishes it to origin. No tests.
 - **`base-pr`** reviews pending changes on local `<base>` (including unpushed commits), applies fixes, promotes locally.
 - **`base-test`** merges **local** `<base>` into the current branch and then runs every project gate against the merged result. Including unpushed local commits on `<base>` in the test sweep is the whole point of sourcing from local. It reports; it does not push or promote.
+
+---
+
+**Skill Version**: 1.1.0
+**Category**: Quality / Test Gate
+
+## Changelog
+
+- **1.1.0** — (merge-helper hardening) Step 0 now **sources
+  `.claude/scripts/merge-helpers.sh`** — the fix for step 2 calling
+  `regen_merged_artifacts`, which previously lived inline in `base-push` and was
+  never sourced here (`command not found` mid-merge). Step 2's clean-merge regen
+  failure and the conflict path now point at `git merge --abort` (resets to
+  `PRE_MERGE_SHA`).

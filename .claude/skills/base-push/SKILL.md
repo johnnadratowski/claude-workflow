@@ -13,7 +13,7 @@ Performs, in order:
 
 1. Capture caller state; refuse if HEAD is on `<base>` / `<base>-review` / `<base>-test`
 2. Commit any pending work on the current branch
-3. Merge that branch into **local** `<base>` via a **transient worktree** (the canonical local helper defined below)
+3. Merge that branch into **local** `<base>` via a **transient worktree** (the canonical local helper in `.claude/scripts/merge-helpers.sh`)
 4. Publish: `git push origin <base>` (fast-forward — local `<base>` is normally ahead of `origin/<base>`)
 5. Report — the caller's worktree HEAD is unchanged throughout
 
@@ -36,102 +36,28 @@ Invoked when the user says things like:
 
 ## The transient-worktree merge helper (canonical, local-only)
 
-This is the canonical mechanism every skill uses to advance the shared base branch — `/base-push`, `/base-merge` (up), and `/base-pr` (promotion). Defined here; referenced by the others.
-
-It is **purely local** — no `fetch`, no `push`. `origin` is never touched inside the helper; publishing is a separate explicit step that only `/base-push` performs.
+This is the canonical mechanism every skill uses to advance the shared base branch — `/base-push`, `/base-merge` (up), `/base-test` (its pre-test base merge), `/base-pr` (promotion), and `/open-pr` (`--absorb`). It is defined ONCE in **`.claude/scripts/merge-helpers.sh`** and **sourced** by every caller — source it alongside `_config.sh`:
 
 ```bash
-# merge_into_branch_local TARGET LOCAL_SOURCE MERGE_MSG
-#
-# Advances LOCAL refs/heads/TARGET by merging a LOCAL source branch into it
-# inside a short-lived transient worktree — so the caller's own worktree is
-# never disturbed, and TARGET need not be checked out by the caller. The
-# transient worktree is attached to refs/heads/TARGET (NOT detached), so the
-# merge commit lands on the local ref directly. NO fetch, NO push.
-#
-# Because all worktrees share one .git, a LOCAL_SOURCE branch committed in any
-# worktree is visible here as a local ref — no push is needed to make a peer's
-# work mergeable. (Commit it; don't push it.)
-#
-# TARGET must NOT be checked out in any worktree (<base> / <base>-review /
-# <base>-test are free by repo convention). That single constraint also acts
-# as a natural mutex: a second concurrent caller's `worktree add TARGET` fails
-# fast, serializing merges into TARGET.
-#
-# Return codes:
-#   0 — success; local TARGET advanced, worktree cleaned up
-#   1 — worktree-add failure (TARGET checked out elsewhere, or a STALE
-#       transient worktree left by a crashed merge — see cleanup note below)
-#   2 — merge conflict (transient worktree preserved at the printed path)
-merge_into_branch_local() {
-  local TARGET="$1" SOURCE_REF="$2" MSG="$3"
-  local MAIN_PATH="${WORKFLOW_MAIN_PATH:-$(git rev-parse --show-toplevel)}"
-  local TMP_PARENT TMP_WT
-  TMP_PARENT="$(mktemp -d -t wf-merge-local-XXXX)"
-  TMP_WT="$TMP_PARENT/wt"
-
-  # Seed local TARGET from the cached origin ref only if it doesn't exist yet.
-  git -C "$MAIN_PATH" rev-parse --verify "refs/heads/$TARGET" >/dev/null 2>&1 \
-    || git -C "$MAIN_PATH" branch "$TARGET" "refs/remotes/origin/$TARGET" 2>/dev/null \
-    || { echo "Local '$TARGET' missing and no origin/$TARGET to seed it from."; rm -rf "$TMP_PARENT"; return 1; }
-
-  # Branch-attached transient worktree on local TARGET (NOT detached). No fetch.
-  if ! git -C "$MAIN_PATH" worktree add "$TMP_WT" "$TARGET" 2>&1; then
-    echo "Worktree add failed — is '$TARGET' checked out somewhere, or is a stale"
-    echo "transient worktree on '$TARGET' lingering from a crashed merge?"
-    git -C "$MAIN_PATH" worktree list >&2
-    rm -rf "$TMP_PARENT"
-    return 1
-  fi
-
-  # Merge the LOCAL source WITHOUT committing yet, so generated artifacts can be
-  # reconciled on the fully-materialized tree and folded into the merge commit.
-  # The merge commit (created below) advances refs/heads/TARGET because the
-  # worktree is attached to that branch.
-  if ! git -C "$TMP_WT" merge --no-commit --no-ff "$SOURCE_REF"; then
-    echo "Merge conflict in transient worktree at: $TMP_WT"
-    echo "Resolve + commit there, then: git -C $MAIN_PATH worktree remove $TMP_WT"
-    return 2   # leave the worktree on disk for manual resolution
-  fi
-
-  # Clean merge. If anything was actually merged (MERGE_HEAD set — i.e. not
-  # already-up-to-date), regenerate the generated artifacts on this materialized
-  # tree and fold them into the merge commit. See regen_merged_artifacts below.
-  if git -C "$TMP_WT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
-    regen_merged_artifacts "$TMP_WT" || { echo "artifact regen failed"; return 2; }
-    git -C "$TMP_WT" commit --no-edit -m "$MSG" || return 2
-  fi
-
-  git -C "$MAIN_PATH" worktree remove "$TMP_WT"
-  rm -rf "$TMP_PARENT"
-  return 0
-}
-
-# regen_merged_artifacts WORKTREE
-#
-# Regenerate the merge=ours generated artifacts on an already-merged, NOT-yet-
-# committed tree and stage them, so they land IN the merge commit. Call AFTER a
-# successful `git merge --no-commit` and BEFORE the commit, from EVERY
-# auto-committing merge path that brings base content in (merge_into_branch_local
-# here, plus /base-merge's down-merge and /base-test's pre-test base merge).
-#
-# Why: docs/TODO.md is `merge=ours` in .gitattributes, so a merge keeps the
-# CURRENT branch's stale copy instead of conflicting. A CI/base-test drift-guard
-# (`gen-todos.mjs` + `git diff --exit-code -- docs/TODO.md docs/todos`) would then
-# fail on the stale index. Regenerating here makes the committed artifact
-# correct. Pure-node (`gen-todos.mjs` imports only node builtins), so it runs in
-# a bare transient worktree with no project dependencies installed.
-#
-# Stages BOTH docs/TODO.md AND docs/todos: gen-todos also rewrites the managed
-# back-link block inside docs/todos/*.md on any delta, and the drift-guard checks
-# that whole set — staging only the index would leave docs/todos dirty and
-# re-trip the guard.
-regen_merged_artifacts() {
-  local WT="$1"
-  ( cd "$WT" && node .claude/scripts/gen-todos.mjs ) || return 1
-  git -C "$WT" add docs/TODO.md docs/todos
-}
+source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"
 ```
+
+(Previously these functions lived inline here as prose-only code blocks, which meant `/base-test` — which calls `regen_merged_artifacts` but never sourced this skill — hit `command not found` mid-merge. The single sourced script removes that whole class of drift.)
+
+It is **purely local** — no `fetch`, no `push`. `origin` is never touched inside the helper; publishing is a separate explicit step that only `/base-push` performs. Because all worktrees share one `.git`, a `LOCAL_SOURCE` branch committed in any worktree is visible as a local ref — no push is needed to make a peer's work mergeable (commit it; don't push it). `TARGET` must NOT be checked out in any worktree (that single constraint also acts as a natural mutex, serializing merges into `TARGET`).
+
+### Return-code contract — `merge_into_branch_local TARGET SOURCE_REF MSG`
+
+Every caller MUST route on these. **The conflict (2) vs post-merge-failure (3) split is load-bearing** — they used to be a single overloaded `2`, so a clean merge whose regen failed told the user to "resolve conflicts" that didn't exist and look for a path that was never printed.
+
+| Code | Meaning | Worktree | What the caller does |
+| ---- | ------- | -------- | -------------------- |
+| `0` | success; local `TARGET` advanced | cleaned up | continue |
+| `1` | setup / `worktree add` failure — **no merge attempted** | none left (a dangling registration is self-healed via `git worktree prune`) | stop; surface (base checked out elsewhere, or a stale transient worktree — cleanup note below) |
+| `2` | **merge conflict** | **preserved at printed path** (markers) | stop; the user resolves there, regenerates, commits, removes |
+| `3` | **post-merge failure** — merge was CLEAN but regen or commit failed | **preserved at printed path** (already merged) | stop; the user fixes the regen/commit there, commits, removes — there is nothing to "resolve" |
+
+`regen_merged_artifacts WT` (also defined by the script) reconciles the `merge=ours` artifacts on the materialized merged tree and stages them so they fold into the merge commit: `docs/TODO.md` + back-links (pure-node, so it works even in a bare transient worktree with no project dependencies installed). It returns non-zero on failure, which the helper maps to code `3`. A consuming repo with ADDITIONAL `merge=ours` generated artifacts forks `merge-helpers.sh`, adds its own regen there, and excludes the fork from `update-workflow` sync (`WORKFLOW_SYNC_EXCLUDE`).
 
 Design decisions baked into the helper:
 
@@ -150,13 +76,14 @@ Design decisions baked into the helper:
 
 ## Execution Steps
 
-### 0. Load workflow config
+### 0. Load workflow config + merge helpers
 
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
+source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"
 ```
 
-This exports `WORKFLOW_BASE_BRANCH` (default `main`) and `WORKFLOW_MAIN_PATH` (default: git toplevel).
+`_config.sh` exports `WORKFLOW_BASE_BRANCH` (default `main`) and `WORKFLOW_MAIN_PATH` (default: git toplevel). `merge-helpers.sh` defines `merge_into_branch_local` + `regen_merged_artifacts`.
 
 ### 1. Capture state and refuse the wrong starting branches
 
@@ -191,10 +118,11 @@ merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "$ORIGINAL_BRANCH" \
   "Merge branch '$ORIGINAL_BRANCH' into $WORKFLOW_BASE_BRANCH"
 ```
 
-Route by return code:
+Route by return code (full contract above):
 - **0**: continue to publish.
 - **1**: surface the worktree-add error and stop (likely the base checked out somewhere, or a stale transient worktree — see the cleanup note above).
-- **2 (conflict)**: stop. The user resolves in the transient worktree at the printed path, commits, and removes it. The caller's working tree is intact.
+- **2 (conflict)**: stop. The user resolves the conflict markers in the transient worktree at the printed path, regenerates, commits, and removes it. The caller's working tree is intact.
+- **3 (post-merge failure)**: stop. The merge was clean — there are NO conflicts to resolve; the artifact regen or commit failed. The user finishes in the transient worktree at the printed path (fix the regen / commit), then removes it. Do NOT publish.
 
 ### 4. Publish local `<base>` to `origin`
 
@@ -233,8 +161,9 @@ Stop immediately and leave state as-is on:
 
 - **HEAD is on a forbidden branch** (`<base>`/`<base>-review`/`<base>-test`): hard stop with the right-skill hint.
 - **Pre-commit hook fails:** surface output. NO `--amend`. NO `--no-verify`. User fixes the underlying issue and re-runs (a fresh commit, not an amend).
-- **Helper returns 1 (worktree add):** stop. Likely the base checked out somewhere or a stale transient worktree — surface the cleanup commands.
-- **Helper returns 2 (conflict):** stop. Print the transient-worktree path. Caller's tree is intact.
+- **Helper returns 1 (worktree add):** stop. Likely the base checked out somewhere or a stale transient worktree — surface the cleanup commands. No merge was attempted; nothing to clean in a worktree.
+- **Helper returns 2 (conflict):** stop. Print the transient-worktree path. Caller's tree is intact; the user resolves conflicts there.
+- **Helper returns 3 (post-merge failure):** stop. Merge was clean (no conflicts); the regen/commit failed. Print the transient-worktree path — the user finishes the commit there. Do NOT publish.
 - **Publish rejected (non-ff):** stop. Local `<base>` already has the merge; only the publish failed. Surface the reconcile steps. Never force-push.
 
 ## What This Skill Will NOT Do
@@ -250,7 +179,7 @@ Stop immediately and leave state as-is on:
 
 | Phase | Command |
 |-------|---------|
-| Load config | `source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"` |
+| Load config + helpers | `source .../_config.sh` then `source .../merge-helpers.sh` |
 | Capture | `ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)` |
 | Refuse if forbidden | check `$ORIGINAL_BRANCH ∉ {<base>, <base>-review, <base>-test}` |
 | Commit (if needed) | `git add <files> && git commit -m "…"` |
@@ -264,3 +193,19 @@ Stop immediately and leave state as-is on:
 - **`base-pr`** — PR-style review of pending changes on local `<base>`; promotes via the same local helper. No origin touch.
 - **`base-test`** — full gate sweep, merging from local `<base>`.
 - **`add-worktree`** — create the feature worktrees this skill operates from.
+
+---
+
+**Skill Version**: 1.1.0
+**Category**: Git Workflow
+
+## Changelog
+
+- **1.1.0** — (merge-helper hardening) `merge_into_branch_local` +
+  `regen_merged_artifacts` are now **extracted into `.claude/scripts/merge-helpers.sh`**
+  and sourced (step 0) instead of living inline here as prose — every caller now
+  shares one definition (fixes `/base-test`/`/base-pr` calling them with no
+  definition in scope). The return-code contract is **de-overloaded**: `2` is now
+  conflict-only, `3` is a post-merge regen/commit failure (both preserve the
+  transient worktree and print its path + recovery commands). Step 3 + Failure
+  Handling route code `3`.
