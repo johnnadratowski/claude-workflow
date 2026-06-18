@@ -9,7 +9,7 @@ description: Track substantive work as one file per TODO under docs/todos/ with 
 
 The TODO system tracks every substantive unit of work as a **file-per-TODO** with
 structured frontmatter (status, priority, area, milestone, dates, dependencies),
-a **stable ID** (`AREA-<NS>-<lane>NNN`), a **generated published index**, and a **completed
+a **stable ID** (`AREA-<NS>-<lane>-NNN`), a **generated published index**, and a **completed
 archive** (closed TODOs are moved, never deleted). This skill is how you create,
 move through, query, and close those TODOs. **The TODO files ARE the tracker** — there
 is no separate external ticketing system to keep in sync.
@@ -37,7 +37,7 @@ Each TODO file is frontmatter + body:
 
 ```markdown
 ---
-id: SEC-jn-8001              # AREA-<NS>-<lane>NNN, stable forever (never changes, even on defer)
+id: SEC-jn-8-001             # AREA-<NS>-<lane>-NNN, stable forever (never changes, even on defer)
 title: Short imperative title
 status: open                 # open | in-progress | blocked | deferred | done | cancelled
 priority: high               # critical | high | medium | low
@@ -75,9 +75,15 @@ help tailor the taxonomy + milestones to the project.)
 
 ## ID allocation
 
-`AREA-<NS>-<lane>NNN`: the area's prefix from `milestones.json` + a **per-engineer
-namespace** `<NS>` + **this worktree's lane number** + a zero-padded 3-digit sequence,
-**scoped per (area, NS, lane)**. Example: `SEC-jn-8001` (namespace `jn`, lane 8, sequence 001).
+`AREA-<NS>-<lane>-NNN`: the area's prefix from `milestones.json` + a **per-engineer
+namespace** `<NS>` + **this worktree's lane number** + a zero-padded 3-digit sequence —
+**each its own dash-delimited segment**, scoped per (area, NS, lane). Example: `SEC-jn-8-001`
+(namespace `jn`, lane 8, sequence 001).
+
+> **Why the lane is its own segment.** It used to be concatenated onto the sequence
+> (`SEC-jn-8001`), which aliases once lanes reach two digits: an end-unanchored scan for
+> lane 1 (`…-1[0-9]{3}`) also matched lane 10's `…-10001`. The dash makes the lane
+> unambiguous from the sequence at ANY width — `jn-1-` ≠ `jn-10-` ≠ `jn-100-`.
 
 **Two namespacing axes, both needed:**
 - **`<NS>` (per-engineer)** guards against collisions *across clones* — a second engineer
@@ -112,19 +118,30 @@ LANE="${WORKFLOW_TODO_LANE:-0}"
 **Step 3 — next sequence:** scan existing IDs across BOTH `docs/todos/` and
 `docs/todos/completed/` for that prefix **and this NS and lane**, take `max + 1` (start `001`):
 
+The scan is **end-anchored** and accepts both the new dash form and any legacy concatenated
+id for the same lane (`-?` = optional lane dash), so the sequence stays continuous across the
+format change and a one-digit lane never grabs a two-digit lane's ids:
+
 ```bash
-ls docs/todos docs/todos/completed 2>/dev/null | grep -oE "^SEC-${NS}-${LANE}[0-9]{3}" | sort | tail -1
-# → e.g. SEC-jn-8003 ⇒ mint SEC-jn-8004.  None yet ⇒ SEC-${NS}-${LANE}001.
+PREFIX=SEC   # the area's prefix from milestones.json (SEC, DX, …)
+last=$(ls docs/todos docs/todos/completed 2>/dev/null \
+  | sed 's/\.md$//' \
+  | grep -oE "^${PREFIX}-${NS}-${LANE}-?[0-9]{3}$" \   # anchored: lane 8 ≠ lane 80; `-?` spans old+new
+  | grep -oE '[0-9]{3}$' | sort -n | tail -1)          # the 3-digit seq is always the last group
+NEXT=$(printf '%03d' $(( 10#${last:-000} + 1 )))        # 10# forces base-10 (ignore leading-zero octal)
+# mint:  ${PREFIX}-${NS}-${LANE}-${NEXT}   →  e.g. DX-jn-8-006 (none yet ⇒ ${PREFIX}-${NS}-${LANE}-001)
 ```
 
-So engineer `jn` in lane 8 mints `SEC-jn-8001` / `DX-jn-8001`; engineer `pk` in lane 0
-mints `SEC-pk-001` — never the same string as `jn`'s, across machines OR worktrees.
-Double-digit lanes simply widen the numeric tail (`SEC-jn-10001`).
+So engineer `jn` in lane 8 mints `DX-jn-8-006`; lane 10 mints `SEC-jn-10-001`; engineer `pk`
+in lane 0 mints `SEC-pk-0-001` — never the same string as `jn`'s, across machines OR
+worktrees, **at any lane width**.
 
-**Legacy IDs** (bare `AREA-NNN` / `AREA-<lane>NNN` like `SEC-002`, `DX-8011`, minted before
-the NS scheme) stay valid and untouched — `ID_RE` (`/^[A-Z]+-([a-z0-9]+-)?\d{3,}$/`) accepts
-both the NS-prefixed and legacy forms; the dash before the numeric tail disambiguates them.
-The seq scan keys on `NS-LANE`, so legacy and new sequences are independent. **Never
+**Legacy IDs grandfather** — bare `AREA-NNN` (`SEC-002`), legacy lane-concatenated
+`AREA-<lane>NNN` (`DX-8011`), and the prior NS-concatenated `AREA-<NS>-<lane>NNN`
+(`DX-jn-8001`) all stay valid and untouched — `ID_RE`
+(`/^[A-Z]+-([a-z0-9]+-)?(\d+-)?\d{3,}$/`) accepts every form (the optional `(\d+-)?` is the
+new lane segment; absent, the `\d{3,}` tail absorbs an old concatenated lane+seq). Step 3's
+`-?` reads max-seq across old and new forms, so the sequence continues unbroken. **Never
 renumber an existing ID.** IDs are **immutable** — deferring, blocking, or re-scoping never
 changes the ID, so commit references stay valid forever.
 
@@ -157,7 +174,7 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
 2. Decide `area` (→ prefix), `priority` (auto-suggest from area, confirm), `milestone`,
    `tags`. If a `docs/specs/` spec covers this work, set `spec:` to its path (auto-detect via
    the title matching `[Ss]pec[\s_-]?0*(\d+)` against `docs/specs/*.md`).
-3. Mint the next `AREA-<NS>-<lane>NNN` (resolve NS + lane + scan existing — see ID allocation).
+3. Mint the next `AREA-<NS>-<lane>-NNN` (resolve NS + lane + scan existing — see ID allocation).
 4. Write `docs/todos/<ID>.md` with frontmatter (`status: open`, `created`/`updated` = today)
    + body.
 5. Run the generator; report the new ID.
@@ -315,7 +332,7 @@ re-enter the owning `define-*` skill in update mode rather than forcing it.
 
 | Input | Action |
 |-------|--------|
-| `/todo add <desc>` (or any substantive work request) | mint `AREA-<NS>-<lane>NNN`, write file, regenerate |
+| `/todo add <desc>` (or any substantive work request) | mint `AREA-<NS>-<lane>-NNN`, write file, regenerate |
 | `/todo start <ID>` | → in-progress (+ optional plan) |
 | `/todo <ID>` / `/todo do the <keyword> todo` | locate + plan + implement → doc-sync → STOP for review |
 | `/todo continue` | promote → notify tester → archive (idempotent) |
@@ -341,11 +358,19 @@ After every mutating verb: `node .claude/scripts/gen-todos.mjs` + stage the file
 
 ---
 
-**Skill Version**: 1.1.0
+**Skill Version**: 1.2.0
 **Category**: Workflow, Task Management
 
 ## Changelog
 
+- **1.2.0** — The **lane is now its own dash-delimited segment**: `AREA-<NS>-<lane>-NNN`
+  (e.g. `SEC-jn-8-001`), replacing the `<lane>NNN` concatenation that aliased at
+  ≥2-digit lanes (an end-unanchored scan for lane 1 matched lane 10's `…-10001`).
+  Step 3's scan is now **end-anchored** with a `-?` that spans old+new
+  (`^${PREFIX}-${NS}-${LANE}-?[0-9]{3}$`), so a lane never grabs a wider lane's ids
+  and the sequence stays continuous. `ID_RE` widened to
+  `/^[A-Z]+-([a-z0-9]+-)?(\d+-)?\d{3,}$/`; all prior forms grandfather. Never
+  renumber an existing ID.
 - **1.1.0** — IDs gain a **per-engineer namespace**: `AREA-<NS>-<lane>NNN` (e.g.
   `SEC-jn-8001`). `<NS>` resolves via `_config.sh`'s `WORKFLOW_TODO_NS` — the
   explicit per-clone knob (recommended; `.claude/workflow.config.local`) → full

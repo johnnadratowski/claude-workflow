@@ -48,13 +48,16 @@ const INDEX_FILE = join(ROOT, 'docs', 'TODO.md')
 const TAXONOMY_FILE = join(TODOS_DIR, 'milestones.json')
 
 const REQUIRED = ['id', 'title', 'status', 'priority', 'area', 'milestone', 'created']
-// IDs: AREA-<NS>-<lane>NNN (e.g. SEC-jn-8001 — namespace `jn`, lane 8, seq 001).
-// The optional `<ns>-` group is the per-engineer cross-collision namespace; the
-// numeric tail folds lane+seq as before. The dash before the numeric tail keeps
-// new IDs unambiguous from legacy bare `AREA-NNN` / `AREA-<lane>NNN` (e.g.
-// SEC-002, SEC-2001), which still match via the optional group. Never renumber an
-// existing ID. See the /todo skill's "ID allocation" section.
-const ID_RE = /^[A-Z]+-([a-z0-9]+-)?\d{3,}$/
+// IDs: AREA-<NS>-<lane>-NNN (e.g. SEC-jn-8-001 — namespace `jn`, lane 8, seq 001).
+// The lane is its OWN dash-delimited segment so it's unambiguous from the 3-digit
+// sequence at ANY lane width (the prior `<lane>NNN` concatenation aliased once
+// lanes hit two digits — `1001` vs `10001`). Groups:
+//   ([a-z0-9]+-)?  optional per-engineer NS    (\d+-)?  optional lane segment
+// All legacy forms still validate: concatenated AREA-<NS>-<lane>NNN (SEC-jn-8001)
+// and bare AREA-NNN / AREA-<lane>NNN (SEC-002, SEC-2001) — the `\d{3,}` tail
+// absorbs an old lane+seq when no lane dash is present. Never renumber an existing
+// ID. See the /todo skill's "ID allocation" section.
+const ID_RE = /^[A-Z]+-([a-z0-9]+-)?(\d+-)?\d{3,}$/
 // Array-valued frontmatter keys, written inline as `[a, b, c]`. NOTE: values are
 // split on a bare comma, so an individual element must not itself contain a comma
 // (fine for ids/tags/shas — the controlled vocabulary this system uses).
