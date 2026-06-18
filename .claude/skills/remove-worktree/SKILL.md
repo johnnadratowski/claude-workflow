@@ -1,26 +1,38 @@
 ---
 name: remove-worktree
-description: Tear down a git worktree created by `/add-worktree`. Confirms before removing (unless `--force`). Removes the directory via `git worktree remove`. Does NOT delete the branch — that's separate.
+description: Tear down a git worktree created by `/add-worktree`. Confirms before removing (unless `--force`). Removes the directory via `git worktree remove`, with a local-base "unlanded work" safety gate and a detached-HEAD rescue ref so a `--force` removal never silently loses commits. Deleting the branch is opt-in.
 ---
 
 # remove-worktree
 
 ```bash
-/remove-worktree <name>                 # confirms before removing
-/remove-worktree <name> --force         # skip confirmation
-/remove-worktree <name> --delete-branch # also delete the local branch
+/remove-worktree <name>                 # confirms before removing; refuses if there's unsaved/unlanded work
+/remove-worktree <name> --force         # remove anyway (uncommitted OR unlanded work will be lost)
+/remove-worktree <name> --delete-branch # also delete the local branch (if merged into local <base>)
+/remove-worktree <name> --no-rescue     # with --force on a DETACHED worktree, skip stamping a rescue ref
 ```
 
 ## What it does
 
 1. **Resolve path** — `$(WORKFLOW_WORKTREE_PARENT or parent-of-toplevel)/<repo-name>-<name>`.
 2. **Verify it's a worktree** — `git worktree list --porcelain` includes the path.
-3. **Confirm** — unless `--force`, show the user what's being removed and wait for explicit `y`.
-4. **Run `git worktree remove <path>`** — fails if the worktree has uncommitted changes; user passes `--force` to override.
-5. **If `--delete-branch`** — `git branch -d <name>` (or `-D` with `--force`). Refuses to delete a branch not fully merged unless force.
-6. **Print summary** — what was removed, whether branch was deleted.
+3. **Safety check** — refuse (unless `--force`) if the worktree has uncommitted changes OR commits not yet in the **local** base branch (`$WORKFLOW_BASE_BRANCH`). This repo is local-first — `origin/<base>` is frozen (advanced only by a human-gated `/base-push`), so "not on any remote" is the wrong test; local `<base>` is authoritative.
+4. **Detached-HEAD rescue** — if the worktree is DETACHED with unlanded commits and is being `--force`-removed, stamp a `wt-rescue-<name>-<shortsha>` branch at its HEAD SHA first so the commits stay reachable (unless `--no-rescue`). Gate the removal on the rescue ref actually existing.
+5. **Run `git worktree remove <path>`** (or `--force` if explicitly approved).
+6. **If `--delete-branch`** — delete the local branch only if it's fully merged into local `<base>` (or force).
+7. **Print summary** — what was removed, rescue ref (if any), whether the branch was deleted.
+
+## Flags
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `--force` | off | Allow removal even when the worktree has uncommitted changes or unlanded commits (not in local `<base>`). Maps to `git worktree remove --force`. |
+| `--no-rescue` | off | When a DETACHED worktree carries unlanded commits and is being `--force`-removed, skip stamping a rescue branch at its HEAD SHA. Without this flag a rescue ref is created so the detached commits stay reachable. |
+| `--delete-branch` | off | Also delete the local branch checked out in the worktree, if it's fully merged into local `$WORKFLOW_BASE_BRANCH` (use `-D` semantics only with `--force`). |
 
 ## Execution
+
+### 0. Resolve + verify
 
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
@@ -34,30 +46,133 @@ TARGET="$PARENT/$REPO_NAME-$NAME"
 # Verify it's a worktree
 git -C "$REPO_ROOT" worktree list --porcelain | grep -q "^worktree $TARGET$" \
   || { echo "Not a worktree of $REPO_ROOT: $TARGET"; exit 1; }
+```
 
-# Confirm (unless --force)
-# [ask user for confirmation here]
+If the resolved path == `$REPO_ROOT` (the main clone), refuse with a hard stop. `git worktree remove` would also refuse, but better to fail fast with a clear message.
 
-# Remove
-git -C "$REPO_ROOT" worktree remove "$TARGET"
-[ "$DELETE_BRANCH" = "1" ] && git -C "$REPO_ROOT" branch -d "$NAME"
+### 1. Safety check — uncommitted / unlanded work
 
-echo "Worktree removed: $TARGET"
+This repo is **local-first**: `origin/<base>` is intentionally frozen (advanced only by a human-gated `/base-push`), so "not on any remote" is the wrong test — it false-fires on every clean teardown. Compare against the **local** base ref (`$WORKFLOW_BASE_BRANCH`) instead:
+
+```bash
+git -C "$TARGET" status --porcelain                       # uncommitted changes
+git -C "$TARGET" log --oneline "$WORKFLOW_BASE_BRANCH..HEAD"   # commits NOT yet in local <base> (unlanded)
+```
+
+If either is non-empty AND `--force` was NOT passed, stop:
+
+```
+Worktree has unsaved work:
+  Uncommitted files:
+    M src/foo.ts
+  Unlanded commits (not in local <base>):
+    abc1234 wip: try a thing
+
+Pass --force to proceed anyway (you'll lose this work), or commit/land first.
+```
+
+### 2. Capture branch info + detached-HEAD rescue
+
+```bash
+WORKTREE_BRANCH=$(git -C "$TARGET" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+WORKTREE_SHA=$(git -C "$TARGET" rev-parse HEAD 2>/dev/null || echo "")
+```
+
+If `WORKTREE_BRANCH == "HEAD"`, the worktree is detached — its commits live ONLY on this detached HEAD. A `git worktree remove --force` orphans them (on no branch → lost at the next `gc`), and the step-1 gate can miss them. So: when the worktree is DETACHED and `git log "$WORKFLOW_BASE_BRANCH..HEAD"` is non-empty, before a `--force` removal STAMP a rescue ref at the captured SHA so the commits stay reachable (unless `--no-rescue`):
+
+```bash
+if [ "$WORKTREE_BRANCH" = "HEAD" ] && [ -n "$FORCE" ] && [ -z "$NO_RESCUE" ]; then
+  UNLANDED=$(git -C "$TARGET" log --oneline "$WORKFLOW_BASE_BRANCH..HEAD")
+  if [ -n "$UNLANDED" ]; then
+    SHORTSHA=$(git -C "$TARGET" rev-parse --short HEAD)
+    RESCUE_BRANCH="wt-rescue-${NAME}-${SHORTSHA}"
+    git -C "$REPO_ROOT" branch "$RESCUE_BRANCH" "$WORKTREE_SHA"
+    # Gate the upcoming --force removal on the rescue ref actually existing — if the
+    # branch wasn't created, do NOT proceed (the detached commits would be orphaned).
+    # Makes "commits preserved" airtight. ("already exists" at this SHA is benign —
+    # show-ref still passes, so we proceed.)
+    if ! git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$RESCUE_BRANCH"; then
+      echo "Rescue ref $RESCUE_BRANCH was NOT created — aborting removal to avoid orphaning"
+      echo "the detached commits. Branch them manually (git -C \"$REPO_ROOT\" branch <name> $WORKTREE_SHA)"
+      echo "then re-run, or re-run with --no-rescue once they're safe."
+      exit 1
+    fi
+  fi
+fi
+```
+
+Report `$RESCUE_BRANCH` in the summary so the user knows where the detached commits landed.
+
+### 3. Remove the worktree
+
+If the worktree is detached with unlanded commits, the rescue ref from step 2 has already been stamped (unless `--no-rescue`) — its commits survive the `--force` below.
+
+```bash
+if [ -n "$FORCE" ]; then
+  git -C "$REPO_ROOT" worktree remove --force "$TARGET"
+else
+  git -C "$REPO_ROOT" worktree remove "$TARGET"
+fi
+```
+
+### 4. Optionally delete the branch (`--delete-branch`)
+
+Delete the local branch only if it's fully merged into the **local** base branch (local-first — `origin/<base>` is frozen, so no `git fetch`):
+
+```bash
+if [ "$DELETE_BRANCH" = "1" ] && [ "$WORKTREE_BRANCH" != "HEAD" ]; then
+  if git -C "$REPO_ROOT" branch --merged "$WORKFLOW_BASE_BRANCH" | grep -qE "^\s+$WORKTREE_BRANCH\$"; then
+    git -C "$REPO_ROOT" branch -d "$WORKTREE_BRANCH"
+    echo "Deleted branch $WORKTREE_BRANCH (fully merged into local $WORKFLOW_BASE_BRANCH)."
+  else
+    echo "Branch $WORKTREE_BRANCH not deleted — not fully merged into local $WORKFLOW_BASE_BRANCH. Use 'git branch -D $WORKTREE_BRANCH' if you want to drop it anyway."
+  fi
+fi
+```
+
+### 5. Summary
+
+```
+✓ Removed worktree: <parent>/<repo>-<name>
+  Branch <branch>: deleted (was fully merged into local <base>)         # or "kept" / "n/a (detached)"
+  Rescue branch: wt-rescue-<name>-<shortsha> (detached commits preserved) # omit unless a rescue ref was stamped
 ```
 
 ## Failure handling
 
-- Path not a worktree: refuse with a hint.
-- Worktree has uncommitted changes: `git worktree remove` refuses; tell the user to commit/stash or pass `--force`.
-- Branch deletion fails (unmerged): tell the user; suggest `-D` (with `--force`) if they really want it gone.
+- **Path not a worktree**: refuse with a hint (`list-worktrees`).
+- **Target is the main clone**: hard stop with a clear message.
+- **Uncommitted/unlanded work and no `--force`**: surface the diff/log and stop.
+- **Rescue ref not created** (detached `--force` path): abort rather than orphan the commits.
+- **`git worktree remove` fails**: surface the git error.
+- **Branch delete fails (unmerged)**: don't fail the whole skill; note it in the summary and suggest `-D` (with `--force`) if they really want it gone.
 
 ## What this skill will NOT do
 
 - Push or sync anything.
 - Delete the remote branch.
 - Touch the main clone's working state.
+- Orphan detached commits — a `--force` removal of a detached worktree with unlanded work stamps a rescue ref first (unless `--no-rescue`) and aborts if it can't.
 
 ## Companion skills
 
 - **`add-worktree`** — create one.
 - **`list-worktrees`** — see what's there.
+
+---
+
+**Skill Version**: 1.1.0
+**Category**: Git Workflow / Dev Environment Setup
+
+## Changelog
+
+- **1.1.0** — Local-base safety gate: the "unsaved work" check now compares
+  against the **local** `<base>` (`$WORKFLOW_BASE_BRANCH`) via
+  `git log "$WORKFLOW_BASE_BRANCH..HEAD"` ("unlanded" commits) — this workflow is
+  local-first (`origin/<base>` is frozen behind `/base-push`), so a "not on any
+  remote" test would false-fire on every clean teardown. Branch-delete now also
+  tests merged-into **local** base (no `git fetch`). Added a **detached-HEAD
+  rescue ref**: a detached worktree with unlanded commits gets a
+  `wt-rescue-<name>-<shortsha>` branch stamped at its HEAD SHA before a `--force`
+  removal (orphaned commits would otherwise be lost at the next `gc`), the
+  removal is gated on that ref actually existing, and `--no-rescue` opts out.

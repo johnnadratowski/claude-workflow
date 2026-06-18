@@ -10,7 +10,7 @@ You are about to run **unattended**. The user is away and wants this task carrie
 ## Invocation
 
 ```
-/afk [test-first] --pr <agent> [--test <agent>] [--todo <ID>] [--max-rounds N] [--no-publish] [--pr-on-close]
+/afk [test-first] --pr <agent> [--test <agent>] [--todo <ID>] [--max-rounds N] [--publish] [--pr-on-close]
 ```
 
 - **`--pr <agent[,agent2,…]>`** (required) — the PR reviewer(s), as a **failover priority list** (e.g. `pr-2,pr`). `/afk` uses the first; if it's dead or never picks up / never replies within the timeout, it advances to the next — and may additionally discover other live review-role peers as further fallbacks (use the canonical classifier: `.claude/scripts/agent-fanout.sh status`, ROLE column `review` — not a name glob).
@@ -18,7 +18,7 @@ You are about to run **unattended**. The user is away and wants this task carrie
 - **`test-first`** — flavor B (test/fix loop *before* review). Default is flavor A (implement first).
 - **`--todo <ID>`** — the TODO this task closes (else infer from the task / branch; skip closing if none applies).
 - **`--max-rounds N`** (default `5`) — cap per loop (review, test). On reaching it, STOP and surface — never loop forever unattended.
-- **`--no-publish`** — never `/base-push`, even on a clean run (default: publish only if the run finished with zero blocking questions — see Finish).
+- **`--publish`** — on a clean run, after landing into local `<base>`, also `/base-push` to publish `origin/<base>`. **Default is land-local-only** — afk lands the work into the local base and stops there, so you review on return and publish yourself. Publishing is the one origin write afk can do, and only with this explicit opt-in (the old behavior was publish-by-default; flipped so an unattended run never advances `origin/<base>` without you asking — see Finish).
 - **`--pr-on-close`** — on a clean run, after closing the TODO, prepare a GitHub PR via `/open-pr <ID>` up to (but never past) its user-gated create step: branch, scope, gates, and the title/body package are ready; `gh pr create` itself waits for the user's return (PR creation is outward-facing — the autonomy contract's "never touch origin" exception does NOT extend to it). Without this flag, `/afk` skips the PR offer entirely.
 
 > **Plan-review gate first:** if the TODO's plan has no recorded `plan_review:`
@@ -37,7 +37,7 @@ The **task** is the work the user set up before invoking this (the current branc
 - **Blocking question** = something whose answer changes the implementation and has no safe default. When you hit one: implement everything you safely can around it, run it through PR + test anyway, then **stop before the final merge** and present the accumulated questions (see Finish → blocked path).
 - **Stay in scope.** Implement the task; do not opportunistically refactor unrelated code while unsupervised.
 - **Never** `--no-verify`, `--amend` published commits, force-push, run destructive git, or broadcast/fan-out to other agents. The only peers you message are `--pr` and `--test`.
-- **Never touch origin** except the optional final `/base-push` (Finish). Coordination is the local base branch.
+- **Never touch origin** except the `/base-push` in Finish that runs ONLY when `--publish` was passed (default: land into local base, no origin touch). Coordination is the local base branch.
 
 ## Step 0 — Plan echo + journal
 
@@ -50,7 +50,7 @@ JOURNAL="logs/afk-$BRANCH.md"   # logs/ should be gitignored
 mkdir -p logs
 ```
 
-Print and append to `$JOURNAL`: the task, flavor (A/B), `--pr`/`--test` agents, `--max-rounds`, the TODO ID, the merge policy ("local; publish if clean"), and the exact stop conditions. Keep appending a timestamped line at every state transition, every PR finding + how you resolved it, every non-blocking default you picked, and every test result. This journal is also your **resume state** if the run is interrupted (context compaction, restart) — on resume, read it to find where you left off.
+Print and append to `$JOURNAL`: the task, flavor (A/B), `--pr`/`--test` agents, `--max-rounds`, the TODO ID, the merge policy ("land into local base; publish to origin only if --publish"), and the exact stop conditions. Keep appending a timestamped line at every state transition, every PR finding + how you resolved it, every non-blocking default you picked, and every test result. This journal is also your **resume state** if the run is interrupted (context compaction, restart) — on resume, read it to find where you left off.
 
 ## State machine
 
@@ -124,9 +124,9 @@ Once review is green **and** tests pass:
 
 - **Clean run (no blocking questions accumulated):**
   1. Close the TODO if applicable — use the `todo` skill to move `docs/todos/<ID>.md` → `docs/todos/completed/` with the merge commit referenced (then run the generator). Skip if no TODO applies.
-  2. **Land (and publish) through the base skills — never hand-roll the merge or push.**
-     - **Default (publish):** run **`/base-push`**. It lands the branch into local `<base>` via `merge_into_branch_local` AND publishes with the **non-fast-forward guard** — the protection a raw `git push origin <base>` skips (a raw push from the wrong CWD with no guard could mutate a frozen `origin/<base>`, e.g. the SHA backing an open PR). This is the one sanctioned origin touch, allowed because the user opted into "publish if clean."
-     - **`--no-publish`:** run **`/base-merge up`** only (lands into local `<base>`, no origin touch).
+  2. **Land (and optionally publish) through the base skills — never hand-roll the merge or push.**
+     - **Default (land local only):** run **`/base-merge up`** — it lands the branch into local `<base>` via `merge_into_branch_local`, no origin touch. The work is then on the local base for you to review + publish on return.
+     - **`--publish`:** run **`/base-push`** instead — it does the same local land AND publishes `origin/<base>` with the **non-fast-forward guard** (the protection a raw `git push origin <base>` skips — a guardless push could mutate a frozen `origin/<base>`, e.g. the SHA backing an open PR). This is the one sanctioned origin touch, and only with the explicit `--publish` opt-in.
      - **Honor the merge return codes** (`merge-helpers.sh` contract): `1` worktree-add failure · `2` conflict (worktree preserved) · `3` post-merge regen/commit failure (worktree preserved). On ANY non-zero, or on a non-fast-forward push rejection from `/base-push`, **STOP** (this is a Stop condition: "merge conflict landing into the base") and surface the state in the report — never force, never retry the push blindly.
   3. If `--pr-on-close`: run `/open-pr <ID>` up to its create gate (branch + scope + gates + package ready); the user approves `gh pr create` on return. Note the prepared package in the report.
   4. Notify + final report.
@@ -166,17 +166,26 @@ The **final report** (terminal + appended to `$JOURNAL`):
 
 - Ask questions for anything with a sensible default (pick it, log it, continue).
 - Loop forever — every loop is capped and every wait has a timeout.
-- Touch origin except the optional final `/base-push` on a clean run.
+- Touch origin except the `/base-push` that runs only when `--publish` was passed (default: land into local base, no origin touch).
 - Broadcast/fan-out, force-push, `--no-verify`, `--amend` published commits, or wander outside the task's scope.
 - Merge or publish when blocking questions remain — it stops and asks instead.
 
 ---
 
-**Skill Version**: 1.1.0
+**Skill Version**: 1.2.0
 **Category**: Autonomy / Git Workflow
 
 ## Changelog
 
+- **1.2.0** — **Publish-default flipped to land-local-only.** A clean run now
+  lands the work into local `<base>` via `/base-merge up` by default and stops
+  there — no origin touch — so the user reviews and publishes on return. The
+  origin push (`/base-push`, with its non-fast-forward guard) now requires an
+  explicit **`--publish`**; the old `--no-publish` flag is gone (publish was the
+  default before). An unattended run no longer advances `origin/<base>` without
+  being asked. Updated every surface: invocation, the flag description, the
+  autonomy-contract bullet, the journal merge-policy line, the Finish clean-run
+  step, and "What this skill will NOT do".
 - **1.1.0** — (merge-helper hardening) Finish now lands **and** publishes through
   the base skills — `/base-push` (default) or `/base-merge up` (`--no-publish`) —
   never a hand-rolled `git push origin <base>` that skips the non-fast-forward

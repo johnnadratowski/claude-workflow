@@ -15,11 +15,13 @@ For each worktree:
 - **Branch** (or `(detached)`)
 - **Last commit** — short SHA + subject
 - **Dirty?** — uncommitted changes (working tree or index)
+- **Unlanded?** — count of commits not yet in the **local** base branch (`$WORKFLOW_BASE_BRANCH`). This workflow is local-first (`origin/<base>` is frozen behind `/base-push`), so the relevant signal is "not yet landed in local base", **not** "not pushed".
 - **(current)** marker if it's the worktree the user is calling from
 
 ## Execution
 
 ```bash
+source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CURRENT_WT="$REPO_ROOT"
 
@@ -40,8 +42,12 @@ git -C "$REPO_ROOT" worktree list --porcelain | awk '
   short_sha=$(git -C "$wt" rev-parse --short HEAD 2>/dev/null)
   subject=$(git -C "$wt" log -1 --pretty=%s 2>/dev/null)
   dirty=$([ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && echo " [dirty]")
-  printf "%s%s\n  branch=%s  last=%s %q%s\n" \
-    "$wt" "$marker" "$branch" "$short_sha" "$subject" "$dirty"
+  # Unlanded: commits on this worktree's HEAD not yet in LOCAL <base> (local-first;
+  # origin/<base> is frozen, so this is "not yet landed", not "not pushed").
+  unlanded=$(git -C "$wt" log --oneline "$WORKFLOW_BASE_BRANCH..HEAD" 2>/dev/null | wc -l | tr -d ' ')
+  [ "${unlanded:-0}" -gt 0 ] && unlanded=" [$unlanded unlanded]" || unlanded=""
+  printf "%s%s\n  branch=%s  last=%s %q%s%s\n" \
+    "$wt" "$marker" "$branch" "$short_sha" "$subject" "$dirty" "$unlanded"
 done
 ```
 
@@ -51,18 +57,37 @@ done
 /Users/me/code/myproject (current)
   branch=main  last=a1b2c3d "Initial commit"
 /Users/me/code/myproject-feat-1
-  branch=feat-1  last=e4f5g6h "Add user model"
+  branch=feat-1  last=e4f5g6h "Add user model" [2 unlanded]
 /Users/me/code/myproject-pr-1
   branch=pr-1  last=a1b2c3d "Initial commit" [dirty]
 ```
 
+Legend:
+- `[N unlanded]`: commits on this branch not yet in local `<base>` (`$WORKFLOW_BASE_BRANCH`) — local-first, so this is "not yet landed", not "not pushed".
+- `[dirty]`: uncommitted changes.
+- `(current)`: the worktree the user is in right now.
+
 ## What this skill will NOT do
 
 - Modify any worktree state.
-- Fetch or talk to origin.
-- Annotate with branch upstream / ahead-behind info (could be added; not in v1).
+- Fetch or talk to origin. (The unlanded count is measured against the **local** base ref, never `origin/<base>`.)
+- Annotate with branch upstream / ahead-behind info against origin (the local-base "unlanded" count is the relevant signal here).
 
 ## Companion skills
 
 - **`add-worktree`** — create one.
 - **`remove-worktree`** — remove one.
+
+---
+
+**Skill Version**: 1.1.0
+**Category**: Git Workflow / Dev Environment Setup
+
+## Changelog
+
+- **1.1.0** — Added a per-worktree **unlanded** count measured against the
+  **local** `<base>` (`git log "$WORKFLOW_BASE_BRANCH..HEAD"`). This workflow is
+  local-first (`origin/<base>` is frozen behind `/base-push`), so the relevant
+  "is there work here I haven't dealt with" signal is "not yet landed in local
+  base", not "not pushed to a remote" — consistent with `remove-worktree`'s
+  safety gate.
