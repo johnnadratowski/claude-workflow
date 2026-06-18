@@ -1,23 +1,23 @@
 ---
 name: base-pr
-description: PR-style review of what's new on the LOCAL base branch since the last review, run in place. The current branch is a baseline snapshot; diff it against local `<base>`, audit (design / security / doc-drift) against the project doc corpus, optionally apply fixes and promote into local `<base>` via the local merge helper, then re-anchor the snapshot. No fetch, no push. Base branch configurable via `.claude/workflow.config` (default `main`).
+description: PR-style review of what's new on the LOCAL base branch since the last review, on a dedicated review branch. base-pr switches the worktree to a reserved review snapshot (WORKFLOW_REVIEW_BRANCH, default <base>-review) — never a feature branch — diffs it against local `<base>`, audits (design / security / doc-drift) against the project doc corpus, optionally applies fixes and promotes into local `<base>` via the local merge helper, then re-anchors the snapshot. No fetch, no push. Base branch configurable via `.claude/workflow.config` (default `main`).
 ---
 
 # base-pr — review then promote (local-first)
 
 PR-style review of **what's new on a base branch since the last review**. The base branch defaults to `$WORKFLOW_BASE_BRANCH`; pass `--base <branch>` to review against any other shared branch.
 
-The current worktree's branch is a **baseline snapshot** — it marks where the base branch stood the last time a review ran. `/base-pr` diffs that snapshot against the current **local `<base>`** branch to surface everything that has landed on the base since, and treats those new commits as the pull request under review.
+`/base-pr` operates on a **dedicated review branch** — `WORKFLOW_REVIEW_BRANCH` (default `<base>-review`), a reserved baseline snapshot it checks out (creating it at local `<base>` if absent). The snapshot marks where the base stood at the last review; `/base-pr` diffs it against the current **local `<base>`** to surface everything that has landed since, and treats those new commits as the pull request under review. **It never reviews from — or promotes — a feature branch** (that would push unreviewed work into the base; see step 1).
 
 > **Why local, not `origin/<base>`?** Coordination is purely local — local `<base>` is the source of truth, and `origin/<base>` is only a published snapshot that advances on an explicit `/base-push`. Sourcing the audit range from `origin/<base>` would make unpublished local commits invisible — they'd slip past the review until published. Operating on the local ref means any commit on `<base>` is in scope the moment it exists. This skill never fetches or pushes.
 
-Runs in place — in whatever worktree and branch you invoke it from (any branch except the base itself, `master`, or `main`). No sandbox, no separate review worktree.
+Runs in the current worktree, but always on the **dedicated review branch**: invoke it from anywhere — if the tree is clean it switches to (or creates) `<base>-review` first; if you have uncommitted changes it refuses, so a feature branch's in-progress work is never swept into the base. This makes real the `<base>-review` reservation that `/base-push` and `/base-merge` already enforce.
 
-> **One snapshot branch per base.** The snapshot branch gets re-anchored to local `<base>` after each run (step 11). Use a worktree/branch dedicated to a given base — don't run `--base other-branch` from the branch you use as the `<base>` snapshot, or its re-anchor will drag it onto the other base.
+> **One review branch per base, automatically.** The review branch is derived per-base (`${BASE}-review`), so `--base other-branch` reviews on `other-branch-review` while the default base reviews on `<base>-review` — they can't re-anchor onto each other. Override the name with `WORKFLOW_REVIEW_BRANCH` if needed.
 
 Performs, in order:
 
-1. Resolve the base branch and the current branch (the snapshot); refuse if the current branch is the base / `master` / `main`
+1. Resolve the base branch + the dedicated review branch (`<base>-review`); get the worktree onto it — switch/create if clean, refuse if mid-work — so a feature branch is never reviewed-from or promoted
 2. Resolve the review range `HEAD..<base>` from **local** `<base>` (no fetch), produce the diff
 3. Read the design corpus (`docs/` + every relevant `CLAUDE.md`) and run the structured audit (design / security / doc-drift), escalating to the `nemesis` adversarial deep-audit when the diff touches a high-risk surface
 4. Show the findings; open a plan letting the user pick which to address
@@ -76,7 +76,7 @@ Invoked when the user says things like:
 
 ## Preconditions
 
-- The current worktree is on a snapshot branch — **not** the base branch, `master`, or `main`.
+- The current worktree is on the dedicated review branch (`<base>-review`), OR has a clean tree so base-pr can switch to it. Uncommitted changes on another branch → hard stop (base-pr won't promote a feature branch's unreviewed work).
 - The base branch exists **locally** (`git rev-parse --verify "$BASE"` succeeds). Origin is never queried — review and promotion are both purely local.
 - A readable `docs/` tree and at least a root `CLAUDE.md` (for the audit corpus).
 
@@ -88,16 +88,40 @@ Invoked when the user says things like:
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
 source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"   # merge_into_branch_local (step 10 promotion)
 BASE="${BASE:-$WORKFLOW_BASE_BRANCH}"      # overridden by --base <branch>
+# The DEDICATED review branch — a reserved snapshot base-pr owns, derived per-base
+# (so --base picks its own), env-overridable via WORKFLOW_REVIEW_BRANCH.
+REVIEW_BRANCH="${WORKFLOW_REVIEW_BRANCH:-${BASE}-review}"
 ```
 
-### 1. Capture state + refuse the wrong branches
+### 1. Capture state + get onto the dedicated review branch
 
 ```bash
 ORIGINAL_CWD=$(pwd)
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
 ```
 
-Refuse if `BRANCH` equals `$BASE`, `master`, or `main` — the snapshot must be a branch distinct from the base it's reviewing. Hard-stop with that message.
+Verify `$BASE` resolves locally (`git rev-parse --verify "$BASE"`); if not, stop.
+
+**Get onto the dedicated review branch before anything destructive.** base-pr must NOT run on a feature branch: its promotion (step 10) merges the *current* branch into local `<base>`, so on a feature branch it would push that branch's **unreviewed** commits into the base (the review only audits `HEAD..$BASE` — the base's new commits — never your work). The review branch is `<base>-review`, the reserved snapshot `/base-push` and `/base-merge` already refuse and point here:
+
+```bash
+CURRENT=$(git rev-parse --abbrev-ref HEAD)
+if [ "$CURRENT" != "$REVIEW_BRANCH" ]; then
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "base-pr runs on the dedicated review branch '$REVIEW_BRANCH', but you're on '$CURRENT'"
+    echo "with uncommitted changes. Commit/stash, then switch (git checkout $REVIEW_BRANCH) — or run"
+    echo "from the review worktree. Refusing, so unreviewed work on '$CURRENT' is never promoted into $BASE."
+    exit 1
+  fi
+  if git rev-parse --verify "$REVIEW_BRANCH" >/dev/null 2>&1; then
+    git checkout "$REVIEW_BRANCH"
+  else
+    git checkout -b "$REVIEW_BRANCH" "$BASE"   # fresh snapshot anchored at local <base>
+  fi
+fi
+BRANCH="$REVIEW_BRANCH"   # everything below reviews / promotes / re-anchors THIS branch
+```
+
+`$REVIEW_BRANCH` is `<base>-review` (distinct from `<base>`/`master`/`main`), so the never-checkout-the-literal-base rule always holds. A freshly created review branch sits AT `<base>`, so step 2's `HEAD..$BASE` is empty → "nothing new to review" (correct for a first run).
 
 Verify `$BASE` resolves locally (`git rev-parse --verify "$BASE"`); if not, stop — the base branch doesn't exist locally. (Recovery if the user expected it: `git fetch origin && git branch <base> origin/<base>` — but the skill shouldn't auto-create it.)
 
@@ -306,7 +330,7 @@ git merge --ff-only "$BASE"    # FF snapshot to the now-advanced local <base>
 - The fix commit on the branch (hash + subject), if any
 - The merge commit on **local** `<base>`, if promoted (and a reminder that it's unpublished — `/base-push` to publish when ready)
 - That the snapshot branch is now re-anchored to local `<base>`
-- That the worktree is still on `$BRANCH`
+- Which branch the worktree is on (`$BRANCH` = the review branch). **If step 1 switched here from another branch**, say so and how to return: "switched to `<base>-review` for the review — you started on `<CURRENT>`; `git checkout <CURRENT>` to go back."
 
 If `--no-fix` was passed, the report ends at the findings + deferred-findings summary and notes the snapshot is unchanged.
 
@@ -323,7 +347,7 @@ If `--no-fix` was passed, the report ends at the findings + deferred-findings su
 
 Stop immediately and leave state as-is on:
 
-- **Current branch is the base / `master` / `main`:** hard stop — the snapshot must be a separate branch.
+- **On another branch with uncommitted changes:** hard stop — base-pr won't promote a feature branch's unreviewed work; commit/stash and switch to the review branch (or run from the review worktree). On a *clean* tree it switches to/creates `<base>-review` automatically, so being on the base / `master` / a feature branch is fine as long as the tree is clean.
 - **Base branch missing locally:** stop — `git rev-parse --verify <base>` failed. Recovery: `git fetch origin && git branch <base> origin/<base>`.
 - **Local `<base>` has not advanced past the snapshot:** stop with "nothing new to review".
 - **Snapshot branch is ahead of / diverged from local `<base>`:** show `git log --left-right` and ask.
@@ -368,7 +392,7 @@ Stop immediately and leave state as-is on:
 
 ## Naming note
 
-The skill is called **`base-pr`** because the user invokes it to "review the pending PR on the base" — the new commits on `<base>` are treated as a pull request awaiting review. The current branch is a **baseline snapshot**: it records where the base branch stood at the previous review. Each `/base-pr` run reviews `snapshot..<base>` (local), then (after fixes are promoted) re-anchors the snapshot to the current local `<base>` — so the branch is always "everything on the base that has already been reviewed." Keep one snapshot branch per base.
+The skill is called **`base-pr`** because the user invokes it to "review the pending PR on the base" — the new commits on `<base>` are treated as a pull request awaiting review. The **review branch** (`<base>-review`) is a **baseline snapshot**: it records where the base branch stood at the previous review. base-pr switches the worktree onto it (step 1), so the snapshot is always that dedicated branch — never the branch you happened to invoke from. Each `/base-pr` run reviews `snapshot..<base>` (local), then (after fixes are promoted) re-anchors the snapshot to the current local `<base>` — so the review branch is always "everything on the base that has already been reviewed." One review branch per base (`${BASE}-review`).
 
 ## Companion Skills
 
@@ -379,11 +403,19 @@ The skill is called **`base-pr`** because the user invokes it to "review the pen
 
 ---
 
-**Skill Version**: 1.1.0
+**Skill Version**: 1.2.0
 **Category**: Code Review / Git Workflow
 
 ## Changelog
 
+- **1.2.0** — (dedicated review branch) base-pr now operates on a reserved review
+  branch (`WORKFLOW_REVIEW_BRANCH`, default `<base>-review`, per-base): step 1
+  switches to (or creates) it on a clean tree and **refuses on a feature branch
+  with uncommitted changes**, so the step-10 promotion can never push a feature
+  branch's *unreviewed* commits into `<base>` (the prior in-place model only
+  refused `base`/`master`/`main` by name). Makes the `<base>-review` reservation
+  in `/base-push` + `/base-merge` real again. The read-only `--pr <n>` GitHub mode
+  is unaffected.
 - **1.1.0** — (merge-helper hardening) Step 0 now **sources
   `.claude/scripts/merge-helpers.sh`** (the helper was extracted there from
   `base-push`; this skill never sourced `base-push`, so the step-10 promotion
