@@ -14,3 +14,11 @@
 # whose driver isn't registered falls back to a normal (possibly-conflicting)
 # merge — safe, not silently wrong.
 docs/TODO.md merge=ours
+
+# Set-semantics files: union-merge so an add/add conflict auto-keeps BOTH sides
+# — the right resolution for an unordered set of ignore patterns (a line added
+# on each branch is two independent additions, not a disagreement). `union` is a
+# git BUILT-IN driver, so it needs NO per-clone registration (unlike merge=ours
+# above) — it just works on everyone's next merge. NOT for code (union blindly
+# concatenates both sides into something broken) — set/append-only files only.
+.gitignore                                            merge=union
