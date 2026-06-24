@@ -25,16 +25,19 @@ SEND="$here/agent-send.sh"
 # Load WORKFLOW_BASE_BRANCH (default main) for the merge-down body + behind-count.
 # shellcheck disable=SC1090
 [ -r "$here/_config.sh" ] && . "$here/_config.sh"
+# shellcheck disable=SC1090
+[ -r "$here/_fleet.sh" ] && . "$here/_fleet.sh"   # fleet_self_token/_tmux_ok/_alive/_find_self
 BASE="${WORKFLOW_BASE_BRANCH:-main}"
 
 # Keep these patterns IDENTICAL to resolve_role() in hooks/register-agent.sh —
 # a divergence means status/targeting classify an agent differently from the
 # role context it was booted with (e.g. "x-print" must NOT read as review).
 role_of() { case "$1" in cc|coordinator|*-cc|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator;; test|*-test|*-test-*|test-*) echo test;; review|pr|*-pr|*-pr-*|pr-*|*-review|*-review-*|review-*) echo review;; *) echo feature;; esac; }
-self_name() { local f; for f in "$reg"/*; do [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "${TMUX_PANE:-}" ] && { basename "$f" | sed 's/\.[0-9]*$//'; return; }; done; }
+# Identity/liveness via the shared helper (tmux-optional); fall back inline if unsourced.
+self_name() { fleet_find_self "$reg" 2>/dev/null; }
 is_busy()  { local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]; }
 pane_in_mode() { [ "$(tmux display-message -p -t "$1" '#{pane_in_mode}' 2>/dev/null || echo 0)" = "1" ]; }
-alive() { kill -0 "$1" 2>/dev/null && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$2"; }
+alive() { fleet_alive "$1" "$2"; }
 
 # --- Context usage (DX-jn-8-018) ----------------------------------------------
 # Find an agent's live transcript WITHOUT requiring tmux. Precedence:
@@ -156,6 +159,9 @@ case "$cmd" in
     ;;
 
   restart)
+    if ! fleet_tmux_ok 2>/dev/null; then
+      echo "restart needs tmux (it drives panes via send-keys) — tmux unavailable, skipping. Restart the agent manually." >&2; exit 0
+    fi
     targets="$(enumerate "$ROLE" "$ONLY" "$EXCL")"
     [ -n "$targets" ] || { echo "no live peers match (role=$ROLE only=$ONLY exclude=$EXCL)"; exit 1; }
     echo "restart candidates:"; echo "$targets" | awk '{print "  - "$1" (pane "$3")"}'
@@ -181,6 +187,9 @@ case "$cmd" in
     ;;
 
   compact)
+    if ! fleet_tmux_ok 2>/dev/null; then
+      echo "compact needs tmux (it injects /compact via send-keys) — tmux unavailable, skipping. (A tmux-free compact would need the command-mailbox model; see DX-jn-8-019.)" >&2; exit 0
+    fi
     targets="$(enumerate "$ROLE" "$ONLY" "$EXCL")"
     [ -n "$targets" ] || { echo "no live peers match (role=$ROLE only=$ONLY exclude=$EXCL)"; exit 1; }
     # Keep only agents at/above the context threshold; annotate each with pct + raw.

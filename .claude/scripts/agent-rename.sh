@@ -8,10 +8,11 @@ set -u
 [ "$#" -lt 1 ] && { echo "usage: $(basename "$0") <new-name>" >&2; exit 2; }
 new_name="$1"
 
-if [ -z "${TMUX_PANE:-}" ]; then
-  echo "not running inside tmux — \$TMUX_PANE unset; cannot identify self" >&2
-  exit 1
-fi
+# Identity is tmux-optional (DX-jn-8-019): the registry/branch/mailbox rename works
+# headless; only the tmux title/window + /rename keystroke below need tmux.
+fleet_helper="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/_fleet.sh"
+# shellcheck disable=SC1090
+[ -r "$fleet_helper" ] && . "$fleet_helper"
 
 # Self-heal the registry first (idempotent fast-path no-op if already
 # correct). Defends against the case where SessionStart didn't fire on
@@ -28,23 +29,15 @@ new_name=$(printf '%s' "$new_name" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g;
 reg="$HOME/.claude/running-agents"
 [ -d "$reg" ] || { echo "no registry at $reg" >&2; exit 1; }
 
-# Discover self via $TMUX_PANE
-self_file=""
+# Discover self via the identity token (pane in tmux, else cwd-based)
 shopt -s nullglob
-for f in "$reg"/*; do
-  [ -f "$f" ] || continue
-  if [ "$(cat "$f" 2>/dev/null)" = "$TMUX_PANE" ]; then
-    self_file="$f"
-    break
-  fi
-done
-if [ -z "$self_file" ]; then
+old_name="$(fleet_find_self "$reg" 2>/dev/null || true)"
+if [ -z "$old_name" ]; then
   echo "this agent isn't registered" >&2
   exit 1
 fi
-
-old_name=$(basename "$self_file")
-old_name="${old_name%.*}"
+self_files=( "$reg/$old_name".* )
+self_file="${self_files[0]}"
 pid="$(basename "$self_file")"
 pid="${pid##*.}"
 
@@ -127,22 +120,27 @@ fi
 # next tool call, so just clear the stale leftover.
 rm -f "$HOME/.claude/agent-busy/$old_name"
 
-# Set the tmux pane title (right granularity — survives split-pane setups).
-tmux select-pane -t "$TMUX_PANE" -T "$new_name" 2>/dev/null || true
+# tmux cosmetics + the built-in /rename keystroke — only when tmux is drivable.
+tmux_note="tmux unavailable — registry/branch/mailbox renamed; pane title + /rename skipped"
+if fleet_tmux_ok 2>/dev/null; then
+  # Set the tmux pane title (right granularity — survives split-pane setups).
+  tmux select-pane -t "$TMUX_PANE" -T "$new_name" 2>/dev/null || true
 
-# Also rename the window for convenience on single-pane windows.
-if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
-  tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
-  tmux rename-window -t "$window_id" "$new_name" 2>/dev/null || true
+  # Also rename the window for convenience on single-pane windows.
+  if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
+    tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
+    tmux rename-window -t "$window_id" "$new_name" 2>/dev/null || true
+  fi
+
+  # Also rename the Claude session itself via its built-in /rename slash
+  # command. We're inside the running session, so just type it into our
+  # own prompt — it'll fire on the next turn.
+  tmux send-keys -t "$TMUX_PANE" -l "/rename $new_name"
+  tmux send-keys -t "$TMUX_PANE" Enter
+  tmux_note="tmux + Claude session renamed"
 fi
 
-# Also rename the Claude session itself via its built-in /rename slash
-# command. We're inside the running session, so just type it into our
-# own prompt — it'll fire on the next turn.
-tmux send-keys -t "$TMUX_PANE" -l "/rename $new_name"
-tmux send-keys -t "$TMUX_PANE" Enter
-
-echo "renamed: $old_name -> $new_name (registry + tmux + Claude session)"
+echo "renamed: $old_name -> $new_name (registry + branch; $tmux_note)"
 echo "git: $git_rename_result"
 echo "base branch tracked at: $agents_dir/$new_name"
 echo "mailbox: migrated $migrated inbound message(s) $old_name -> $new_name; stale busy marker cleared (outbound messages to peers left untouched)"

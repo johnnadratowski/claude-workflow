@@ -33,11 +33,9 @@ log() {
 
 log "fired. TMUX_PANE=${TMUX_PANE:-(unset)} cwd=$PWD payload_bytes=${#stdin_payload}"
 
-# Not inside tmux? Nothing useful to do.
-if [ -z "${TMUX_PANE:-}" ]; then
-  log "exit early: TMUX_PANE unset"
-  exit 0
-fi
+# tmux is OPTIONAL (DX-jn-8-019): without it we still register, keyed by a
+# cwd-based identity token (see _fleet.sh). Only the tmux cosmetics (pane/window
+# title, /rename keystroke) below are skipped when tmux is unavailable.
 
 # --- Resolve the claude PID ---
 # Strategy (most -> least reliable):
@@ -107,6 +105,11 @@ if [ -r "$config_loader" ]; then
   # shellcheck disable=SC1090
   . "$config_loader"
 fi
+fleet_helper="${script_dir%/hooks}/scripts/_fleet.sh"
+# shellcheck disable=SC1090
+[ -r "$fleet_helper" ] && . "$fleet_helper"
+# Identity token: $TMUX_PANE inside tmux, else cwd-based (works headless).
+self_token="$(fleet_self_token 2>/dev/null || printf '%s' "${TMUX_PANE:-cwd:$PWD}")"
 
 # --- Determine agent name ---
 # Priority:
@@ -296,41 +299,46 @@ $msg"
 }
 
 # Fast path: registry already correct.
-if [ -f "$target" ] && [ "$(cat "$target" 2>/dev/null)" = "$TMUX_PANE" ]; then
+if [ -f "$target" ] && [ "$(cat "$target" 2>/dev/null)" = "$self_token" ]; then
   log "exit: registry already correct ($target)"
   emit_session_context "$mismatch_warning"
   exit 0
 fi
 
-# Slow path: rebuild this name's entry.
+# Slow path: rebuild this name's entry (keyed by the identity token).
 rm -f "$HOME/.claude/running-agents/$name".*
-printf '%s\n' "$TMUX_PANE" > "$target"
-log "wrote $target -> $TMUX_PANE"
+printf '%s\n' "$self_token" > "$target"
+log "wrote $target -> $self_token"
 
-# tmux pane title (right granularity for split panes).
-tmux select-pane -t "$TMUX_PANE" -T "$name" 2>/dev/null || true
+# tmux cosmetics — only when tmux is actually drivable (headless: skipped).
+if fleet_tmux_ok 2>/dev/null; then
+  # tmux pane title (right granularity for split panes).
+  tmux select-pane -t "$TMUX_PANE" -T "$name" 2>/dev/null || true
 
-# tmux window rename — only when it would actually change something.
-if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
-  current_window_name=$(tmux display-message -t "$window_id" -p '#{window_name}' 2>/dev/null)
-  if [ "$current_window_name" != "$name" ]; then
-    tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
-    tmux rename-window -t "$window_id" "$name" 2>/dev/null || true
+  # tmux window rename — only when it would actually change something.
+  if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
+    current_window_name=$(tmux display-message -t "$window_id" -p '#{window_name}' 2>/dev/null)
+    if [ "$current_window_name" != "$name" ]; then
+      tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
+      tmux rename-window -t "$window_id" "$name" 2>/dev/null || true
+    fi
   fi
-fi
 
-# Type /rename into the prompt on the initial-startup path — but ONLY when the
-# session isn't already named correctly (avoids a no-op /rename re-firing on
-# every start/resume) and WORKFLOW_AGENT_SKIP_RENAME isn't "1".
-if [ "$source" = "sessionstart" ] && [ "${WORKFLOW_AGENT_SKIP_RENAME:-}" != "1" ] && [ "$session_name_sanitized" != "$name" ]; then
-  nohup bash -c "
-    sleep 2
-    tmux send-keys -t '$TMUX_PANE' -l '/rename $name'
-    tmux send-keys -t '$TMUX_PANE' Enter
-  " </dev/null >/dev/null 2>&1 &
-  log "scheduled /rename via send-keys"
+  # Type /rename into the prompt on the initial-startup path — but ONLY when the
+  # session isn't already named correctly (avoids a no-op /rename re-firing on
+  # every start/resume) and WORKFLOW_AGENT_SKIP_RENAME isn't "1".
+  if [ "$source" = "sessionstart" ] && [ "${WORKFLOW_AGENT_SKIP_RENAME:-}" != "1" ] && [ "$session_name_sanitized" != "$name" ]; then
+    nohup bash -c "
+      sleep 2
+      tmux send-keys -t '$TMUX_PANE' -l '/rename $name'
+      tmux send-keys -t '$TMUX_PANE' Enter
+    " </dev/null >/dev/null 2>&1 &
+    log "scheduled /rename via send-keys"
+  else
+    log "skip /rename (source=$source skip=${WORKFLOW_AGENT_SKIP_RENAME:-} session='$session_name_sanitized' name='$name')"
+  fi
 else
-  log "skip /rename (source=$source skip=${WORKFLOW_AGENT_SKIP_RENAME:-} session='$session_name_sanitized' name='$name')"
+  log "tmux unavailable — skipped pane/window title + /rename (headless registration)"
 fi
 
 emit_session_context "$mismatch_warning"

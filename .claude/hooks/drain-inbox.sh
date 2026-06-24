@@ -42,24 +42,17 @@ fi
 gc_days="${AGENT_INBOX_GC_DAYS:-7}"
 find "$HOME/.claude/agent-inbox" -type f -name '*.txt' -mtime "+$gc_days" -delete 2>/dev/null || true
 
-# Need tmux to know which mailbox is ours.
-[ -n "${TMUX_PANE:-}" ] || exit 0
-
 reg="$HOME/.claude/running-agents"
 [ -d "$reg" ] || exit 0
 
-# --- Discover self via $TMUX_PANE (mirrors agent-send.sh) ---
+# --- Discover self via the identity token (pane in tmux, else cwd-based) ---
+# The drain itself needs NO tmux — it just emits /agent-msg lines into the Stop
+# output — so it works headless (DX-jn-8-019).
 shopt -s nullglob
-find_self() {
-  local f bn
-  for f in "$reg"/*; do
-    [ -f "$f" ] || continue
-    if [ "$(cat "$f" 2>/dev/null)" = "$TMUX_PANE" ]; then
-      bn="$(basename "$f")"; printf '%s' "${bn%.*}"; return 0
-    fi
-  done
-  return 1
-}
+hook_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+# shellcheck disable=SC1090
+[ -r "$hook_dir/../scripts/_fleet.sh" ] && . "$hook_dir/../scripts/_fleet.sh"
+find_self() { fleet_find_self "$reg" 2>/dev/null; }
 self_name="$(find_self || true)"
 if [ -z "$self_name" ]; then
   # A drifted / missing self-entry would silently mute this drain (the whole

@@ -31,6 +31,12 @@ writes it as `<base>`.)
 - **Messaging.** Agents message each other via a durable **per-recipient mailbox**
   (`~/.claude/agent-inbox/<recipient>/`) plus a best-effort tmux nudge; a `Stop`-hook drain
   re-injects anything the nudge missed, so delivery is **at-least-once**.
+- **tmux is optional.** Identity falls back to a cwd-based token when `$TMUX_PANE` is unset
+  (one agent per worktree), so registration, self-id, mailbox delivery/drain, busy-marking
+  and `status` work headless (`_fleet.sh`). tmux is only needed for live remote-drive — the
+  instant nudge, `restart`, `compact`, the `/rename` keystroke, `inbox-watcher` — which skip
+  gracefully without it. The one real reduction: an **idle** headless agent won't process a
+  message until it's next prompted (nothing to wake it).
 - **Work tracking.** Every substantive unit of work is one file under `docs/todos/<ID>.md`;
   `docs/TODO.md` is the **generated** index. Run substantive work through `/todo`.
 - **Docs are load-bearing.** The `define-*` skills author the doc structure; `/todo` and

@@ -55,10 +55,11 @@ elif [ "$have_body" -eq 0 ]; then
   usage
 fi
 
-if [ -z "${TMUX_PANE:-}" ]; then
-  echo "not running inside tmux — \$TMUX_PANE unset; cannot identify self" >&2
-  exit 1
-fi
+# Identity works with OR without tmux (DX-jn-8-019): inside tmux the token is the
+# pane; headless it's cwd-based. Only the live nudge below needs tmux.
+fleet_helper="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/_fleet.sh"
+# shellcheck disable=SC1090
+[ -r "$fleet_helper" ] && . "$fleet_helper"
 
 # Self-heal: hooks aren't reliable across `claude --resume` paths in
 # every Claude Code version, so the registry can drift. Run the
@@ -73,19 +74,11 @@ fi
 reg="$HOME/.claude/running-agents"
 [ -d "$reg" ] || { echo "no registry at $reg" >&2; exit 1; }
 
-# --- Discover self via $TMUX_PANE (own registry file's content matches own pane) ---
-self_name=""
+# --- Discover self via the identity token (pane in tmux, else cwd-based) ---
 shopt -s nullglob
-for f in "$reg"/*; do
-  [ -f "$f" ] || continue
-  if [ "$(cat "$f" 2>/dev/null)" = "$TMUX_PANE" ]; then
-    bn="$(basename "$f")"
-    self_name="${bn%.*}"
-    break
-  fi
-done
+self_name="$(fleet_find_self "$reg" 2>/dev/null || true)"
 if [ -z "$self_name" ]; then
-  echo "this agent isn't registered (no entry in $reg matches \$TMUX_PANE=$TMUX_PANE)" >&2
+  echo "this agent isn't registered (no entry in $reg matches identity token '$(fleet_self_token 2>/dev/null)')" >&2
   exit 1
 fi
 
@@ -107,11 +100,16 @@ if ! kill -0 "$target_pid" 2>/dev/null; then
   exit 1
 fi
 
-# Liveness: tmux pane still around?
-if ! tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$target_pane"; then
-  rm -f "$target_file"
-  echo "agent '$target' tmux pane $target_pane is gone — pruned stale registry entry" >&2
-  exit 1
+# Liveness: if the target's token is a tmux pane AND we can drive tmux, the pane
+# must still exist (headless targets are keyed by cwd: and rely on the pid check above).
+if fleet_tmux_ok 2>/dev/null; then
+  case "$target_pane" in
+    %*) if ! tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$target_pane"; then
+          rm -f "$target_file"
+          echo "agent '$target' tmux pane $target_pane is gone — pruned stale registry entry" >&2
+          exit 1
+        fi ;;
+  esac
 fi
 
 # --- Stage the message file (per-recipient mailbox) ---
@@ -150,22 +148,29 @@ slash="/agent-msg $self_name $rel_path"
 #     DUPLICATE after the drain already delivered at the target's Stop. Skipping
 #     it costs no latency — a busy agent can't act before its Stop anyway — and
 #     eliminates the duplicate. The marker is cleared on the target's Stop.
-pane_in_mode="$(tmux display-message -p -t "$target_pane" '#{pane_in_mode}' 2>/dev/null || echo 0)"
-busy_marker="$HOME/.claude/agent-busy/$target"
-target_busy=0
-# A marker older than 30 min is treated as stale (a turn that crashed without
-# clearing) so we never suppress the nudge forever; a fresher marker means busy.
-[ -f "$busy_marker" ] && [ -n "$(find "$busy_marker" -mmin -30 2>/dev/null)" ] && target_busy=1
-
-if [ "$pane_in_mode" = "1" ]; then
-  nudge="nudge skipped (pane scrolled/in copy-mode) — drain will deliver"
-elif [ "$target_busy" = "1" ]; then
-  nudge="nudge skipped (target busy mid-turn) — drain delivers at its next Stop"
+# The live nudge needs tmux AND a pane-keyed target. Without either (no tmux, or a
+# headless cwd-keyed target), there's no terminal to inject into — the message is
+# already durably staged, so it drains at the target's next turn (DX-jn-8-019).
+if ! fleet_tmux_ok 2>/dev/null || [ "${target_pane#%}" = "$target_pane" ]; then
+  nudge="queued (no tmux nudge available) — drain delivers at target's next turn"
 else
-  # -l = literal; sends the slash command into the target's prompt buffer.
-  tmux send-keys -t "$target_pane" -l "$slash"
-  tmux send-keys -t "$target_pane" Enter
-  nudge="nudged"
+  pane_in_mode="$(tmux display-message -p -t "$target_pane" '#{pane_in_mode}' 2>/dev/null || echo 0)"
+  busy_marker="$HOME/.claude/agent-busy/$target"
+  target_busy=0
+  # A marker older than 5 min is treated as stale (a turn that crashed OR was interrupted without
+  # clearing) so we never suppress the nudge forever; a fresher marker means busy.
+  [ -f "$busy_marker" ] && [ -n "$(find "$busy_marker" -mmin -5 2>/dev/null)" ] && target_busy=1
+
+  if [ "$pane_in_mode" = "1" ]; then
+    nudge="nudge skipped (pane scrolled/in copy-mode) — drain will deliver"
+  elif [ "$target_busy" = "1" ]; then
+    nudge="nudge skipped (target busy mid-turn) — drain delivers at its next Stop"
+  else
+    # -l = literal; sends the slash command into the target's prompt buffer.
+    tmux send-keys -t "$target_pane" -l "$slash"
+    tmux send-keys -t "$target_pane" Enter
+    nudge="nudged"
+  fi
 fi
 
 echo "sent to $target as $self_name (msg=$rel_path kind=$kind; $nudge)"

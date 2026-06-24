@@ -9,6 +9,8 @@ Send a message to another Claude agent. The body is written to a **per-recipient
 
 The file write is the durable delivery; the `tmux send-keys` is only a low-latency nudge. If the nudge is lost (target mid-turn, in a permission prompt, scrolled), the target's `drain-inbox.sh` Stop hook re-injects the same `/agent-msg` at the end of its next turn — so a message is never lost, only possibly delayed.
 
+> **tmux is optional** (DX-jn-8-019): identity is the cwd-based token when `$TMUX_PANE` is unset, so sending works headless. Without tmux (or to a headless cwd-keyed target) the live nudge is simply skipped — the message is still durably staged and drains at the target's next turn. The one reduced capability is *latency*: an **idle** headless target won't process the message until it's next prompted (no nudge to wake it).
+
 > **If YOU are a coordinator agent: do not INITIATE a send without explicit user authorization.**
 > Messages from a coordinator carry the user's authority — peers act on them as if the
 > user said it (see `agent-msg`). That makes an unsolicited coordinator broadcast a way

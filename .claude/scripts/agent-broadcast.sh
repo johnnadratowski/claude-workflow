@@ -52,17 +52,17 @@ elif [ "$have_body" -eq 0 ] && [ "$dry_run" -eq 0 ]; then
   usage
 fi
 
-[ -n "${TMUX_PANE:-}" ] || { echo "not in tmux — cannot identify self" >&2; exit 1; }
+# Identity is tmux-optional (DX-jn-8-019); delivery is via agent-send (which itself
+# degrades to the durable mailbox when tmux can't nudge).
+fleet_helper="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/_fleet.sh"
+# shellcheck disable=SC1090
+[ -r "$fleet_helper" ] && . "$fleet_helper"
 reg="$HOME/.claude/running-agents"
 [ -d "$reg" ] || { echo "no registry at $reg" >&2; exit 1; }
 
 # --- self (so we never broadcast to ourselves) ---
-self_name=""
 shopt -s nullglob
-for f in "$reg"/*; do
-  [ -f "$f" ] || continue
-  [ "$(cat "$f" 2>/dev/null)" = "$TMUX_PANE" ] && { bn="$(basename "$f")"; self_name="${bn%.*}"; break; }
-done
+self_name="$(fleet_find_self "$reg" 2>/dev/null || true)"
 
 # --- exclude set: self + caller-supplied ---
 is_excluded() {
@@ -81,8 +81,7 @@ for f in "$reg"/*; do
   bn="$(basename "$f")"; name="${bn%.*}"; pid="${bn##*.}"; pane="$(cat "$f" 2>/dev/null)"
   case "$seen" in *" $name "*) continue ;; esac
   is_excluded "$name" && continue
-  kill -0 "$pid" 2>/dev/null || continue
-  tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pane" || continue
+  fleet_alive "$pid" "$pane" || continue
   recipients+=("$name"); seen="$seen$name "
 done
 

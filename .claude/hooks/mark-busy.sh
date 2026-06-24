@@ -22,18 +22,16 @@
 set -u
 cat >/dev/null 2>&1 || true   # drain hook stdin
 
-[ -n "${TMUX_PANE:-}" ] || exit 0
 reg="$HOME/.claude/running-agents"
 [ -d "$reg" ] || exit 0
 
-shopt -s nullglob
-for f in "$reg"/*; do
-  [ -f "$f" ] || continue
-  if [ "$(cat "$f" 2>/dev/null)" = "$TMUX_PANE" ]; then
-    bn="$(basename "$f")"
-    mkdir -p "$HOME/.claude/agent-busy"
-    : > "$HOME/.claude/agent-busy/${bn%.*}"
-    break
-  fi
-done
+# Self-id via the identity token (pane in tmux, else cwd-based) — works headless (DX-jn-8-019).
+hook_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+# shellcheck disable=SC1090
+[ -r "$hook_dir/../scripts/_fleet.sh" ] && . "$hook_dir/../scripts/_fleet.sh"
+self_name="$(fleet_find_self "$reg" 2>/dev/null || true)"
+if [ -n "$self_name" ]; then
+  mkdir -p "$HOME/.claude/agent-busy"
+  : > "$HOME/.claude/agent-busy/$self_name"
+fi
 exit 0

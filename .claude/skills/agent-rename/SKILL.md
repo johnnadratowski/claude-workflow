@@ -22,7 +22,7 @@ description: Rename this Claude agent everywhere — registry file, tmux pane ti
 ## Constraints
 
 - `<new-name>` is sanitized: alphanumerics, dashes, and underscores. Slashes and other chars collapse to dashes. Empty after sanitization → error.
-- Must run inside tmux; otherwise the agent has no identity to rename.
+- **tmux is optional** (DX-jn-8-019): the registry / base-branch / mailbox rename works headless (identity is the cwd-based token when `$TMUX_PANE` is unset). Only the tmux pane/window title and the built-in `/rename` keystroke are skipped without tmux — the output says so.
 
 ## Examples
 

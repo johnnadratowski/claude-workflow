@@ -21,6 +21,13 @@
 # are left alone for the drain's time-based GC to collect.
 
 set -u
+# This watcher's entire job is to re-NUDGE parked agents via tmux send-keys, so it
+# is a tmux-only convenience (DX-jn-8-019). Without tmux there's nothing it can do —
+# the durable mailbox + Stop-drain still deliver at each agent's next turn.
+if [ -z "${TMUX_PANE:-}" ] && ! command -v tmux >/dev/null 2>&1; then
+  echo "inbox-watcher: tmux unavailable — nothing to nudge (messages still drain at each agent's next turn); exiting." >&2
+  exit 0
+fi
 interval="${1:-5}"
 redeliver_after="${2:-30}"
 inbox="$HOME/.claude/agent-inbox"
@@ -64,7 +71,7 @@ while :; do
     # Skip busy recipients — their Stop-drain delivers at the end of the turn;
     # re-nudging a busy agent would just buffer and replay as a duplicate.
     bm="$HOME/.claude/agent-busy/$recipient"
-    [ -f "$bm" ] && [ -n "$(find "$bm" -mmin -30 2>/dev/null)" ] && continue
+    [ -f "$bm" ] && [ -n "$(find "$bm" -mmin -5 2>/dev/null)" ] && continue
 
     tmux send-keys -t "$pane" -l "/agent-msg $sender $recipient/$fname$kw"
     tmux send-keys -t "$pane" Enter
