@@ -1,6 +1,6 @@
 ---
 name: base-pr
-description: PR-style review of what's new on the LOCAL base branch since the last review, on a dedicated review branch. base-pr switches the worktree to a reserved review snapshot (WORKFLOW_REVIEW_BRANCH, default <base>-review) — never a feature branch — diffs it against local `<base>`, audits (design / security / doc-drift) against the project doc corpus, optionally applies fixes and promotes into local `<base>` via the local merge helper, then re-anchors the snapshot. No fetch, no push. Base branch configurable via `.claude/workflow.config` (default `main`).
+description: PR-style review of what's new on the LOCAL base branch since the last review, on a dedicated review branch. base-pr switches the worktree to a reserved review snapshot (WORKFLOW_REVIEW_BRANCH, default <base>-review) — never a feature branch — diffs it against local `<base>`, audits (design / security / doc-drift / integration-contracts) against the project doc corpus, optionally applies fixes and promotes into local `<base>` via the local merge helper, then re-anchors the snapshot. No fetch, no push. Base branch configurable via `.claude/workflow.config` (default `main`).
 ---
 
 # base-pr — review then promote (local-first)
@@ -19,7 +19,7 @@ Performs, in order:
 
 1. Resolve the base branch + the dedicated review branch (`<base>-review`); get the worktree onto it — switch/create if clean, refuse if mid-work — so a feature branch is never reviewed-from or promoted
 2. Resolve the review range `HEAD..<base>` from **local** `<base>` (no fetch), produce the diff
-3. Read the design corpus (`docs/` + every relevant `CLAUDE.md`) and run the structured audit (design / security / doc-drift), escalating to the `nemesis` adversarial deep-audit when the diff touches a high-risk surface
+3. Read the design corpus (`docs/` + every relevant `CLAUDE.md`) and run the structured audit (design / security / doc-drift / integration-contracts), escalating to the `nemesis` adversarial deep-audit when the diff touches a high-risk surface
 4. Show the findings; open a plan letting the user pick which to address
 5. Merge local `<base>` into the current branch — this advances the snapshot and gives a base to apply fixes on
 6. Apply the accepted fixes, run per-project gates, then **STOP for the user's review of the uncommitted fixes** — the human-in-the-loop gate: commit only after the user has had a chance to review (monocle / `git diff`). **If the Monocle engine is live** (`.claude/scripts/monocle-review.sh available`), offer `/monocle-review diff <ID>` — Monocle reviews the uncommitted diff natively while the skill attaches the TODO + plan as context (stable ids), then blocks on the verdict; engine down ⇒ `git diff` as before. (`/afk` is the only exception.)
@@ -248,10 +248,19 @@ Scope the nemesis run to the changed files/functions named in the diff — it's 
 
 Fold every nemesis **verified** finding into the **Security findings** list with its id and discovery path. Note in the report whether nemesis ran or was skipped, and why.
 
+**E. Integration-contract audit**
+
+If the diff calls an **external API, RPC, or third-party provider**, verify the **operations it uses** are actually correct — **re-check independently; do not assume the implementer/planner got it right** (this dimension exists because contract bugs slip past planning). For each integration the diff touches:
+
+- **Were the operations verified against authoritative docs?** Cross-check `docs/integration-notes.md` **and** the provider's own docs (the provider's doc tool first — its documentation MCP if one exists, else `context7` for libraries). **Explore the docs yourself** — a missing or hand-wavy verification is a finding.
+- **Is the note fresh enough?** ≤30 days may be trusted; older without a re-verify is a finding. **Money-movement / state-mutating operations must be re-verified every time regardless of age.**
+- **Was `integration-notes.md` updated in the same diff?** A newly used operation not recorded (with date + doc source), or a new doc location not added to the provider's _Doc sources_ → doc-drift finding.
+- **No authoritative docs?** Confirm the implementer asked the user and/or reverse-engineered **only in sandbox/testnet** (never prod, never money-moving) with dated findings recorded. An unverified contract on a money-movement surface is a **blocker** — worst case, flag it for a sandbox reverse-engineering pass rather than letting it land.
+
 ### 6. Show findings + open the fix plan
 
 Write the three audit sections to the user, then use the plan tooling (EnterPlanMode → ExitPlanMode) to present a numbered plan that:
-- Restates each finding as a discrete fix item (Design — including A.1 violations + A.3 coverage-gap recommendations / Security — including any nemesis findings / Doc-drift sections)
+- Restates each finding as a discrete fix item (Design — including A.1 violations + A.3 coverage-gap recommendations / Security — including any nemesis findings / Doc-drift / Integration-contract sections)
 - Marks severity / blocker status (coverage-gap recommendations are never blockers)
 - Asks the user which items to fix in this pass — and whether to roll best-practices/architecture doc updates into the same fix commit or a separate doc-only one
 

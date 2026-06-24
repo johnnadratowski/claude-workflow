@@ -251,9 +251,16 @@ frontmatter, bump `updated`, then run the generator.
    ```
    If the TODO links a `spec:` (or the title matches a spec), also load that spec and map its
    **acceptance criteria** to implementation steps. Cite the rules the work touches.
+   **If the work calls an external API/RPC/provider, also load `docs/integration-notes.md`**
+   and verify the operations you'll use against the provider's docs (the provider's doc tool
+   first — its documentation MCP if one exists, else `context7` for libraries). Skimming isn't
+   verification; money-movement / state-mutating ops are re-verified regardless of note age.
 2. **Plan** (complex work): use `EnterPlanMode` → draft the plan inline (analysis +
    best-practices/architecture/security citations + spec AC mapping + steps) → `ExitPlanMode`
    for approval → write it to `docs/todo_plans/<slug>.md` and set the TODO's `plan:` field.
+   **If the plan touches an integration, add an "Integrations touched + contract verification"
+   section** (provider + operations, what you verified against which doc source + date, and the
+   `integration-notes.md` entries you'll add/update in the same diff).
    `start` the TODO. (Skippable with "skip plan"/"just do it" for trivial work — the docs
    corpus is still loaded for the doc-sync step.)
 3. **Plan review (peer gate)** — complex plans go to a review agent BEFORE implementation:

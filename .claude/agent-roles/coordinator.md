@@ -15,7 +15,10 @@ work, **switch into the feature-agent workflow** (see [`feature.md`](feature.md)
 make progress on a task while the other agents work their own lanes:
 
 - Pick it up via the `/todo` skill (mint/start the TODO), implement on your `<base>-cc`
-  branch, **doc-sync before review** (`docs/doc-sync.md`, including `docs/architecture.md`
+  branch, **verify external-integration contracts first** (if the work calls an external
+  API/RPC/provider, check `docs/integration-notes.md` + the provider's docs for the operations
+  you'll use, keeping the notes current in the same diff), **doc-sync before review**
+  (`docs/doc-sync.md`, including `docs/architecture.md`
   when the architecture changes), **stop for the user's review of the uncommitted change
   before EVERY commit** (the human-in-the-loop gate — `/afk` excepted; when the Monocle
   engine is live, offer `/monocle-review` — native diff review + TODO/plan context artifacts
