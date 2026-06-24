@@ -22,7 +22,7 @@ Performs, in order:
 3. Read the design corpus (`docs/` + every relevant `CLAUDE.md`) and run the structured audit (design / security / doc-drift), escalating to the `nemesis` adversarial deep-audit when the diff touches a high-risk surface
 4. Show the findings; open a plan letting the user pick which to address
 5. Merge local `<base>` into the current branch — this advances the snapshot and gives a base to apply fixes on
-6. Apply the accepted fixes, run per-project gates, pause for user review
+6. Apply the accepted fixes, run per-project gates, then **STOP for the user's review of the uncommitted fixes** — the human-in-the-loop gate: commit only after the user has had a chance to review (monocle / `git diff`). **If the Monocle engine is live** (`.claude/scripts/monocle-review.sh available`), offer `/monocle-review diff <ID>` — Monocle reviews the uncommitted diff natively while the skill attaches the TODO + plan as context (stable ids), then blocks on the verdict; engine down ⇒ `git diff` as before. (`/afk` is the only exception.)
 7. Commit the fixes on the current branch
 8. Ask the user to confirm, then promote the fixes into **local** `<base>` via the local merge helper from `base-push` (no push — publishing is a later explicit `/base-push`)
 9. Fast-forward the branch onto the now-current local `<base>` so it's a clean snapshot for the next review

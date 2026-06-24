@@ -278,20 +278,34 @@ frontmatter, bump `updated`, then run the generator.
       the user what the gate CHANGED — each blocker/suggestion and how the plan moved (or a
       one-line "peer gate: GREEN, no changes") — and get their sign-off before implementation
       starts. The plan side is **user → agent → user**: the user approved the draft, the peer
-      hardened it, the user reviews the hardening. **The human is the terminal reviewer of
+      hardened it, the user reviews the hardening. **If the Monocle engine is live**
+      (`.claude/scripts/monocle-review.sh available`), offer `/monocle-review plan <ID>` for
+      this sign-off — there's no diff yet, so the plan IS the subject; the skill sends the
+      plan + TODO as artifacts (stable ids) and blocks on the verdict; engine down ⇒ present
+      inline as before. **The human is the terminal reviewer of
       every loop** — peer review always precedes and never replaces user review (the diff
       side ends the same way: peer verdict, then the user's go). Under `/afk` this bookend is
       skipped; the delta goes in the journal + final report instead.
 4. **Implement** the plan, respecting the cited rules.
-5. **Verify** with the user; run the gates (the same gates `/base-test` runs for the touched
-   area). WAIT for confirmation.
-6. **Commit** referencing the ID.
-7. **Documentation sync** (before review) — see the doc-sync section below. Ships in the **same
-   diff** as the code.
-8. **STOP for review** — do NOT `done` the TODO yet. Send to a reviewer (`/base-pr`, or an
-   `agent-send` to a review agent); address feedback with follow-up commits. (The diff review
-   is unchanged by the plan-review gate — the gate is additional and earlier.)
-9. **Close** — after review + the user's explicit go to ship: run `/todo continue` (promote →
+5. **Run the gates** (the same gates `/base-test` runs for the touched area) on the working
+   tree — no commit yet.
+6. **Documentation sync** (before review) — see the doc-sync section below. Ships in the **same
+   diff** as the code (still uncommitted).
+7. **STOP for USER review — BEFORE any commit** (the human-in-the-loop gate; **`/afk` is the
+   only exception**). Present the **uncommitted** change and let the user review it (monocle /
+   `git diff` locally). **Never commit until the user has had a chance to review** — this holds
+   for EVERY round of changes (the initial implementation AND each later fix round). **If the
+   Monocle engine is live** (`.claude/scripts/monocle-review.sh available`), offer
+   `/monocle-review diff <ID>` — Monocle reviews the working-tree diff natively and attaches
+   the TODO + plan as context (stable ids, update-in-place), then blocks on the verdict; engine
+   down ⇒ `git diff` as before.
+8. **Commit** referencing the ID — only **after** the user's review in step 7.
+9. **Peer review** — send the committed change to a review agent (`/base-pr`, or an `agent-send`
+   to a review agent). **Each fix round loops back through step 7 first** (fix on the working
+   tree → user review → commit → re-send); repeat until **GREEN**. Peer review precedes — never
+   replaces — user review; the human is the terminal reviewer of every loop. (Unchanged by the
+   plan-review gate — that gate is additional and earlier.)
+10. **Close** — after review + the user's explicit go to ship: run `/todo continue` (promote →
    notify tester → archive). `done`-ing the TODO is the LAST step, after the work ships;
    it ends by **offering `/open-pr <ID>`** when the work should also go up as a GitHub PR.
 
@@ -334,7 +348,7 @@ re-enter the owning `define-*` skill in update mode rather than forcing it.
 |-------|--------|
 | `/todo add <desc>` (or any substantive work request) | mint `AREA-<NS>-<lane>-NNN`, write file, regenerate |
 | `/todo start <ID>` | → in-progress (+ optional plan) |
-| `/todo <ID>` / `/todo do the <keyword> todo` | locate + plan + implement → doc-sync → STOP for review |
+| `/todo <ID>` / `/todo do the <keyword> todo` | locate + plan + implement → doc-sync → USER review → commit → review |
 | `/todo continue` | promote → notify tester → archive (idempotent) |
 | `/todo done <ID>` / `cancel <ID>` | close → move to completed/ → offer `/open-pr <ID>` |
 | `/todo defer <ID> <milestone>` | change milestone, ID unchanged |
@@ -358,11 +372,20 @@ After every mutating verb: `node .claude/scripts/gen-todos.mjs` + stage the file
 
 ---
 
-**Skill Version**: 1.2.0
+**Skill Version**: 1.3.0
 **Category**: Workflow, Task Management
 
 ## Changelog
 
+- **1.3.0** — **User review before EVERY commit** (human-in-the-loop): the execution
+  workflow reorders so the **commit happens only after the user reviews the uncommitted
+  change** (monocle / `git diff`) — gates → doc-sync → **USER review → commit → peer review
+  → close**. Peer review runs on the user-approved commit; every fix round loops back through
+  the user-review gate before its commit. **`/afk` is the sole exception.** Plus **Monocle
+  integration**: when the engine is live (`.claude/scripts/monocle-review.sh available`), the
+  plan-review sign-off and the user-review-before-commit gate offer `/monocle-review` — the
+  diff is reviewed natively while the TODO + plan ride as context artifacts under stable ids
+  (update-in-place). Mirrors `feature.md` / `coordinator.md`.
 - **1.2.0** — The **lane is now its own dash-delimited segment**: `AREA-<NS>-<lane>-NNN`
   (e.g. `SEC-jn-8-001`), replacing the `<lane>NNN` concatenation that aliased at
   ≥2-digit lanes (an end-unanchored scan for lane 1 matched lane 10's `…-10001`).

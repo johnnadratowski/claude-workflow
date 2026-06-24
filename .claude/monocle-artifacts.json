@@ -1,0 +1,12 @@
+{
+  "_comment": "Declarative set of context artifacts the workflow sends to Monocle at review gates (DX-jn-8-017). 'roles' define each artifact's path + stable id + syntax type; 'contexts' list which roles to send for a given review step. Stable ids (e.g. plan:{ID}) make re-sends UPDATE in place instead of accumulating. Consumed by .claude/scripts/monocle-review.sh. {ID} = TODO id; {plan} = the TODO's plan: frontmatter path.",
+  "roles": {
+    "todo": { "path": "docs/todos/{ID}.md", "id": "todo:{ID}", "type": "md", "title": "TODO {ID}" },
+    "plan": { "path": "{plan}", "id": "plan:{ID}", "type": "md", "title": "Plan {ID}" }
+  },
+  "contexts": {
+    "plan": ["plan", "todo"],
+    "todo": ["todo", "plan"],
+    "diff": ["todo", "plan"]
+  }
+}
