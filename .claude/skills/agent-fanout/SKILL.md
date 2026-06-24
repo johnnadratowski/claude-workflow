@@ -28,12 +28,13 @@ action, so you don't re-prompt on ad-hoc bash. Subcommands:
 .claude/scripts/agent-fanout.sh merge-down [--role R] [--exclude a,b] [--dry-run]
 .claude/scripts/agent-fanout.sh send  [--role R] [--only a,b] [--exclude a,b] [--dry-run] --stdin <<'BODY' … BODY
 .claude/scripts/agent-fanout.sh restart --yes [--role R] [--only a,b] [--exclude a,b] [--dry-run]
+.claude/scripts/agent-fanout.sh compact --yes [--threshold N] [--role R] [--only a,b] [--exclude a,b] [--dry-run]
 ```
 
-The script always excludes self, idle-gates `restart` (skips BUSY / copy-mode panes), and
-relaunches with `claude --continue` (no session-id needed — it resumes the pane's latest
-conversation). **`restart` refuses to run without `--yes`** — the human gate below decides when
-to pass it; the allow-list removes the bash prompt, NOT the confirmation.
+The script always excludes self, idle-gates `restart`/`compact` (skips BUSY / copy-mode panes),
+and `restart` relaunches with `claude --continue` (no session-id needed — it resumes the pane's
+latest conversation). **`restart` and `compact` refuse to run without `--yes`** — the human gate
+below decides when to pass it; the allow-list removes the bash prompt, NOT the confirmation.
 
 ## Modes
 
@@ -42,10 +43,11 @@ to pass it; the allow-list removes the bash prompt, NOT the confirmation.
 /agent-fanout msg --role <r> --stdin <<'BODY'…    # fan a message out to a role/set
 /agent-fanout merge-down [--role all]             # canned: peers run /base-merge down
 /agent-fanout restart [--role <r>|<names>]        # idle-gated, confirmed, claude --continue
+/agent-fanout compact [--threshold N]             # idle-gated, confirmed, inject /compact into full agents
 ```
 
 Targeting flags (all modes): `--role feature|review|test|coordinator|all` · `--only name1,name2`
-explicit list · `--exclude a,b` · `--dry-run`.
+explicit list · `--exclude a,b` · `--dry-run`. `compact` adds `--threshold N` (default 80).
 
 Roles are derived from the agent name: `*-test*`/`test-*`→test, `*-pr*`/`pr-*`/`*-review*`→review,
 `cc`/`*-cc`/`coordinator`→coordinator, else feature (matches `register-agent.sh`'s `resolve_role`).
@@ -75,6 +77,16 @@ done
 
 Report live agents grouped by role, flag any `DEAD`/`no-pane` stale entries (offer to prune them
 with `rm`), and note who's BUSY. This is also the "look before you leap" step for the other modes.
+
+> The real `agent-fanout.sh status` (above is the illustrative inline form) also prints a **`CTX`
+> column** — each agent's main-loop context usage as `NN%` of its model's context window (`⚠`≥80%,
+> `🔴`≥90%, `—` if unknown). It finds each agent's transcript **without requiring tmux**: it reads
+> the `~/.claude/agents/<name>.transcript` / `<name>.cwd` sidecars that `register-agent.sh` records
+> on every SessionStart, derives the project dir from the cwd, and takes the newest `*.jsonl`; tmux
+> `pane_current_path` is only an **optional fallback** for agents that haven't re-registered since
+> the sidecars were introduced. The window comes from `$WORKFLOW_CTX_WINDOW` (a global override)
+> or a model default (opus/sonnet-4.x → 1M, else 200k) — set the override if your agents run a
+> different window. Use this to spot who's filling up and decide a `compact` (below) or a fanout.
 
 ## Mode: `msg` / canned actions — targeted message fan-out
 
@@ -138,6 +150,30 @@ What the script does per target (sequential, fail-contained):
 **Never restarts the caller** (self is always excluded). A coordinator on `<base>-cc` keeps its
 `cc` name across `--continue` (the session `.name` persists), so no re-`/agent-rename` is needed.
 
+## Mode: `compact` — partial-fanout compaction (idle-gated, always confirmed)
+
+Inject `/compact` into the panes of agents whose context usage is **at/above a threshold** — the
+"who's full → compact exactly those" action, paired with the `CTX%` column. `/compact` is a pane
+action (not something the mailbox can trigger), so it's delivered via `tmux send-keys`, like `restart`.
+
+```bash
+.claude/scripts/agent-fanout.sh compact --dry-run [--threshold N]      # list who WOULD be compacted (+ their %)
+.claude/scripts/agent-fanout.sh compact --yes [--threshold N] [targeting]
+```
+
+- **Audience** = live, non-self agents with `CTX% ≥ N` (default `N=80`). Below-threshold and
+  context-unknown agents are listed as skipped, not compacted.
+- **Idle-gated** — skips any BUSY / copy-mode pane (compacting mid-turn would interrupt in-flight
+  work). To compact a busy agent, wait (Monitor until idle) and re-run.
+- **Always confirmed** — like `restart`, it refuses without `--yes`. Show the user the `--dry-run`
+  list (each target + its %), get explicit go, then pass `--yes`.
+- Composes with the targeting flags and with `merge-down` (e.g. "merge-down, then compact the full
+  ones"). **Never compacts the caller** (self excluded).
+
+> **Why this matters:** an agent near its window auto-compacts on its own schedule (losing your
+> control over *when*); a deliberate `compact` at a quiet moment (e.g. right after a merge-down,
+> before handing out new work) keeps the summary boundary where you want it.
+
 ## Other useful behaviors (built in / suggested)
 
 Built in (in `agent-fanout.sh`): read-only `status` (no auth), role/`--only`/`--exclude` targeting,
@@ -157,9 +193,9 @@ Worth considering (ask the user before adding — out of scope unless requested)
 
 ## What this skill will NOT do
 
-- Fan out a message or restart anything without explicit user authorization in the current turn (the script's `restart` refuses without `--yes`, which you pass only after confirming).
-- Kill or restart a BUSY agent (idle-gated — skipped).
-- Restart the caller (self is always excluded).
+- Fan out a message, restart, or compact anything without explicit user authorization in the current turn (the script's `restart`/`compact` refuse without `--yes`, which you pass only after confirming).
+- Kill, restart, or compact a BUSY agent (idle-gated — skipped).
+- Restart or compact the caller (self is always excluded).
 - Touch `origin` (it only sends messages + manages local panes). Publishing stays `/base-push`.
 
 ## Companion skills

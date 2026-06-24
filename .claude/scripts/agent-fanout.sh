@@ -2,13 +2,16 @@
 # Fleet orchestration backing script for the /agent-fanout skill.
 #
 # Subcommands:
-#   status                          Read-only fleet snapshot (no side effects).
+#   status                          Read-only fleet snapshot (incl. CTX% per agent).
 #   merge-down [targeting]          Canned: tell peers to run `/base-merge down`.
 #   send [targeting] --stdin <<BODY Message a targeted set (reuses agent-send.sh).
 #   restart --yes [targeting]       Kill idle agents' claude, relaunch `claude --continue`.
+#   compact --yes [--threshold N]   Inject `/compact` into idle agents at/above N% context.
 #
 # Targeting (all but status): --role feature|review|test|coordinator|all (default all) ·
-#   --only name1,name2 (explicit set) · --exclude a,b · --dry-run.
+#   --only name1,name2 (explicit set) · --exclude a,b · --threshold N (compact) · --dry-run.
+# CTX% finds each agent's transcript via recorded transcript_path/cwd sidecars (tmux only as
+# an optional fallback); window = $WORKFLOW_CTX_WINDOW or a model default (opus/sonnet-4.x→1M).
 # Self is ALWAYS excluded. Roles derive from the agent name (matches resolve_role).
 #
 # SAFETY: `restart` is destructive (kills the live claude in each pane). It requires
@@ -29,9 +32,58 @@ BASE="${WORKFLOW_BASE_BRANCH:-main}"
 # role context it was booted with (e.g. "x-print" must NOT read as review).
 role_of() { case "$1" in cc|coordinator|*-cc|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator;; test|*-test|*-test-*|test-*) echo test;; review|pr|*-pr|*-pr-*|pr-*|*-review|*-review-*|review-*) echo review;; *) echo feature;; esac; }
 self_name() { local f; for f in "$reg"/*; do [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "${TMUX_PANE:-}" ] && { basename "$f" | sed 's/\.[0-9]*$//'; return; }; done; }
-is_busy()  { local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -30 2>/dev/null)" ]; }
+is_busy()  { local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]; }
 pane_in_mode() { [ "$(tmux display-message -p -t "$1" '#{pane_in_mode}' 2>/dev/null || echo 0)" = "1" ]; }
 alive() { kill -0 "$1" 2>/dev/null && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$2"; }
+
+# --- Context usage (DX-jn-8-018) ----------------------------------------------
+# Find an agent's live transcript WITHOUT requiring tmux. Precedence:
+#   1) recorded transcript_path sidecar (direct)         2) recorded cwd → project dir
+#   3) tmux pane_current_path → project dir (optional)   else: unknown.
+_ctx_transcript() {  # name pane -> transcript path (empty if not resolvable)
+  local name="$1" pane="$2" p cwd pd
+  p="$(cat "$HOME/.claude/agents/$name.transcript" 2>/dev/null)"
+  [ -n "$p" ] && [ -f "$p" ] && { echo "$p"; return; }
+  cwd="$(cat "$HOME/.claude/agents/$name.cwd" 2>/dev/null)"
+  if [ -z "$cwd" ] && [ -n "$pane" ] && command -v tmux >/dev/null 2>&1; then
+    cwd="$(tmux display -p -t "$pane" '#{pane_current_path}' 2>/dev/null)"
+  fi
+  [ -n "$cwd" ] || return
+  pd="$HOME/.claude/projects/$(printf '%s' "$cwd" | tr -c 'A-Za-z0-9' '-')"
+  [ -d "$pd" ] || return
+  ls -t "$pd"/*.jsonl 2>/dev/null | head -1
+}
+
+# Echo "pct raw" (e.g. "25 253k") for the agent's main-loop context, or nothing.
+# Window: $WORKFLOW_CTX_WINDOW if set, else model table (opus/sonnet-4.x → 1M, else 200k).
+ctx_info() {  # name pane
+  local path; path="$(_ctx_transcript "$1" "$2")"; [ -n "$path" ] && [ -f "$path" ] || return
+  tail -n 1200 "$path" 2>/dev/null | python3 -c '
+import sys, os, json
+ctx = 0; model = None
+for line in sys.stdin:
+    try: o = json.loads(line)
+    except Exception: continue
+    if o.get("isSidechain"): continue          # skip subagent turns — main loop only
+    u = (o.get("message") or {}).get("usage")
+    if not u: continue
+    ctx = (u.get("input_tokens",0) or 0) + (u.get("cache_creation_input_tokens",0) or 0) + (u.get("cache_read_input_tokens",0) or 0)
+    model = (o.get("message") or {}).get("model") or model
+if not ctx: sys.exit(0)
+env = os.environ.get("WORKFLOW_CTX_WINDOW","").strip()
+if env.isdigit() and int(env) > 0:
+    win = int(env)
+else:
+    m = model or ""
+    win = 1000000 if ("opus-4" in m or "sonnet-4" in m) else 200000
+pct = round(100 * ctx / win)
+raw = "%dk" % round(ctx/1000) if ctx >= 1000 else str(ctx)
+print("%d %s" % (pct, raw))
+'
+}
+
+# "⚠"/"🔴" flag for a percentage (empty below 80).
+ctx_flag() { if [ "${1:-0}" -ge 90 ] 2>/dev/null; then printf '🔴'; elif [ "${1:-0}" -ge 80 ] 2>/dev/null; then printf '⚠'; fi; }
 
 enumerate() {  # args: role only_csv exclude_csv -> "name pid pane" per live peer (deduped, minus self)
   local want_role="$1" only="$2" excl="$3" self; self="$(self_name)"; shopt -s nullglob
@@ -49,13 +101,14 @@ enumerate() {  # args: role only_csv exclude_csv -> "name pid pane" per live pee
   done
 }
 
-ROLE=all; ONLY=""; EXCL=""; DRY=0; YES=0; STDIN=0; EXTRA=()
+ROLE=all; ONLY=""; EXCL=""; DRY=0; YES=0; STDIN=0; THRESH=80; EXTRA=()
 parse() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --role) shift; ROLE="${1:-all}";;
       --only) shift; ONLY="${1:-}";;
       --exclude) shift; EXCL="${1:-}";;
+      --threshold) shift; THRESH="${1:-80}";;
       --dry-run) DRY=1;;
       --yes) YES=1;;
       --stdin) STDIN=1;;
@@ -70,7 +123,7 @@ parse "$@"
 case "$cmd" in
   status)
     self="$(self_name)"; basesha="$(git rev-parse --short "$BASE" 2>/dev/null || echo '?')"; shopt -s nullglob
-    printf '%-14s %-11s %-7s %-26s %s\n' NAME ROLE STATE BRANCH PANE
+    printf '%-14s %-11s %-9s %-24s %-7s %s\n' NAME ROLE STATE BRANCH CTX PANE
     seen=" "
     for f in "$reg"/*; do
       [ -f "$f" ] || continue
@@ -80,9 +133,10 @@ case "$cmd" in
       is_busy "$name" && st="$st/BUSY" || st="$st/idle"
       br="$(cat "$HOME/.claude/agents/$name" 2>/dev/null || echo '?')"
       behind="$(git rev-list --count "${br}..${BASE}" 2>/dev/null || echo '?')"
-      printf '%-14s %-11s %-7s %-26s %s%s\n' "$name" "$(role_of "$name")" "$st" "$br (behind $BASE $behind)" "$pane" "$([ "$name" = "$self" ] && echo '  <- you')"
+      ci="$(ctx_info "$name" "$pane")"; if [ -n "$ci" ]; then ctxd="$(ctx_flag "${ci%% *}")${ci%% *}%"; else ctxd='—'; fi
+      printf '%-14s %-11s %-9s %-24s %-7s %s%s\n' "$name" "$(role_of "$name")" "$st" "$br (behind $behind)" "$ctxd" "$pane" "$([ "$name" = "$self" ] && echo '  <- you')"
     done
-    echo "local $BASE @ $basesha"
+    echo "local $BASE @ $basesha   (CTX = main-loop context vs window; ⚠≥80% 🔴≥90%; window via WORKFLOW_CTX_WINDOW or model default)"
     ;;
 
   merge-down|send)
@@ -126,5 +180,35 @@ case "$cmd" in
     done
     ;;
 
-  *) echo "usage: agent-fanout.sh {status|merge-down|send|restart} [--role R] [--only a,b] [--exclude a,b] [--dry-run] [--yes]" >&2; exit 2;;
+  compact)
+    targets="$(enumerate "$ROLE" "$ONLY" "$EXCL")"
+    [ -n "$targets" ] || { echo "no live peers match (role=$ROLE only=$ONLY exclude=$EXCL)"; exit 1; }
+    # Keep only agents at/above the context threshold; annotate each with pct + raw.
+    cand=""
+    while read -r name pid pane; do
+      [ -n "$name" ] || continue
+      ci="$(ctx_info "$name" "$pane")"
+      if [ -z "$ci" ]; then echo "  skip $name — context unknown"; continue; fi
+      pct="${ci%% *}"; raw="${ci#* }"
+      if [ "$pct" -lt "$THRESH" ] 2>/dev/null; then echo "  skip $name — ${pct}% < ${THRESH}%"; continue; fi
+      cand="$cand$name $pid $pane $pct $raw"$'\n'
+    done <<EOF
+$targets
+EOF
+    [ -n "$cand" ] || { echo "no agents at/above ${THRESH}% context."; exit 0; }
+    echo "compact candidates (≥${THRESH}%):"; printf '%s' "$cand" | awk 'NF{print "  - "$1"  "$4"% ("$5")  pane "$3}'
+    if [ "$DRY" = 1 ]; then echo "(dry-run — nothing compacted)"; exit 0; fi
+    if [ "$YES" != 1 ]; then
+      echo "REFUSING: compact needs --yes (the /agent-fanout skill passes it only after you confirm)." >&2; exit 3
+    fi
+    printf '%s' "$cand" | while read -r name pid pane pct raw; do
+      [ -n "$name" ] || continue
+      if is_busy "$name"; then echo "  SKIP $name — BUSY (mid-turn)"; continue; fi
+      if pane_in_mode "$pane"; then echo "  SKIP $name — pane in copy-mode"; continue; fi
+      tmux send-keys -t "$pane" -l "/compact"; tmux send-keys -t "$pane" Enter
+      echo "  /compact -> $name (${pct}%)"
+    done
+    ;;
+
+  *) echo "usage: agent-fanout.sh {status|merge-down|send|restart|compact} [--role R] [--only a,b] [--exclude a,b] [--threshold N] [--dry-run] [--yes]" >&2; exit 2;;
 esac

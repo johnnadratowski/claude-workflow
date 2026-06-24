@@ -251,6 +251,21 @@ if [ "${WORKFLOW_AGENT_SKIP_BRANCH_WARN:-}" != "1" ] \
   log "BRANCH MISMATCH: registered=$recorded_base current=$current_branch_sanitized"
 fi
 
+# --- Context-lookup anchors (DX-jn-8-018) ---
+# Record the agent's cwd and live transcript path so tools (e.g. agent-fanout
+# `status`/`compact`) can find this agent's session transcript WITHOUT tmux. cwd
+# derives the project dir (~/.claude/projects/<cwd|nonalnum→->); transcript_path
+# (from the SessionStart payload) is the direct, heuristic-free pointer. Both are
+# refreshed every SessionStart (incl. `--continue`).
+printf '%s\n' "$PWD" > "$HOME/.claude/agents/$name.cwd"
+transcript_path=$(printf '%s' "$stdin_payload" | jq -r '.transcript_path // empty' 2>/dev/null)
+if [ -n "$transcript_path" ]; then
+  printf '%s\n' "$transcript_path" > "$HOME/.claude/agents/$name.transcript"
+  log "recorded cwd=$PWD transcript=$transcript_path"
+else
+  log "recorded cwd=$PWD (no transcript_path in payload)"
+fi
+
 mkdir -p "$HOME/.claude/running-agents"
 target="$HOME/.claude/running-agents/$name.$claude_pid"
 
