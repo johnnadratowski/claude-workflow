@@ -131,7 +131,21 @@ only sends **context** (TODO + plan).
      (annotations are line-static — no in-round auto-rebase). *Across* rounds the
      reviewer submitting **auto-clears** them, so just re-annotate against the new code.
    - (Plan/todo-only contexts have no diff — skip this step.)
-7. **Wait for the verdict — MANDATORY (the blocking default; never skip).** After
+7. **Report the review stats — ALWAYS, right after staging.** Once the review is sent
+   (+ grouped/annotated for a diff), emit a one-block summary so the user sees exactly
+   what was staged before the verdict wait:
+   - **Review name** — the `set_review_name` value
+   - **Base ref** — the `set_base_ref` ref, or `working tree (HEAD)` when none
+   - **Files in review** — count of changed files (the `set_file_groups` entries; `0`/n-a for a plan/todo-only context)
+   - **Context artifacts** — count sent (`plan:`/`todo:` pairs)
+   - **Additional files** — count added via the `add_files` tool (extra context beyond the diff; `0` if none)
+   - **TODOs** — the `<ID>`(s) included in the review
+
+   ```
+   📋 Monocle review staged — "DX-jn-8-022 + DX-jn-8-023 · review-skill dogfood"
+      base ref: working tree (HEAD) · files: 9 · artifacts: 4 · added files: 0 · TODOs: DX-jn-8-022, DX-jn-8-023
+   ```
+8. **Wait for the verdict — MANDATORY (the blocking default; never skip).** After
    sending, block via the normal Monocle path (so a long human review doesn't hit a
    Bash-tool timeout): the MCP `get_feedback` tool with `wait=true` (or
    `/get-feedback-wait`, or the `on-stop` hook). Do not move on to other work / end the
@@ -176,6 +190,6 @@ rather than sent as an artifact.
 
 ---
 
-**Skill Version**: 1.6.0
+**Skill Version**: 1.7.0
 **Category**: Workflow, Review
 _Version history: see [CHANGELOG.md](./CHANGELOG.md)._

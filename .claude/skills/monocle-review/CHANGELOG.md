@@ -2,6 +2,10 @@
 
 ## Changelog
 
+- **1.7.0** — After staging a review, **always emit a stats block** (new procedure step 7,
+  before the verdict wait): review name, base ref, # files in review, # context artifacts,
+  # additional files (`add_files`), and the TODOs included — so the user sees exactly what
+  was sent. Verdict-wait renumbered to step 8.
 - **1.6.0** — **Send-and-wait is now the explicit BLOCKING default.** Sending to Monocle
   means send AND block on the verdict (`get_feedback` wait=true), then act on it — never
   fire-and-forget — at every call site (`/todo` gates, `pr-comments`, ad-hoc sends).
