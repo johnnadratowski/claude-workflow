@@ -101,7 +101,7 @@ dedicated `<base>-cc` branch (`/add-worktree cc --branch <base>-cc --from origin
 
 ## Scripts (`scripts/`)
 `_config.sh` (config loader) · `agent-send.sh` · `agent-broadcast.sh` · `agent-fanout.sh` ·
-`agent-msg.sh` · `inbox-watcher.sh` (opt-in re-nudge daemon) · `agent-rename.sh` ·
+`agent-msg.sh` · `inbox-watcher.sh` (opt-in re-nudge daemon: parked messages + errored agents) · `agent-rename.sh` ·
 `gen-todos.mjs` (TODO index generator/validator). The `agent-*` scripts are allow-listed in
 `settings.json.example` so fan-outs/inbox-drains don't prompt; `agent-fanout.sh restart` still
 requires `--yes` after confirmation.

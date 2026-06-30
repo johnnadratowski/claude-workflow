@@ -1,12 +1,15 @@
 #!/bin/bash
-# Optional inbox watcher — re-nudges PARKED agents so messages don't wait on a
-# human keystroke.
+# Optional fleet watcher — re-nudges (1) PARKED agents so messages don't wait on a
+# human keystroke, and (2) ERRORED agents (StopFailure marker) to continue.
 #
-# The drain hook (.claude/hooks/drain-inbox.sh) already makes delivery lossless
-# for any agent that takes another turn. This covers the one gap it cannot: a
-# fully idle agent that has already Stopped and won't run its drain until
-# something wakes it. Run this in its own tmux pane or as a background process;
-# it is NOT auto-started (a long-running daemon doesn't belong in a hook).
+# The drain hook (.claude/hooks/drain-inbox.sh) already makes message delivery
+# lossless for any agent that takes another turn, and the cc-resume-errored Stop
+# hook auto-nudges errored peers whenever the coordinator stops. This daemon covers
+# the one gap NEITHER can: a fully idle fleet (no agent taking turns) — a parked
+# agent that won't run its drain, or an errored agent no coordinator turn will sweep.
+# Run it in its own tmux pane or as a background process (e.g. during /afk); it is
+# NOT auto-started (a long-running daemon doesn't belong in a hook). Both nudges are
+# pure tmux send-keys — NO model/agent calls.
 #
 # Usage: inbox-watcher.sh [interval_secs] [redeliver_after_secs]
 #   defaults: interval=5, redeliver_after=30
@@ -78,5 +81,25 @@ while :; do
     touch "$path"   # reset age — throttles re-nudge to once per redeliver_after
     echo "re-nudged $recipient about $fname (sender=$sender kind=$kind)" >&2
   done
+
+  # (2) Nudge ERRORED agents (StopFailure marker) to continue — the idle-fleet gap the
+  # cc-resume-errored Stop hook can't cover when no coordinator turn is firing. Shares
+  # that hook's ~/.claude/agent-nudged/<name> throttle, so a given agent is nudged at
+  # most once per throttle window whether by the hook OR this watcher.
+  throttle_min="${WORKFLOW_RESUME_THROTTLE_MIN:-2}"
+  nudged_dir="$HOME/.claude/agent-nudged"; mkdir -p "$nudged_dir"
+  for ef in "$HOME/.claude/agent-error"/*; do
+    [ -f "$ef" ] || continue
+    name="$(basename "$ef")"
+    pane="$(pane_for "$name" || true)"; [ -n "$pane" ] || continue   # not live → skip
+    [ "$(tmux display-message -p -t "$pane" '#{pane_in_mode}' 2>/dev/null || echo 0)" = "1" ] && continue
+    tf="$nudged_dir/$name"
+    [ -f "$tf" ] && [ -n "$(find "$tf" -mmin "-$throttle_min" 2>/dev/null)" ] && continue
+    tmux send-keys -t "$pane" -l "Continue — the API rate limit should have cleared. Resume where you left off."
+    tmux send-keys -t "$pane" Enter
+    : > "$tf"
+    echo "nudged errored agent $name to continue (pane $pane)" >&2
+  done
+
   sleep "$interval"
 done

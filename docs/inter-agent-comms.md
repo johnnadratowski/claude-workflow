@@ -45,7 +45,7 @@ All merges into `<base>` go through the canonical **local** transient-worktree h
 | `.claude/scripts/agent-broadcast.sh` | Backing script for `/agent-broadcast` — fan-out to all live peers |
 | `.claude/scripts/agent-fanout.sh` | Backing script for `/agent-fanout` — `status` / `merge-down` / `send` / `restart` (allow-listed; `restart` needs `--yes`) |
 | `.claude/scripts/agent-msg.sh` | Backing script for `/agent-msg` — read+delete one message, or `drain` the whole mailbox (allow-listed, so no ad-hoc `cat`+`rm`) |
-| `.claude/scripts/inbox-watcher.sh` | Opt-in poller that re-nudges parked (already-Stopped) agents. Not auto-started. |
+| `.claude/scripts/inbox-watcher.sh` | Opt-in poller that re-nudges parked (already-Stopped) agents AND errored agents (StopFailure marker) to continue — the idle-fleet gap the drain + cc-resume-errored Stop hook cannot cover. Not auto-started. Pure send-keys, no model calls. |
 | `.claude/scripts/agent-rename.sh` | Backing script for `/agent-rename` |
 | `.claude/skills/agent-msg/SKILL.md` | Receiver-side handler (banner + request/reply/followup branching) |
 | `.claude/skills/agent-send/SKILL.md` | Sender-side dispatcher |
