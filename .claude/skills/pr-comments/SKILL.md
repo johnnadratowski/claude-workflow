@@ -9,7 +9,7 @@ Work through every comment on a PR with full inventory, critical verification, u
 
 ## When to Use
 
-- "Go through the comments on PR 12" / "we got review feedback, address it".
+- "Go through the comments on PR 52" / "we got review feedback, address it".
 - A reviewer finished a round on a PR opened via `/open-pr` (or any PR).
 
 **Do NOT use** for opening PRs (`/open-pr`) or for internal fleet review (`/base-pr`, `agent-send`).
@@ -25,16 +25,30 @@ Work through every comment on a PR with full inventory, critical verification, u
 - `--resolve` — resolve every addressed thread wholesale. Overrides the phase-1 reviewer question (use for autonomous/agent-only PRs).
 - `--reply-only` — no code changes expected (e.g. answering questions); skips phases 4–5.
 
-> **Agent-authored marker.** Every reply/comment this skill posts ends with a
-> machine-detectable, human-invisible marker:
-> ```
-> <!-- agent-authored:pr-comments -->
-> ```
-> It renders as nothing in GitHub markdown but is regex-detectable when a later
-> round re-reads thread bodies. It is what lets the resolution logic (phase 7)
-> tell agent- from human-authored comments, and what makes posting resumable
-> (phase 7) — a thread whose latest comment already carries this round's marker
-> was already serviced. `/open-pr`'s posted comments carry it too.
+> **Agent-authored marker (two parts — visible head + invisible tail).** Every
+> reply/comment this skill posts is sandwiched between two author signals:
+>
+> 1. **Visible head — human transparency.** The body STARTS with a bold tag on its
+>    own line so a human scrolling the PR sees at a glance it came from an agent. Get
+>    it from `.claude/scripts/agent-identity.sh tag` and prepend it verbatim (followed
+>    by a blank line):
+>    ```
+>    **[AGENT RESPONSE · <name> / <role>]**      ← registered fleet agent
+>    **[AGENT RESPONSE]**                          ← identity unresolvable (fallback)
+>    ```
+> 2. **Invisible tail — machine classification.** The body ENDS with a
+>    human-invisible, regex-detectable marker:
+>    ```
+>    <!-- agent-authored:pr-comments -->
+>    ```
+>    It renders as nothing in GitHub markdown but is regex-detectable when a later
+>    round re-reads thread bodies. It is what lets the resolution logic (phase 7)
+>    tell agent- from human-authored comments.
+>
+> The two serve different audiences — the visible head for humans, the invisible tail
+> for the classifier — so keep BOTH; the head is not a substitute for the marker, and
+> the marker is **not** the resume authority (the round journal is — see Resumable).
+> `/open-pr`'s posted comments carry both too.
 
 ## Phases
 
@@ -99,11 +113,36 @@ Code: <github-blob link …/blob/<sha>/<path>#L<line>>  (+ any other cited file:
 
 The quoted prior comments + code links as a **preamble** above each drafted reply (dogfood feedback: drafts were hard to review without the thread context in front of you). Keep the per-thread root comment id from phase 1 alongside so phase 7 has its post target.
 
-**Hard rule: nothing posts during this phase.** Drafts live locally until phase 7.
+**Citing a fix — link the diff, not just the hash.** When a reply says you fixed something, keep the commit hash **and add a direct link to that change's diff** so the reviewer can jump straight to the exact change being referenced:
+
+- **commit diff** — `https://github.com/<owner>/<repo>/commit/<sha>` (owner/repo via `gh repo view --json nameWithOwner -q .nameWithOwner`). Shows the full commit diff.
+- **LOC-specific** (the comment was about a particular file/line) — anchor to it: `…/commit/<sha>#diff-$(printf '%s' "<path>" | sha256sum | cut -d' ' -f1)R<new-line>` — the `#diff-<sha256(path)>` selects the file and `R<n>` the post-change (right-side) line (`L<n>` for a removed line).
+
+So a fix citation reads like ``fixed in `a1b2c3d` ([diff](…/commit/a1b2c3d#diff-…R42))``. This applies in **both** the draft (so the link is visible in the Monocle review) and the posted reply. The link resolves because phase 7 pushes the `pr/*` head before any reply posts.
+
+**When Monocle is live, present the drafts IN MONOCLE — one artifact per response** (not the single combined file), so the user reviews exactly what will be posted before it posts. For **each** drafted reply send a `send_artifact` (CLI `monocle review send-artifact` or the MCP tool) with:
+
+- **id** — stable per thread: `pr-<n>-reply-<root-comment-id>` (re-sends update in place across rounds, no `v1/v2` clutter).
+- **title** — `reply → <author> @ <path>:<line>` (inline) or `reply → <author> (conversation)` (no LOC).
+- **content** (md) — **prefaced with the original comment and its LOC**, then the draft:
+  ```
+  **Original comment** — <author> on `<path>:<line>`   ← omit the `@ path:line` when the comment isn't anchored to a LOC
+  > <original comment, quoted>
+  > <existing reply, quoted, if any>
+
+  **Draft reply:**
+  <the reply exactly as it will post — incl. the [AGENT RESPONSE …] tag + fix-commit hash + its diff link (per "Citing a fix") + `file:line` cite>
+  ```
+
+Then **block on the verdict** (the `monocle-review` blocking default — never fire-and-forget); incorporate the user's edits, re-send (stable ids update in place), re-wait until approved. The fix **diff** is reviewed natively alongside (via `set_base_ref` if already committed onto the `pr/*` branch). Engine down ⇒ fall back to the combined markdown file above.
+
+**Hard rule: nothing posts during this phase.** Drafts live locally until phase 7 — Monocle artifacts are for *review*, not posting.
 
 ### 5. Implement accepted fixes — internal flow + TODO linkage
 
 Fixes go through the normal internal flow: implement on the working branch, gates, peer diff review for substantive changes, then onto the `pr/*` branch (cherry-pick or re-split, matching how the PR was scoped — and push to the `pr/*` head only as part of phase 7's approved package).
+
+> **If you route any review through Monocle here** (the fix diff, or the phase-6 package audit), it follows the **`monocle-review` blocking default — send AND wait for the verdict** (`get_feedback` wait=true), then act on it. Never fire-and-forget: a Monocle review you sent but didn't wait on is an ignored request. (Fire-and-forget is opt-in only — when the user explicitly says so.) If the fix is already committed onto the `pr/*` branch, review it via `set_base_ref` rather than a raw diff artifact.
 
 **TODO ledger linkage** (the PR's tag block tells you the ID; tag updates go through `/open-pr` step 6 so the implementation stays single):
 
@@ -120,12 +159,12 @@ Bundle = original comments + the implementation diff + every draft reply. Send i
 After the user approves the final package, post in one pass, **in this order**:
 
 1. **Push the head update FIRST.** The `pr/*` head gets the round's fix commit(s) before any reply posts, so the SHAs cited in replies resolve on the PR. (The head-update assumes the `pr/*` head `/open-pr` guarantees; a legacy base-headed PR would mean pushing the base — out of scope, `/open-pr` refuses base-headed PRs going forward.)
-2. **One reply per thread**, posted to the thread's **root comment id** (captured in phase 1), citing the fix commit + `file:line` (or the rationale/refutation). Inline threads: `gh api repos/{owner}/{repo}/pulls/<n>/comments/<root-id>/replies`. Every reply body ends with the agent-authored marker.
+2. **One reply per thread**, posted to the thread's **root comment id** (captured in phase 1), citing the fix commit hash **+ a link to its diff** (per "Citing a fix" — anchored to the file/line when the comment is LOC-specific) + `file:line` (or the rationale/refutation). Inline threads: `gh api repos/{owner}/{repo}/pulls/<n>/comments/<root-id>/replies`. Every reply body **starts with the visible `agent-identity.sh tag` line** and **ends with the agent-authored marker**.
 3. **Resolve per the reviewer policy** (GraphQL `resolveReviewThread`):
    - `--no-resolve` → resolve nothing.
    - `--resolve`, or "no human reviewer" answered in phase 1 → resolve every addressed thread wholesale.
    - human reviewer present (default) → leave human-raised threads for the human; resolve only a thread whose **ROOT comment is agent-authored** (carries the marker — i.e. the agent originated the point, per the phase-1 authorship capture) **and** a later human comment **affirms** it. "Agent-raised" is a property of the root comment, not the latest one (latest-is-agent and human-responded-after are mutually exclusive). Whether a later human comment counts as affirmation is a body-content judgment — **surface those candidates at triage and let the user confirm**, rather than inferring "affirmed" mechanically.
-4. **One numbered round-summary comment** (carries the marker): every item → disposition, plus what was deferred to which TODO.
+4. **One numbered round-summary comment** (starts with the `agent-identity.sh tag` line, ends with the marker): every item → disposition, plus what was deferred to which TODO.
 5. **Re-request review** (`gh api …/requested_reviewers`).
 
 **Resumable.** Keep a per-round journal (`logs/pr-comments-<n>-round<r>.json`, gitignored) of `{thread_id: posted_reply_id}` as each reply posts. Before posting to a thread, skip it **iff the journal shows it done** this round. The journal is the *sole* resume authority — do NOT use the agent-authored marker to detect "already serviced": that marker is round-agnostic (byte-identical every round), so it can't tell a reply posted in the current failed pass from one posted three rounds ago, and would wrongly skip a thread that legitimately needs a fresh reply. A partial-failure retry keyed on the round journal is idempotent, never double-posting.
@@ -149,25 +188,6 @@ Posting is all-or-nothing per the approved package — no partial early posts, n
 
 ---
 
-**Skill Version**: 1.1.0
+**Skill Version**: 1.5.0
 **Category**: Workflow, GitHub
-
-## Changelog
-
-- **1.1.0** — Review-round dogfood upgrades: refutations of code/contract
-  claims must **quote** the source line, not paraphrase (the one bug the package
-  audit caught); new **`outdated`** disposition for comments anchored on
-  since-changed code; phase-1 inventory captures each thread's **reply-anchor
-  root comment id** + per-comment authorship; phase-7 **pushes the head update
-  first** (cited SHAs resolve) and is **resumable** via a per-round journal;
-  **reviewer-aware resolution** — phase 1 asks if a human reviewer is in the
-  loop (no human → resolve wholesale; human → leave their threads, resolve only
-  agent-raised+human-affirmed), with a new **agent-authored marker** on every
-  post so rounds can classify thread authorship; the draft artifact now embeds
-  **prior comments + code links** as a per-thread preamble. `--resolve` flag
-  added alongside `--no-resolve`.
-- **1.0.0** — Initial: 3-surface paginated inventory + GraphQL resolved-state,
-  author-context (not authority), investigate-before-believing with refutation as a
-  first-class outcome, clustered triage with unposted drafts, internal-flow
-  implementation + TODO ledger linkage via /open-pr, peer package audit, atomic
-  user-gated posting.
+_Version history: see [CHANGELOG.md](./CHANGELOG.md)._

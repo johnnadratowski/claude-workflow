@@ -44,6 +44,14 @@ writes it as `<base>`.)
 
 ## Skills
 
+> **Authoring convention — keep `SKILL.md` lean.** A skill's `SKILL.md` is dumped into
+> context in full on **every invocation**, so it holds only what the agent needs at
+> **runtime**. Version history → a sibling `CHANGELOG.md` (not loaded); deep
+> reference/internals → a linked `docs/*.md`; methodology shared across skills → one
+> shared doc the skills point to (e.g. `AUDITING-SHARED.md`, `docs/fleet-base-workflow.md`).
+> **Do not append changelog entries to `SKILL.md`** — record them in the skill's
+> `CHANGELOG.md` (or rely on git log).
+
 ### Git workflow (local-first)
 | Skill | What it does |
 |---|---|

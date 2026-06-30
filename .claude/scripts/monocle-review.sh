@@ -19,10 +19,30 @@
 #   monocle-review.sh available                 # exit 0 = engine live for this repo, 2 = not running
 #   monocle-review.sh list <context> <ID>       # print the artifacts that WOULD be sent (no send)
 #   monocle-review.sh send <context> <ID>       # send the context's artifacts (stable ids)
+#   monocle-review.sh groups [<base>]           # classify the review diff into the canonical
+#                                               #   bottom-up review layers; print set_file_groups
+#                                               #   entries as JSON for mcp__monocle__set_file_groups.
+#                                               #   <base> (optional) = the ref given to set_base_ref
+#                                               #   for an ALREADY-COMMITTED review; default HEAD
+#                                               #   (working-tree). Diffs <base> vs the working tree.
 #
 #   <context> ∈ keys of .claude/monocle-artifacts.json "contexts" (plan | todo | diff)
 #   <ID>      = the TODO id (e.g. DX-jn-8-017); resolves docs/todos/<ID>.md (or completed/)
 #              and the plan from that TODO's `plan:` frontmatter.
+#
+# Why `groups` lives in the script (not each agent's head): the classification is
+# deterministic and identical for EVERY agent, so a peer agent's diff-review send
+# groups the files exactly the same as the author's would. The agent pipes this
+# JSON into the MCP `set_file_groups` tool (the script can't call the MCP itself).
+# Canonical bottom-up order (group_order): infra → contracts → subgraph → db →
+# types → api → sdk → ui → docs → tests — substrate first, surface last.
+#
+# This is the CATEGORY level only (the inner level under Monocle's N-level grouping).
+# For a multi-TODO diff review the AUTHOR wraps each file's category under its TODO id
+# as the top "workstream" level (workstream → category) when mapping into
+# set_file_groups — that split is not script-derivable pre-commit (no commits: ledger
+# yet), so it stays the agent's job; the category level here stays deterministic. A
+# single-TODO review uses this output as-is (one level). See the monocle-review skill.
 #
 # Exit codes: 0 ok · 1 usage/resolution error · 2 Monocle engine not running.
 
@@ -118,7 +138,134 @@ case "$cmd" in
     done <<< "$resolved"
     [ "$sent" -gt 0 ] && echo "monocle: $sent artifact(s) sent/updated for context '$1' ($2)" || echo "monocle: no artifacts resolved for '$1' ($2)"
     ;;
+  groups)
+    # Emit set_file_groups entries (JSON) for the review diff, classified into the
+    # canonical bottom-up layers. Default: the working-tree diff vs HEAD (uncommitted).
+    # Pass a BASE REF — `groups <base>`, the SAME ref given to the set_base_ref MCP tool
+    # — to classify an ALREADY-COMMITTED review: we diff <base> vs the working tree, so
+    # committed work (and any uncommitted on top) is grouped too. (base=HEAD ⇒ identical
+    # to the default working-tree behavior.)
+    # The file list rides an env var (NOT stdin) because the python program comes in via
+    # the heredoc — piping data into `python3 - <<'PY'` would be overridden by the heredoc.
+    base="${1:-HEAD}"
+    files="$(
+      {
+        git -C "$ROOT" diff --name-only "$base" 2>/dev/null || true
+        git -C "$ROOT" ls-files --others --exclude-standard 2>/dev/null || true
+      } | sort -u
+    )"
+    FILES="$files" ROOT="$ROOT" python3 - <<'PY'
+import os, json, re
+# (group, group_order, category, regex) — FIRST match wins. Order encodes the
+# canonical bottom-up review flow: substrate (infra) first, surface (tests) last.
+RULES = [
+    # Precedence (first match wins) is NOT the display order — group_order is. Tests
+    # win over everything (a server `*.test.ts` is tests, not api). Infra is checked
+    # before the generic markdown rule so machinery docs under .claude/ classify as
+    # infra, not docs. Directory rules (db/contracts/…) precede the catch-all api.
+    ("tests",     10, "test",   r"(^|/)(tests?|test-infrastructure|__tests__|e2e)/|\.(test|spec)\.[cm]?[jt]sx?$|\.t\.sol$"),
+    ("infra",      1, "config", r"^\.claude/|^\.github/|^infra/|^deploy/|^scripts/|(^|/)Dockerfile|docker-compose|^\.env|(^|/)Caddyfile|^[^/]*\.config\.[cm]?[jt]s$"),
+    ("docs",       9, "docs",   r"^docs/|\.mdx?$"),
+    ("db",         4, "code",   r"^server/migrations/|^server/fixtures/|\.sql$"),
+    ("contracts",  2, "code",   r"^contracts/"),
+    ("subgraph",   3, "code",   r"^subgraph/|^indexer/"),
+    ("types",      5, "code",   r"^types/"),
+    ("sdk",        7, "code",   r"^sdk/"),
+    ("ui",         8, "code",   r"^ui-web-b2b/"),
+    ("api",        6, "code",   r"^server/"),
+]
+FALLBACK = ("infra", 1, "config")
+def classify(p):
+    for g, o, c, rx in RULES:
+        if re.search(rx, p):
+            return g, o, c
+    return FALLBACK
+
+ROOT = os.environ.get("ROOT", "")
+
+# --- within-group ordering: call hierarchy (low-level → high-level) ---
+# A file is listed AFTER everything it imports, so the reviewer reads the
+# foundational units first (utils → models → routes). Implemented as a topological
+# sort over the intra-group import graph; files with no edge between them are broken
+# by a layer-rank heuristic (utils < models < services < middleware < routes < entry
+# < scripts), then path, so the order is deterministic.
+def layer_rank(p):
+    for r, rx in [
+        (0, r"/(utils?|helpers?|lib)/|(util|helper|constant|template)s?\.[cm]?[jt]sx?$"),
+        (1, r"/(types|schema)/|\.d\.ts$|generated"),
+        (2, r"/models?/"),
+        (3, r"/(services|clients|integrations|providers)/"),
+        (4, r"(^|/)(middleware|ratelimit)|/(guards?)/"),
+        (5, r"/(routes|controllers|handlers|api|pages|views|components)/"),
+        (6, r"(^|/)(server|app|main)\.[cm]?[jt]sx?$"),
+        (7, r"/(scripts|cli|bin|admin)/"),
+    ]:
+        if re.search(rx, p):
+            return r
+    return 5
+
+_IMPORT_RE = re.compile(
+    r"""(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]"""
+    r"""|require\(\s*['"]([^'"]+)['"]\s*\)"""
+    r"""|import\(\s*['"]([^'"]+)['"]\s*\)"""
+)
+_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".d.ts", ".sql")
+
+def _resolve(importer, spec, fileset):
+    if not spec.startswith("."):  # only intra-repo relative imports can be in the set
+        return None
+    target = os.path.normpath(os.path.join(os.path.dirname(importer), spec))
+    stem = re.sub(r"\.(js|ts|jsx|tsx|mjs|cjs)$", "", target)
+    for cand in [stem + e for e in _EXTS] + [stem + "/index" + e for e in _EXTS] + [target]:
+        if cand in fileset:
+            return cand
+    return None
+
+def deps_within(path, group_set):
+    try:
+        with open(os.path.join(ROOT, path), encoding="utf-8", errors="ignore") as fh:
+            txt = fh.read()
+    except OSError:
+        return set()
+    out = set()
+    for m in _IMPORT_RE.finditer(txt):
+        spec = m.group(1) or m.group(2) or m.group(3)
+        r = _resolve(path, spec, group_set)
+        if r and r != path:
+            out.add(r)
+    return out
+
+def topo_order(paths):
+    group_set = set(paths)
+    deps = {p: deps_within(p, group_set) for p in paths}
+    ordered, emitted = [], set()
+    remaining = set(paths)
+    while remaining:
+        ready = [p for p in remaining if deps[p] <= emitted]
+        if not ready:  # import cycle — break it deterministically
+            ready = list(remaining)
+        ready.sort(key=lambda p: (layer_rank(p), p))
+        nxt = ready[0]
+        ordered.append(nxt)
+        emitted.add(nxt)
+        remaining.discard(nxt)
+    return ordered
+
+buckets = {}
+for line in os.environ.get("FILES", "").splitlines():
+    p = line.strip()
+    if not p:
+        continue
+    g, o, c = classify(p)
+    buckets.setdefault((o, g, c), []).append(p)
+entries = []
+for (o, g, c), paths in sorted(buckets.items()):
+    for i, p in enumerate(topo_order(paths)):
+        entries.append({"path": p, "group": g, "group_order": o, "sort_index": i, "category": c})
+print(json.dumps(entries, indent=2))
+PY
+    ;;
   *)
-    _die "usage: monocle-review.sh {available|list|send} [<context> <ID>]"
+    _die "usage: monocle-review.sh {available|list|send|groups} [<context> <ID>]"
     ;;
 esac

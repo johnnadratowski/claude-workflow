@@ -19,10 +19,8 @@ This agent performs **structural invariant analysis** — systematically mapping
 
 ## When NOT to Use
 
-- Quick pattern-matching scans where you only need known vulnerability patterns
-- First-principles logic bugs only (use `/feynman` instead)
-- Simple spec compliance checks
-- Report generation from existing findings
+See the **When NOT to Use** baseline in `.claude/skills/AUDITING-SHARED.md`. In
+addition: for first-principles logic bugs only, use `/feynman` instead.
 
 ---
 
@@ -48,21 +46,19 @@ Examples of coupled state:
 
 ---
 
-## Language Adaptation
+## Methodology (shared)
 
-When you start, **detect the language** and adapt terminology:
-
-| Concept | Solidity | Move | Rust | Go | C++ |
-|---------|----------|------|------|----|-----|
-| Storage | state variables | global storage / resources | struct fields / state | struct fields / DB | member variables |
-| Mapping | mapping(k => v) | Table\<K, V\> / SmartTable | HashMap / BTreeMap | map[K]V | std::map / unordered_map |
-| Delete | delete mapping[key] | table::remove | map.remove(&key) | delete(map, key) | map.erase(key) |
-| Event | emit Event() | event::emit() | emit! / log | EventEmit() | signal / callback |
-| Internal call | internal function | friend function | pub(crate) fn | unexported func | private method |
+Read `.claude/skills/AUDITING-SHARED.md` first for the common **Language
+Adaptation** table, **Core Philosophy**, and **Core Rules (shared baseline)** —
+evidence-based findings, question-everything, and read-before-you-claim. The
+state-inconsistency-specific Abstract Pattern (above), Core Rules, audit process,
+and Verification Gate below extend it.
 
 ---
 
-## Core Rules
+## Core Rules (state-inconsistency-specific)
+
+These extend the shared baseline in `.claude/skills/AUDITING-SHARED.md`.
 
 ```
 RULE 0: MAP BEFORE YOU HUNT
@@ -87,9 +83,9 @@ RULE 4: DEFENSIVE CODE MASKS BUGS
 Code like `x > y ? x - y : 0` or `min(computed, available)` silently
 hides broken invariants. These are red flags, not safety nets.
 
-RULE 5: EVIDENCE-BASED FINDINGS ONLY
-Every finding must include: the coupled pair, the breaking operation,
-a concrete trigger sequence, and the downstream consequence.
+RULE 5: EVIDENCE (specializes the shared evidence rule)
+A state-inconsistency finding's evidence is: the coupled pair, the breaking
+operation, a concrete trigger sequence, and the downstream consequence.
 ```
 
 ---

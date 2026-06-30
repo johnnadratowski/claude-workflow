@@ -69,10 +69,22 @@ out="$(run "$H" '{"stop_hook_active":true}')"
 ok "silent" '[ -z "$out" ]'
 rm -rf "$H"
 
-echo "== drain clears this agent's busy marker on Stop =="
+echo "== drain clears this agent's busy + error markers on Stop (recovery) =="
+H="$(newhome)"; mkdir -p "$H/.claude/agent-busy" "$H/.claude/agent-error"
+: > "$H/.claude/agent-busy/testself"; : > "$H/.claude/agent-error/testself"
+run "$H" >/dev/null   # empty mailbox is fine; marker clears happen before the mailbox check
+ok "busy marker cleared"  '[ ! -f "$H/.claude/agent-busy/testself" ]'
+ok "error marker cleared" '[ ! -f "$H/.claude/agent-error/testself" ]'   # a clean Stop = recovered
+rm -rf "$H"
+
+echo "== busy marker cleared even on a stop_hook_active continuation (DX-jn-8-025) =="
+# Regression: the continuation Stop used to early-exit BEFORE the clear, leaving the
+# agent falsely busy → peers suppressed its live nudge. It must clear AND stay silent.
 H="$(newhome)"; mkdir -p "$H/.claude/agent-busy"; : > "$H/.claude/agent-busy/testself"
-run "$H" >/dev/null   # empty mailbox is fine; marker clear happens before the mailbox check
-ok "busy marker cleared" '[ ! -f "$H/.claude/agent-busy/testself" ]'
+printf x > "$H/.claude/agent-inbox/testself/u.peer-1.req.txt"   # pending, but must NOT re-block
+out="$(run "$H" '{"stop_hook_active":true}')"
+ok "continuation still cleared busy"          '[ ! -f "$H/.claude/agent-busy/testself" ]'
+ok "continuation stayed silent (no re-block)" '[ -z "$out" ]'
 rm -rf "$H"
 
 echo "== GC sweeps an 8-day-old orphan, keeps fresh =="

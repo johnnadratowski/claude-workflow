@@ -46,9 +46,7 @@ Not three sequential stages. An **iterative back-and-forth loop** where Feynman 
 
 ## When NOT to Use
 
-- Quick pattern-matching scans where you only need known vulnerability patterns
-- Simple spec compliance checks
-- Report generation from existing findings
+See the **When NOT to Use** baseline in `.claude/skills/AUDITING-SHARED.md`.
 
 ---
 
@@ -223,6 +221,10 @@ Not three sequential stages. An **iterative back-and-forth loop** where Feynman 
 
 ## Core Philosophy
 
+The shared first-principles foundation lives in
+`.claude/skills/AUDITING-SHARED.md`. What follows is unique to Nemesis: the
+rationale for running the two auditors as an iterative back-and-forth loop.
+
 ```
 Feynman alone finds logic bugs but may miss state coupling gaps.
 State Mapper alone finds desync bugs but may miss WHY the state was designed that way.
@@ -271,7 +273,10 @@ The iterative loop:
 
 ---
 
-## Core Rules
+## Core Rules (Nemesis-specific)
+
+These extend the shared baseline in `.claude/skills/AUDITING-SHARED.md`
+(evidence-or-silence, question-everything, read-before-you-claim).
 
 ```
 RULE 0: THE ITERATIVE LOOP IS MANDATORY
@@ -304,30 +309,10 @@ When the State Mapper finds masking code (ternary clamps, min caps),
 Feynman interrogates WHY it exists. The mask reveals the invariant
 that's actually broken underneath.
 
-RULE 6: EVIDENCE OR SILENCE
+RULE 6: EVIDENCE OR SILENCE (specializes the shared evidence rule)
 No finding without: coupled pair, breaking operation, trigger
 sequence, downstream consequence, and verification.
 ```
-
----
-
-## Language Adaptation
-
-Detect the language and adapt. The questions and methodology are universal.
-
-| Concept | Solidity | Move | Rust | Go | C++ |
-|---------|----------|------|------|----|-----|
-| Module/unit | contract | module | crate/mod | package | class/namespace |
-| Entry point | external/public fn | public fun | pub fn | Exported fn | public method |
-| State storage | storage variables | global storage / resources | struct fields / state | struct fields / DB | member variables |
-| Access guard | modifier | access control / friend | trait bound / #[cfg] | middleware / auth | access specifier |
-| Mapping | mapping(k => v) | Table\<K, V\> | HashMap / BTreeMap | map[K]V | std::map |
-| Delete | delete mapping[key] | table::remove | map.remove(&key) | delete(map, key) | map.erase(key) |
-| Caller identity | msg.sender | &signer | caller / Context | ctx / request.User | this / session |
-| Error/abort | revert / require | abort / assert! | panic! / Result::Err | error / panic | throw / exception |
-| Checked math | 0.8+ auto / SafeMath | built-in overflow abort | checked_add | math/big | safe int libs |
-| External call | .call() / interface | cross-module call | CPI (Solana) | RPC / HTTP | virtual call |
-| Test framework | Foundry / Hardhat | Move Prover / aptos test | cargo test | go test | gtest / catch2 |
 
 ---
 
@@ -749,34 +734,11 @@ ADVERSARIAL SEQUENCES TO ALWAYS TEST:
 
 MULTI-TX STATE CORRUPTION — WORKED EXAMPLE:
   ─────────────────────────────────────────
-  AMM pool with swap() that:
-    1. Calculates amountOut based on reserves
-    2. Updates accumulatedFees (for LP fee distribution)
-    3. Updates reserves
-
-  TX1: Alice swaps 1000 tokenA → tokenB (0.3% fee)
-    - fee = 3 tokenA added to accFees BEFORE reserves update
-    - reserves shift: reserveA=11000, reserveB≈9091
-
-  TX2: Bob swaps 500 tokenA → tokenB
-    - fee = 1.5 tokenA added to accFees
-    - feePerLP calculated using STALE reserve ratio from pre-TX1
-    - 1 tokenA is now worth LESS in the pool, but fee accounting
-      doesn't know that
-
-  TX3: Charlie claims LP fees
-    - Gets paid based on accFees=4.5 at OLD token valuation
-    - Pool composition has shifted — fees are denominated in a
-      token whose relative value changed
-    - Result: early LPs overpaid, late LPs underpaid
-
-  Root cause: accFees accumulator doesn't rebase against current
-  reserve ratio. Each swap changes what "1 unit of fee" means,
-  but the accumulator treats all units as equal.
-
-  GENERALIZE: Any global accumulator (fees, rewards, interest)
-  updated per-tx where the VALUE of what's accumulated changes
-  between txs, and the accumulator doesn't normalize.
+  See the AMM partial-swap fee-distribution worked example in the
+  feynman-auditor skill's Question Framework (Q7.7) — same example,
+  same root cause: a global accumulator (fees, rewards, interest)
+  updated per-tx where the VALUE of what's accumulated changes between
+  txs, and the accumulator never normalizes against current state.
 
   CHECK: After N operations with varying sizes, does
   SUM(individual fees) == fee on AGGREGATE operation?
@@ -791,21 +753,16 @@ MULTI-TX STATE CORRUPTION — WORKED EXAMPLE:
 
 #### Methods:
 
-**Method A: Deep Code Trace**
-1. Read exact lines cited
-2. Trace complete call chain (caller → callee → downstream)
-3. Check for mitigating code elsewhere (guards, hooks, lazy reconciliation)
-4. Confirm scenario is reachable end-to-end
-5. Verdict: TRUE POSITIVE / FALSE POSITIVE / DOWNGRADE
+Same three methods the component skills use — see the Verification Gate in
+feynman-auditor's and state-inconsistency-auditor's SKILL.md for full detail:
 
-**Method B: PoC Test**
-1. Write test in project's native framework
-2. Execute the exact trigger sequence from the finding
-3. Assert state inconsistency after the breaking operation
-4. Assert incorrect result in the downstream operation
-5. Verdict: TRUE POSITIVE / FALSE POSITIVE
-
-**Method C: Hybrid** (trace + PoC) for complex multi-module findings.
+- **Method A — Deep Code Trace:** read the exact lines, trace the full call
+  chain (caller → callee → downstream), check for mitigating code (guards,
+  hooks, lazy reconciliation), confirm the scenario is reachable end-to-end.
+- **Method B — PoC Test:** in the project's native framework, execute the
+  trigger sequence and assert BOTH the state inconsistency after the breaking
+  operation AND the wrong result in the downstream operation.
+- **Method C — Hybrid** (trace + PoC) for complex multi-module findings.
 
 #### Common False Positive Patterns (from BOTH auditors):
 
@@ -944,25 +901,18 @@ Also save intermediate work to: `.audit/findings/nemesis-raw.md`
 ## Red Flags Checklist (Combined)
 
 ```
-FROM FEYNMAN:
-- [ ] A line of code whose PURPOSE you cannot explain
-- [ ] An ordering choice with no clear justification
-- [ ] A guard on funcA that's missing from funcB (same state)
-- [ ] An implicit trust assumption about caller/data/state/time
-- [ ] External call with state updates AFTER it (stale state window)
-- [ ] Function behaves differently on 2nd call due to 1st call's state change
+FROM FEYNMAN: see feynman-auditor's framework (unexplained line purpose,
+  unjustified ordering, asymmetric guards, implicit trust about
+  caller/data/state/time, state updates AFTER an external call, behavior that
+  changes on the 2nd call).
 
-FROM STATE MAPPER:
-- [ ] Function modifies State A but has no writes to coupled State B
-- [ ] Two similar operations handle coupled state differently
-- [ ] Claim/collect runs before reduce/remove with no reconciliation
-- [ ] Partial operation exists but only full operation resets coupled state
-- [ ] Defensive ternary/min() between two coupled values (WHY underflow?)
-- [ ] delete/reset of one mapping but not its paired mapping
-- [ ] Loop accumulates into shared state without per-iteration adjustment
-- [ ] Emergency/admin function bypasses normal state update path
+FROM STATE MAPPER: see state-inconsistency-auditor's Red Flags Checklist
+  (State A written without coupled State B, asymmetric handling across similar
+  operations, claim-before-reduce, partial-vs-full reset gaps, defensive
+  ternary/min() between coupled values, one-sided mapping delete, per-loop
+  accumulation gaps, emergency/admin bypass paths).
 
-FROM THE FEEDBACK LOOP:
+FROM THE FEEDBACK LOOP (Nemesis-only — the highest-value flags):
 - [ ] Feynman found an ordering concern + State Mapper found a gap in the
       SAME function → compound finding
 - [ ] State Mapper found masking code + Feynman explained WHY the invariant

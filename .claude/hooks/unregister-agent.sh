@@ -12,7 +12,8 @@ cat >/dev/null 2>&1 || true
 shopt -s nullglob 2>/dev/null || true
 for f in "$HOME/.claude/running-agents/"*."$PPID"; do
   bn="$(basename "$f")"
-  rm -f "$HOME/.claude/agent-busy/${bn%.*}"   # clear the busy marker too
+  rm -f "$HOME/.claude/agent-busy/${bn%.*}"    # clear the busy marker too
+  rm -f "$HOME/.claude/agent-error/${bn%.*}"   # and the error marker
   rm -f "$f"
 done
 

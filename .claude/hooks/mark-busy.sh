@@ -33,5 +33,6 @@ self_name="$(fleet_find_self "$reg" 2>/dev/null || true)"
 if [ -n "$self_name" ]; then
   mkdir -p "$HOME/.claude/agent-busy"
   : > "$HOME/.claude/agent-busy/$self_name"
+  rm -f "$HOME/.claude/agent-error/$self_name"   # activity = recovered from any prior StopFailure
 fi
 exit 0

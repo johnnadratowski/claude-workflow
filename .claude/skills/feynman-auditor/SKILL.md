@@ -19,70 +19,29 @@ This agent performs **reasoning-first analysis** — questioning the purpose, or
 
 ## When NOT to Use
 
-- Quick pattern-matching scans where you only need known vulnerability patterns
-- Simple spec compliance checks
-- Report generation from existing findings
+See the **When NOT to Use** baseline in `.claude/skills/AUDITING-SHARED.md`.
 
 ---
 
-## Language Adaptation
+## Methodology (shared)
 
-When you start, **detect the language** and adapt terminology:
-
-| Concept | Solidity | Move | Rust | Go | C++ |
-|---------|----------|------|------|----|-----|
-| Module/unit | contract | module | crate/mod | package | class/namespace |
-| Entry point | external/public fn | public fun | pub fn | Exported fn | public method |
-| Access guard | modifier | access control (friend, visibility) | trait bound / #[cfg] | middleware / auth check | access specifier |
-| Caller identity | msg.sender | &signer | caller param / Context | ctx / request.User | this / session |
-| Error/abort | revert / require | abort / assert! | panic! / Result::Err | error / panic | throw / exception |
-| State storage | storage variables | global storage / resources | struct fields / state | struct fields / DB | member variables |
-| Checked math | SafeMath / checked | built-in overflow abort | checked_add / saturating | math/big / overflow check | safe int libs |
-| Test framework | Foundry / Hardhat | Move Prover / aptos move test | cargo test | go test | gtest / catch2 |
-| Value/assets | ETH, ERC-20, NFTs | APT, Coin\<T\>, tokens | SOL, SPL tokens, funds | any value type | any value type |
-
-**IMPORTANT:** Do NOT force Solidity terminology onto non-Solidity code. Use the language's native concepts. The questions stay the same — the vocabulary adapts.
+Read `.claude/skills/AUDITING-SHARED.md` first for the common **Language
+Adaptation** table, **Core Philosophy**, and **Core Rules (shared baseline)** —
+evidence-based findings, question-everything / reason-from-first-principles, and
+read-before-you-claim. The Feynman-specific rules and framework below extend it.
 
 ---
 
-## Core Philosophy
+## Core Rules (Feynman-specific)
+
+These extend the shared baseline:
 
 ```
-"What I cannot create, I do not understand." — Feynman
-
-Applied to auditing: If you cannot explain WHY a line of code exists,
-in what order it MUST execute, and what BREAKS if it changes —
-you have found where bugs hide.
-```
-
-Pattern matchers find KNOWN bug classes. This agent finds UNKNOWN bugs by
-questioning the developer's reasoning at every decision point.
-
----
-
-## Core Rules
-
-```
-RULE 0: QUESTION EVERYTHING, ASSUME NOTHING
-Never accept code at face value. Every line exists because a developer
-made a decision. Your job is to question that decision.
-
-RULE 1: EVIDENCE-BASED FINDINGS ONLY
-Every finding must include:
-- The specific line(s) of code
-- The question that exposed the issue
-- A concrete scenario proving the bug
-- Why the current code fails in that scenario
-
-RULE 2: COMPLETE COVERAGE
+RULE F1: COMPLETE COVERAGE
 Analyze EVERY function in scope. Do not skip "simple" functions.
 Business logic bugs hide in the code everyone assumes is correct.
 
-RULE 3: NO PATTERN MATCHING
-Do NOT fall back to pattern-matching ("this looks like reentrancy").
-Reason from first principles about what this specific code does.
-
-RULE 4: CROSS-FUNCTION REASONING
+RULE F2: CROSS-FUNCTION REASONING
 A line that is correct in isolation may be wrong in context.
 Always consider how functions interact, call each other, and
 share state.

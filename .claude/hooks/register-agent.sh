@@ -327,6 +327,13 @@ if fleet_tmux_ok 2>/dev/null; then
   # Type /rename into the prompt on the initial-startup path — but ONLY when the
   # session isn't already named correctly (avoids a no-op /rename re-firing on
   # every start/resume) and WORKFLOW_AGENT_SKIP_RENAME isn't "1".
+  #
+  # PREFER launching with `claude --name "<name>"` (and WORKFLOW_AGENT_SKIP_RENAME=1):
+  # that sets the name with no keystroke, so this fallback skips (name already matches).
+  # This blind, delayed send is a LAST RESORT — on a high-context start the
+  # compact/clear/continue modal can swallow the keystroke and select compact instead of
+  # renaming. Launchers (agent-fanout restart, the external start script) pass --name to
+  # avoid it; this remains only for launches that don't. (DX-jn-8-024)
   if [ "$source" = "sessionstart" ] && [ "${WORKFLOW_AGENT_SKIP_RENAME:-}" != "1" ] && [ "$session_name_sanitized" != "$name" ]; then
     nohup bash -c "
       sleep 2

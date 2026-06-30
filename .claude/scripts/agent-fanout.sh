@@ -36,7 +36,14 @@ role_of() { case "$1" in cc|coordinator|*-cc|*-coordinator|*-coordinator-*|coord
 # Identity/liveness via the shared helper (tmux-optional); fall back inline if unsourced.
 self_name() { fleet_find_self "$reg" 2>/dev/null; }
 is_busy()  { local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]; }
+# Errored = a StopFailure marker (mark-error.sh; cleared on recovery). Not time-windowed —
+# a stuck/errored agent keeps showing ERR until it recovers or dies.
+is_errored() { [ -f "$HOME/.claude/agent-error/$1" ]; }
 pane_in_mode() { [ "$(tmux display-message -p -t "$1" '#{pane_in_mode}' 2>/dev/null || echo 0)" = "1" ]; }
+# A pane is "at a shell" (ready for a relaunch) when its foreground process is a shell,
+# not claude/node. Used to avoid sending the relaunch into a dying claude / its SessionEnd
+# survey (which would eat the keystrokes — DX-jn-8-025).
+pane_is_shell() { case "$(tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null)" in bash|zsh|fish|sh|-bash|-zsh|-fish|-sh) return 0;; *) return 1;; esac; }
 alive() { fleet_alive "$1" "$2"; }
 
 # --- Context usage (DX-jn-8-018) ----------------------------------------------
@@ -133,11 +140,15 @@ case "$cmd" in
       bn="$(basename "$f")"; name="${bn%.*}"; pid="${bn##*.}"; pane="$(cat "$f" 2>/dev/null)"
       case "$seen" in *" $name "*) continue;; esac; seen="$seen$name "
       st=live; alive "$pid" "$pane" || st=STALE
-      is_busy "$name" && st="$st/BUSY" || st="$st/idle"
+      # errored takes precedence over busy/idle (busy is cleared by mark-error.sh on StopFailure).
+      errnote=""
+      if is_errored "$name"; then st="$st/ERR"; errnote="  ⚠ $(head -c 24 "$HOME/.claude/agent-error/$name" 2>/dev/null | tr -d '\n')"
+      elif is_busy "$name"; then st="$st/BUSY"
+      else st="$st/idle"; fi
       br="$(cat "$HOME/.claude/agents/$name" 2>/dev/null || echo '?')"
       behind="$(git rev-list --count "${br}..${BASE}" 2>/dev/null || echo '?')"
       ci="$(ctx_info "$name" "$pane")"; if [ -n "$ci" ]; then ctxd="$(ctx_flag "${ci%% *}")${ci%% *}%"; else ctxd='—'; fi
-      printf '%-14s %-11s %-9s %-24s %-7s %s%s\n' "$name" "$(role_of "$name")" "$st" "$br (behind $behind)" "$ctxd" "$pane" "$([ "$name" = "$self" ] && echo '  <- you')"
+      printf '%-14s %-11s %-9s %-24s %-7s %s%s%s\n' "$name" "$(role_of "$name")" "$st" "$br (behind $behind)" "$ctxd" "$pane" "$([ "$name" = "$self" ] && echo '  <- you')" "$errnote"
     done
     echo "local $BASE @ $basesha   (CTX = main-loop context vs window; ⚠≥80% 🔴≥90%; window via WORKFLOW_CTX_WINDOW or model default)"
     ;;
@@ -155,6 +166,35 @@ case "$cmd" in
     if [ "$DRY" = 1 ]; then echo "(dry-run — nothing sent)"; exit 0; fi
     echo "$targets" | while read -r name pid pane; do
       printf '%s' "$body" | "$SEND" "$name" --stdin >/dev/null 2>&1 && echo "  sent -> $name" || echo "  FAILED -> $name"
+    done
+    ;;
+
+  resume-errored|nudge-errored)
+    # Nudge agents that StopFailured (error marker present, e.g. an Anthropic rate-limit)
+    # to continue — the common rate-limit case. They're stopped at their prompt but ALIVE,
+    # so a direct tmux nudge resumes them (no inbox/drain — a stopped agent won't drain).
+    # Targets ONLY errored agents (narrow, safe set); honours --role/--only/--exclude.
+    # Custom continue-text via --stdin, else a sensible default. (DX — rate-limit ergonomics.)
+    if ! fleet_tmux_ok 2>/dev/null; then
+      echo "resume-errored needs tmux (drives panes via send-keys) — unavailable, skipping." >&2; exit 0
+    fi
+    if [ "$STDIN" = 1 ]; then body="$(cat)"; else
+      body="Continue — the API rate limit should have cleared. Resume where you left off."
+    fi
+    errored=""
+    while read -r name pid pane; do
+      [ -n "$name" ] || continue
+      is_errored "$name" && errored="${errored}${name} ${pid} ${pane}"$'\n'
+    done <<< "$(enumerate "$ROLE" "$ONLY" "$EXCL")"
+    errored="$(printf '%s' "$errored" | sed '/^[[:space:]]*$/d')"
+    [ -n "$errored" ] || { echo "no errored agents (no fresh ~/.claude/agent-error/* among live peers matching role=$ROLE only=$ONLY exclude=$EXCL)"; exit 0; }
+    echo "errored agents to nudge:"; printf '%s\n' "$errored" | awk '{print "  - "$1" (pane "$3") ⚠ "}'
+    if [ "$DRY" = 1 ]; then echo "(dry-run — nothing nudged)"; exit 0; fi
+    printf '%s\n' "$errored" | while read -r name pid pane; do
+      [ -n "$pane" ] || continue
+      if pane_in_mode "$pane"; then echo "  SKIP $name — pane in copy-mode"; continue; fi
+      tmux send-keys -t "$pane" -l "$body"; tmux send-keys -t "$pane" Enter
+      echo "  nudged $name (pane $pane) — continue"
     done
     ;;
 
@@ -176,13 +216,33 @@ case "$cmd" in
       tmux send-keys -t "$pane" C-c; sleep 1; tmux send-keys -t "$pane" C-c
       for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
       if kill -0 "$pid" 2>/dev/null; then echo "    claude didn't exit on C-c; sending kill"; kill "$pid" 2>/dev/null; sleep 1; fi
-      tmux send-keys -t "$pane" -l "claude --continue"; tmux send-keys -t "$pane" Enter
-      ok=""; for _ in $(seq 1 30); do
-        nf="$(ls "$reg/$name".* 2>/dev/null | head -1)"
-        if [ -n "$nf" ] && [ "${nf##*.}" != "$pid" ] && [ "$(cat "$nf" 2>/dev/null)" = "$pane" ]; then ok=1; break; fi
-        sleep 1
+      # Settle to a shell before relaunching. Killing claude pops its SessionEnd survey
+      # ("How is Claude doing this session?"); relaunching before the shell is ready lets
+      # that survey eat the keystrokes so `claude --continue` never runs (DX-jn-8-025 —
+      # observed leaving agents at a bare shell, unregistered). Wait for the shell,
+      # dismissing any lingering modal. (feedbackSurveyRate=0 in settings removes the
+      # survey at the source; this is the belt-and-suspenders for any startup/exit modal.)
+      for _ in $(seq 1 20); do pane_is_shell "$pane" && break; tmux send-keys -t "$pane" Escape 2>/dev/null; sleep 0.5; done
+      pane_is_shell "$pane" || echo "    WARN — pane $pane not at a shell after kill; relaunch may not land"
+      # Relaunch + verify re-registration, retrying up to 3x. --name sets the session name
+      # at launch (no /rename keystroke) and WORKFLOW_AGENT_SKIP_RENAME=1 skips the hook's
+      # fallback rename (DX-jn-8-024). NEVER re-send while claude is already running (the
+      # pane isn't a shell) — that would type the command into claude's prompt.
+      ok=""
+      for attempt in 1 2 3; do
+        if pane_is_shell "$pane"; then
+          tmux send-keys -t "$pane" -l "WORKFLOW_AGENT_SKIP_RENAME=1 claude --continue --name \"$name\""
+          tmux send-keys -t "$pane" Enter
+        fi
+        for _ in $(seq 1 20); do
+          nf="$(ls "$reg/$name".* 2>/dev/null | head -1)"
+          if [ -n "$nf" ] && [ "${nf##*.}" != "$pid" ] && [ "$(cat "$nf" 2>/dev/null)" = "$pane" ]; then ok=1; break; fi
+          sleep 1
+        done
+        [ -n "$ok" ] && break
+        echo "    (attempt $attempt/3) $name not re-registered yet; retrying"
       done
-      [ -n "$ok" ] && echo "    OK — $name back as $(basename "$nf")" || echo "    WARN — $name not re-registered yet; check pane $pane"
+      [ -n "$ok" ] && echo "    OK — $name back as $(basename "$nf")" || echo "    WARN — $name not re-registered after 3 attempts; check pane $pane"
     done
     ;;
 
@@ -219,5 +279,5 @@ EOF
     done
     ;;
 
-  *) echo "usage: agent-fanout.sh {status|merge-down|send|restart|compact} [--role R] [--only a,b] [--exclude a,b] [--threshold N] [--dry-run] [--yes]" >&2; exit 2;;
+  *) echo "usage: agent-fanout.sh {status|merge-down|send|restart|compact|resume-errored} [--role R] [--only a,b] [--exclude a,b] [--threshold N] [--dry-run] [--yes]" >&2; exit 2;;
 esac

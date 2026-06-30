@@ -32,8 +32,8 @@ action, so you don't re-prompt on ad-hoc bash. Subcommands:
 ```
 
 The script always excludes self, idle-gates `restart`/`compact` (skips BUSY / copy-mode panes),
-and `restart` relaunches with `claude --continue` (no session-id needed — it resumes the pane's
-latest conversation). **`restart` and `compact` refuse to run without `--yes`** — the human gate
+and `restart` relaunches with `claude --continue --name "<name>"` (no session-id needed — it
+resumes the pane's latest conversation, name set at launch). **`restart` and `compact` refuse to run without `--yes`** — the human gate
 below decides when to pass it; the allow-list removes the bash prompt, NOT the confirmation.
 
 ## Modes
@@ -44,7 +44,20 @@ below decides when to pass it; the allow-list removes the bash prompt, NOT the c
 /agent-fanout merge-down [--role all]             # canned: peers run /base-merge down
 /agent-fanout restart [--role <r>|<names>]        # idle-gated, confirmed, claude --continue
 /agent-fanout compact [--threshold N]             # idle-gated, confirmed, inject /compact into full agents
+/agent-fanout resume-errored                      # nudge StopFailure-errored agents (e.g. rate-limited) to continue
 ```
+
+**`resume-errored`** nudges agents that hit a `StopFailure` (rate-limit / overloaded /
+server error) to **continue** — the common Anthropic-rate-limit case. Such an agent is
+stopped at its prompt but alive; `mark-error.sh` cleared its busy marker and wrote
+`~/.claude/agent-error/<name>`, so this action finds those and sends each a direct
+"continue" nudge (no `--yes` — it only touches the narrow errored set; honours
+`--role`/`--only`/`--exclude`, custom continue-text via `--stdin`). **The coordinator
+runs this automatically:** the CC-only Stop hook `cc-resume-errored.sh` sweeps + nudges
+errored peers every time the coordinator stops (per-agent throttled ~2 min, so it paces
+retries and doesn't spam), so stuck agents self-heal without manual action.
+**Blind spot (marker-based, by design):** an agent whose session predates the
+`StopFailure` hook writes no marker — it's covered only after it merges-down + restarts.
 
 Targeting flags (all modes): `--role feature|review|test|coordinator|all` · `--only name1,name2`
 explicit list · `--exclude a,b` · `--dry-run`. `compact` adds `--threshold N` (default 80).
@@ -117,8 +130,10 @@ The deliberate version of "broadcast, but only to the agents that should act."
 
 ## Mode: `restart` — force-restart agents (idle-gated, always confirmed)
 
-Kill an agent's `claude` in its pane and relaunch it with **`claude --continue`**, which resumes
-the pane's most recent conversation (no session-id lookup needed) — so context is preserved.
+Kill an agent's `claude` in its pane and relaunch it with **`claude --continue --name "<name>"`**,
+which resumes the pane's most recent conversation (no session-id lookup needed) — so context is
+preserved, and the session name is set at launch (not by a post-launch `/rename` keystroke that a
+high-context startup modal could swallow — DX-jn-8-024).
 Useful when an agent is wedged, on a stale version of the skills/hooks, or needs a clean reload
 without losing history.
 
@@ -140,9 +155,11 @@ What the script does per target (sequential, fail-contained):
 2. **Kill** — `tmux send-keys C-c` twice, then waits for the pid to exit. In current Claude Code the
    double-`C-c` often does NOT exit, so the script falls back to `kill <pid>` once the grace window
    passes. (SessionEnd fires either way → unregisters.)
-3. **Relaunch** — `tmux send-keys "claude --continue" Enter` in the same pane. The `SessionStart`
-   hook re-registers the agent (new pid) and re-injects its role context; `--continue` resumes the
-   prior conversation. No session-id lookup needed. For a genuine clean slate (loses history),
+3. **Relaunch** — `tmux send-keys 'WORKFLOW_AGENT_SKIP_RENAME=1 claude --continue --name "<name>"' Enter`
+   in the same pane. `--name` sets the session name at launch (no keystroke) and `SKIP_RENAME=1`
+   makes the `SessionStart` hook skip its fallback `/rename`. The hook re-registers the agent (new
+   pid) and re-injects its role context; `--continue` resumes the prior conversation. No session-id
+   lookup needed. For a genuine clean slate (loses history),
    launch plain `claude` manually with a separate explicit confirmation.
 4. **Verify** — polls for a NEW `<name>.<newpid>` registry entry on that pane; prints OK or a WARN
    (with the pane) if it didn't come back.

@@ -26,13 +26,11 @@ set -u
 
 stdin_payload=$(cat 2>/dev/null || true)
 
-# Don't re-block a stop that is itself a Stop-hook continuation — belt and
-# suspenders against an infinite drain loop.
-if command -v jq >/dev/null 2>&1 && [ -n "$stdin_payload" ]; then
-  if [ "$(printf '%s' "$stdin_payload" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
-    exit 0
-  fi
-fi
+# NOTE: the stop_hook_active re-block guard moved BELOW, after the busy-marker clear.
+# It used to early-exit HERE, before the clear — so a continuation Stop (the one that
+# follows a drain-induced re-block) left the busy marker fresh+uncleared, marking the
+# agent falsely busy for up to 5 min and making peers' agent-send skip its live nudge
+# (self-perpetuating on agents processing drained messages). Clear first, then guard.
 
 # Opportunistic GC: remove clearly-abandoned messages (default >7 days). They
 # only pile up in mailboxes of agents that never drain (dead / old version) —
@@ -66,7 +64,19 @@ fi
 
 # Stop = turn ending = this agent is now idle. Clear the busy marker so peers'
 # agent-send resumes nudging us live (set by mark-busy.sh on UserPromptSubmit).
+# CRITICAL: this runs on EVERY Stop, INCLUDING a stop_hook_active continuation — the
+# re-block guard below must not pre-empt it (see the NOTE above), or an agent that just
+# processed a drained message stays falsely busy and peers suppress its live nudge.
 rm -f "$HOME/.claude/agent-busy/$self_name"
+rm -f "$HOME/.claude/agent-error/$self_name"   # a clean Stop = recovered from any prior StopFailure
+
+# Now that we've marked ourselves idle, guard against re-BLOCKING a Stop that is itself
+# a Stop-hook continuation — infinite-drain-loop belt-and-suspenders.
+if command -v jq >/dev/null 2>&1 && [ -n "$stdin_payload" ]; then
+  if [ "$(printf '%s' "$stdin_payload" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
+    exit 0
+  fi
+fi
 
 mailbox="$HOME/.claude/agent-inbox/$self_name"
 [ -d "$mailbox" ] || exit 0

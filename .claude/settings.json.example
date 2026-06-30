@@ -71,6 +71,10 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/drain-inbox.sh\""
+          },
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/cc-resume-errored.sh\"",
+            "type": "command"
           }
         ]
       }
@@ -85,6 +89,18 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/mark-error.sh\"",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
     ]
-  }
+  },
+  "feedbackSurveyRate": 0
 }

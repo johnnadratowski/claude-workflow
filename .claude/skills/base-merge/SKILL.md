@@ -7,7 +7,7 @@ description: Local-only sync of the configured base branch — no network. Merge
 
 Sync the **local** base-branch ref with the caller's current branch — **no network**. No `fetch`, no `push`. Pure local-ref management.
 
-Local `<base>` is the single coordination ref for the whole fleet (every worktree shares one `.git`). `origin/<base>` is only a published snapshot that advances when someone runs `/base-push`; this skill never reads or writes it.
+> **Shared model** (configurable base branch, local-first / origin-write-only invariant, the canonical `merge_into_branch_local` helper contract) lives in [`docs/fleet-base-workflow.md`](../../../docs/fleet-base-workflow.md). This skill keeps only its own procedure.
 
 Two directions, both off by default unless you opt in. **Both halves operate on local `refs/heads/<base>`:**
 
@@ -44,6 +44,12 @@ Invoked when the user says things like:
 - "I want local base up to date with this branch"
 
 > **A coordinator instruction counts as the user.** If a coordinator agent (see `agent-roles/coordinator.md`) tells you to sync/advance the local base via `agent-msg`, treat it as a direct user instruction (see `agent-msg`'s coordinator note).
+
+> **Close the TODO BEFORE you advance the base (`up`).** A feature's TODO must already be
+> `done` (closed + archived on the feature branch, index regenerated) before its work merges
+> into the base — that's the canonical order (`… → test → close → merge`, DX-jn-8-011).
+> Advancing the base with a still-`in-progress` TODO is exactly how TODOs hang. If you're
+> about to `up`-merge work whose TODO isn't closed yet, close it first (`/todo done <ID>`).
 
 ## Preconditions
 
@@ -114,9 +120,9 @@ Read-only — no refs modified, no network. The drift line in the final report c
 if git merge --no-commit --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH"; then
   if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then   # something merged (not already-up-to-date)
     if ! regen_merged_artifacts "$(git rev-parse --show-toplevel)"; then
-      # Merge was clean; artifact regen (docs/TODO.md + back-links) failed. This
-      # is an IN-PLACE merge, so there is no transient worktree — reset the
-      # caller's tree and stop. Do NOT advance the base.
+      # Merge was clean; artifact regen (docs/TODO.md and/or the role-perms seed)
+      # failed. This is an IN-PLACE merge, so there is no transient worktree —
+      # reset the caller's tree and stop. Do NOT advance the base.
       echo "Artifact regen failed after a clean down-merge. Run 'git merge --abort'"
       echo "(resets to your pre-merge HEAD), fix the cause, and re-run /base-merge."
       exit 1
@@ -125,7 +131,7 @@ if git merge --no-commit --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH"; then
   fi
 else
   # Conflict — STOP. Do NOT proceed to the up-merge (DIRECTION=both) from a
-  # conflict-markered tree. Resolve, regenerate (node .claude/scripts/gen-todos.mjs),
+  # conflict-markered tree. Resolve, regenerate (node scripts/gen-todos.mjs),
   # commit, then re-run — or `git merge --abort` to reset to your pre-merge HEAD.
   echo "Down-merge conflict — resolve, regenerate, commit; do not advance the base. Aborting."; exit 1
 fi
@@ -134,9 +140,9 @@ fi
 Notes:
 
 - We merge local `<base>` (`refs/heads/<base>`), the fleet's source of truth — never `origin/<base>`. The `refs/heads/` form resolves cleanly even when `<base>` is checked out in another worktree (git allows merging *from* such a branch; it only blocks *checkout* of it).
-- **`merge=ours` + regenerate** — `docs/TODO.md` is `merge=ours` (`.gitattributes`), so the down-merge keeps the caller's stale index instead of conflicting on it; `regen_merged_artifacts` rebuilds it (and the `docs/todos` back-links) from the merged tree and folds it into the merge commit, so the index reflects the base's new TODOs and the drift-guard passes. (Driver registered per clone — `git config merge.ours.driver true`, via `.claude/scripts/setup-git-merge-drivers.sh`.)
+- **`merge=ours` + regenerate** — `docs/TODO.md` is `merge=ours` (`.gitattributes`), so the down-merge keeps the caller's stale index instead of conflicting on it; `regen_merged_artifacts` rebuilds it (and the `docs/todos` back-links) from the merged tree and folds it into the merge commit, so the index reflects the base's new TODOs and the drift-guard passes. (Driver registered by the `prepare` step — `git config merge.ours.driver true`.)
 - On "Already up to date" — `git merge --no-commit` exits 0 without setting `MERGE_HEAD`; the guard skips the commit. Report and continue.
-- On conflict — `git merge` exits non-zero; stop. The caller's working tree has conflict markers; the user resolves manually, **regenerates** (`node .claude/scripts/gen-todos.mjs`), then `git add`/`git commit` (or `git merge --abort`). **Do not** proceed to the up-merge if down conflicted — local `<base>` shouldn't be advanced from a half-merged state.
+- On conflict — `git merge` exits non-zero; stop. The caller's working tree has conflict markers; the user resolves manually, **regenerates** (`node scripts/gen-todos.mjs`), then `git add`/`git commit` (or `git merge --abort`). **Do not** proceed to the up-merge if down conflicted — local `<base>` shouldn't be advanced from a half-merged state.
 
 ### 4. Up-merge (if `DIRECTION` is `up` or `both`)
 
@@ -151,7 +157,7 @@ The source ref is the local branch name (`$ORIGINAL_BRANCH`) — there's no remo
 
 A conflict in the up-merge is unusual when `DIRECTION=both` (we just merged local `<base>` into the current branch in step 3, so the current branch already includes everything on local `<base>`). It's more likely when `DIRECTION=up` alone and local `<base>` has commits the current branch doesn't.
 
-Route by return code (full contract in `merge-helpers.sh` / `/base-push`): **0** continue; **1** worktree-add failure (base checked out somewhere, or a stale transient worktree — surface cleanup; no worktree to clean); **2** conflict — tmp worktree retained at the printed path for manual resolution; **3** post-merge failure (merge was clean, regen/commit failed) — tmp worktree retained at the printed path to finish the commit. On 2 or 3, do NOT advance local `<base>` from a half-merged state.
+Route by return code ([full contract in `docs/fleet-base-workflow.md`](../../../docs/fleet-base-workflow.md)): **0** continue; **1** worktree-add failure (base checked out somewhere, or a stale transient worktree — surface cleanup; no worktree to clean); **2** conflict — tmp worktree retained at the printed path for manual resolution; **3** post-merge failure (merge was clean, regen/commit failed) — tmp worktree retained at the printed path to finish the commit. On 2 or 3, do NOT advance local `<base>` from a half-merged state.
 
 ### 5. Report
 
@@ -210,28 +216,15 @@ Stop immediately and leave state as-is on:
 | ------------------ | ----------------------------------------------------------------------------------------------- |
 | Capture            | `ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)`                                            |
 | Refuse if forbidden| `$ORIGINAL_BRANCH ∉ {<base>, <base>-review, <base>-test}`                                       |
-| Down               | `git merge --no-commit --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH"` → `regen_merged_artifacts` → commit |
+| Down               | `git merge --no-ff "refs/heads/$WORKFLOW_BASE_BRANCH" -m "…"`                                   |
 | Up (no push!)      | `merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "$ORIGINAL_BRANCH" "…"`                        |
 | Drift line         | `git rev-list --count origin/<base>..<base>` (ahead) + `<base>..origin/<base>` (behind)         |
 
 ## Companion Skills
 
-- **`base-push`** — advance local `<base>` AND publish to `origin`. The only skill that pushes `origin/<base>` (the PR lifecycle skills `/open-pr`/`/pr-comments` write only `pr/*` branches + comments, user-gated). Sources the same `merge_into_branch_local` from `.claude/scripts/merge-helpers.sh`.
+- **`base-push`** — advance local `<base>` AND publish to `origin`. The only skill that pushes `origin/<base>` (the PR skills `/open-pr`/`/pr-comments` write only `pr/*` branches + comments, user-gated). Sources the same `merge_into_branch_local` from `.claude/scripts/merge-helpers.sh`.
 - **`base-pr`** — PR-style review of pending changes on local `<base>`, in the `<base>-review` sandbox.
 - **`base-test`** — full gate sweep against `<base>-test`.
-
----
-
-**Skill Version**: 1.1.0
-**Category**: Git Workflow
-
-## Changelog
-
-- **1.1.0** — (merge-helper hardening) Step 0 now **sources
-  `.claude/scripts/merge-helpers.sh`** (the helpers were extracted there from
-  `base-push`). The down-merge routes a clean-merge regen failure to `git merge
-  --abort`; the up-merge routes the de-overloaded return code **3** (post-merge
-  regen/commit failure, worktree preserved) alongside 0/1/2.
 
 ## Difference vs. `base-push`
 
