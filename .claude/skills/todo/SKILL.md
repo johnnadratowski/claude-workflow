@@ -133,7 +133,13 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
 
 ### `start` — open → in-progress
 1. Set `status: in-progress`, bump `updated`.
-2. **Write the plan** — `docs/todo_plans/<slug>.md` (slug = lowercased ID + short
+2. **Sync base down first (before you plan)** — per the base-sync rule in
+   [`agent-roles/feature.md`](../../agent-roles/feature.md): if base has **no unpublished
+   content** (`git rev-list --no-merges <target>..<base>` empty) merge it down automatically
+   (`/base-merge down`); if it has unpublished content, **ask** before planning (interactive)
+   or **just continue** (`/afk`); honor any intent you were already given. Plan against the
+   synced state so you don't build on stale/removed code.
+3. **Write the plan** — `docs/todo_plans/<slug>.md` (slug = lowercased ID + short
    topic, e.g. `srv-8001-db-platform-migration.md`) and set the TODO's `plan:` field.
    **Every started TODO gets a plan** — scale the depth to the work: a complex
    feature gets the full planning-workflow treatment (best-practices section,
@@ -144,7 +150,7 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
    clickable plan link — as a collapsible `.todo-meta` panel above the body, and
    GitHub renders frontmatter as a table on the raw file. Do NOT duplicate the
    link in the body.
-3. **Plan review gate — present the review-path prompt.** When you stop for plan
+4. **Plan review gate — present the review-path prompt.** When you stop for plan
    review (complex plans — those warranting a "Best-practices rules this work
    touches" section; small-fix plans may skip), ask the user which path, as a
    **3-option prompt**:
@@ -200,8 +206,8 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
       the skill sends the plan + TODO as artifacts (stable ids) and blocks on the
       verdict. Engine down ⇒ present inline as before. Under `/afk` this bookend is
       skipped; the delta goes in the journal + final report instead.
-4. `pnpm gen:todos`.
-5. **Print the TODO + plan links** so the user can open either, rendered. Source
+5. `pnpm gen:todos`.
+6. **Print the TODO + plan links** so the user can open either, rendered. Source
    `.claude/scripts/_config.sh` for `WORKFLOW_DOCS_URL` (the local docs:dev base —
    default `http://localhost:4000`; per-clone override in `workflow.config.local`
    to the lane's port, e.g. `http://localhost:4008` for the lane-8 cc worktree)

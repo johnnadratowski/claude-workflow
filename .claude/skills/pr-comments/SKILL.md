@@ -179,6 +179,7 @@ Posting is all-or-nothing per the approved package — no partial early posts, n
 - Resolve a human reviewer's own thread on their behalf when a human reviewer is in the loop (they resolve when satisfied; the agent only resolves agent-raised threads a human has affirmed, or everything when there's no human reviewer).
 - Service items one-by-one when they cluster, or end a round with undispositioned items.
 - Mutate TODO↔PR tags directly — tag updates go through `/open-pr`'s tagging step.
+- **Update an open PR by building the change on a local/base/feature branch and leaving the PR head untouched (orphaning it).** Fixes land on the PR's own head branch (checkout → commit → push), same as `/open-pr` Update mode. This is the DX-jn-8-026 lesson (PR #86 was rebuilt locally and had to be closed). For a **substantive change beyond dispositioning review comments**, hand off to `/open-pr --update <n>`.
 
 ## Companion Skills
 

@@ -2,6 +2,26 @@
 
 ## Changelog
 
+- **1.9.0** — (DX-jn-8-027) **Update mode: merge the PR's base in BEFORE implementing** —
+  reordered so `git merge origin/<baseRefName>` runs ahead of the change (was after). For a
+  **stacked PR** `baseRefName` is the parent PR's head branch, so this merges the branch the
+  PR is based on first — fixing the hard-merge when the parent changed materially. Merging
+  before implementing keeps base conflicts small and unentangled from new work. (Pairs with
+  the base-sync-before-plan rule codified in `agent-roles/feature.md`.)
+- **1.8.0** — (DX-jn-8-026) Two additions. **(1) Update mode** (`--update <n>` / natural
+  phrasing "update pr 88" / "update this pr" / "revise pr 88"): revise an **already-open**
+  PR by **checking out its actual head branch first** and pushing there — the change runs
+  through the normal workflow *on that branch*, so the PR updates in place. Codifies the
+  hard refusal "never rebuild a PR locally and orphan its head" in `/open-pr` **and**
+  `/pr-comments` — the PR #86 lesson (rebuilt locally → had to be closed). **(2)
+  Commit-manifest comment**: every create (and Update push) posts a per-commit walkthrough
+  comment, one line per commit with a diff link (`…/pull/<n>/commits/<oid>`), built with
+  `git log --no-merges` so **merge commits are excluded** (not review units). **Create**
+  lists the full PR (`<target>..HEAD`); **Update** posts a fresh per-round comment scoped to
+  **only that update's new commits** (`<pre-push-head>..HEAD`). Carries the same author
+  signals as other posted comments. Premise — one phase = one atomic commit so the PR reads
+  commit-by-commit — is codified in `agent-roles/feature.md` (phasing is the agent's
+  judgment, scaled to the work; the user can override).
 - **1.7.0** — (DX-jn-8-023) Comments `/open-pr` posts now also **start with** a visible
   `**[AGENT RESPONSE · <name> / <role>]**` tag (from `agent-identity.sh tag`; falls back
   to `**[AGENT RESPONSE]**`) for human transparency, alongside the existing invisible

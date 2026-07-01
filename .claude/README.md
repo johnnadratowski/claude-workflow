@@ -59,7 +59,7 @@ writes it as `<base>`.)
 | `/base-merge` | Local-only sync of `<base>` ↔ the current branch (`down`/`up`); no network. |
 | `/base-pr` | In-place PR-style review of what's new on local `<base>` (design / security / **doc-drift incl. architecture**); optionally apply fixes + promote locally. `--pr <n>` instead reviews a **GitHub PR** read-only and reports findings in the terminal (via `gh`, no posting). |
 | `/base-test` | Merge local `<base>` into the current branch, run every project gate. Reports; no push. |
-| `/open-pr` | Open a GitHub PR on a dedicated **frozen `pr/*` branch** rooted at the PR target (never the base!) — scoped from the TODO ledger's `commits:` or `--snapshot`. Create is user-gated; `--absorb` merges the merged PR back into the local base. |
+| `/open-pr` | Open a GitHub PR on a dedicated **frozen `pr/*` branch** rooted at the PR target (never the base!) — scoped from the TODO ledger's `commits:` or `--snapshot`. Create is user-gated; posts a **commit-manifest comment** (per-commit walkthrough + diff links, `--no-merges`); `--absorb` merges the merged PR back into the local base. Also **`--update <n>`** ("update pr 88") — revise an already-open PR **on its own head branch** (never rebuild locally + orphan it), merging the PR's base in before implementing (stacked-PR safe). |
 | `/pr-comments` | Service a PR review round: full inventory, investigate-before-believing, clustered triage, internal-flow fixes + TODO linkage, peer package audit, **atomic user-gated posting**. |
 
 ### Inter-agent comms → [`../docs/inter-agent-comms.md`](../docs/inter-agent-comms.md)
