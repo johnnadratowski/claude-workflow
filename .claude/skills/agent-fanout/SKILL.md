@@ -52,12 +52,15 @@ server error) to **continue** — the common Anthropic-rate-limit case. Such an 
 stopped at its prompt but alive; `mark-error.sh` cleared its busy marker and wrote
 `~/.claude/agent-error/<name>`, so this action finds those and sends each a direct
 "continue" nudge (no `--yes` — it only touches the narrow errored set; honours
-`--role`/`--only`/`--exclude`, custom continue-text via `--stdin`). **The coordinator
-runs this automatically:** the CC-only Stop hook `cc-resume-errored.sh` sweeps + nudges
-errored peers every time the coordinator stops (per-agent throttled ~2 min, so it paces
-retries and doesn't spam), so stuck agents self-heal without manual action.
-**Blind spot (marker-based, by design):** an agent whose session predates the
-`StopFailure` hook writes no marker — it's covered only after it merges-down + restarts.
+`--role`/`--only`/`--exclude`, custom continue-text via `--stdin`). This is the **manual /
+on-demand** path — the same sweep runs **automatically and continuously** in the
+coordinator's always-on `inbox-watcher` (kept alive by the `cc-watcher-keepalive` hook),
+which nudges **only retriable** categories (rate-limit / overloaded / server-error),
+per-agent throttled (~2 min), so stuck agents self-heal without manual action. Use this
+action to nudge *now* rather than wait for the next poll, or to override the category
+filter / target set. **Blind spot (marker-based, by design):** an agent whose session
+predates the `StopFailure` hook writes no marker — it's covered only after it merges-down
++ restarts.
 
 Targeting flags (all modes): `--role feature|review|test|coordinator|all` · `--only name1,name2`
 explicit list · `--exclude a,b` · `--dry-run`. `compact` adds `--threshold N` (default 80).

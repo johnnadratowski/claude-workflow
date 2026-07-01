@@ -97,11 +97,13 @@ dedicated `<base>-cc` branch (`/add-worktree cc --branch <base>-cc --from origin
 | `register-agent.sh` | SessionStart (+ self-heal) | Registers the agent, derives name + role, injects role context. Wired in **user-level** `~/.claude/settings.json` (SessionStart fires before project settings load). |
 | `mark-busy.sh` | UserPromptSubmit + PreToolUse | Marks the agent busy so peers skip a redundant nudge mid-turn. |
 | `drain-inbox.sh` (+ `.test.sh`) | Stop | Re-injects undelivered mailbox messages (at-least-once); GCs abandoned mail; clears the busy marker. |
-| `unregister-agent.sh` | SessionEnd | Cleans up the registry entry + busy marker. |
+| `unregister-agent.sh` | SessionEnd | Cleans up the registry entry + busy + error markers. |
+| `mark-error.sh` | StopFailure | Marks the agent errored (`~/.claude/agent-error/<name>` = the failure category) and clears its busy marker so it can be nudged. The detection substrate the watcher reads. |
+| `cc-watcher-keepalive.sh` | SessionStart + Stop | **Coordinator only.** Keeps exactly one `inbox-watcher` daemon alive machine-wide (idempotent `inbox-watcher.sh start` — launch on startup, self-heal on every Stop). One cc per machine → one watcher. |
 
 ## Scripts (`scripts/`)
 `_config.sh` (config loader) · `agent-send.sh` · `agent-broadcast.sh` · `agent-fanout.sh` ·
-`agent-msg.sh` · `inbox-watcher.sh` (opt-in re-nudge daemon: parked messages + errored agents) · `agent-rename.sh` ·
+`agent-msg.sh` · `inbox-watcher.sh` (the coordinator-run re-nudge daemon: parked messages + retriable-errored agents; kept alive by `cc-watcher-keepalive.sh`) · `agent-rename.sh` ·
 `gen-todos.mjs` (TODO index generator/validator). The `agent-*` scripts are allow-listed in
 `settings.json.example` so fan-outs/inbox-drains don't prompt; `agent-fanout.sh restart` still
 requires `--yes` after confirmation.

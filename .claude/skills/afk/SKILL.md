@@ -53,7 +53,11 @@ mkdir -p logs
 
 Print and append to `$JOURNAL`: the task, flavor (A/B), `--pr`/`--test` agents, `--max-rounds`, the TODO ID, the merge policy ("land into local base; publish to origin only if --publish"), and the exact stop conditions. Keep appending a timestamped line at every state transition, every PR finding + how you resolved it, every non-blocking default you picked, and every test result. This journal is also your **resume state** if the run is interrupted (context compaction, restart) — on resume, read it to find where you left off.
 
-**Start the idle-fleet watcher** — `.claude/scripts/inbox-watcher.sh start` (single-instance, detached; pure `tmux send-keys`, **no model calls**). While you're dark, no coordinator turns are firing, so the `cc-resume-errored` Stop hook can't sweep — this daemon covers that gap: each poll it re-nudges any **parked message** or **errored/rate-limited peer** (crucially the review/test agents you'll be *waiting on*) so a quiet-fleet stall self-heals instead of hanging your run. **Stop it at Finish and at every Stop condition** (`inbox-watcher.sh stop`) — the run owns its lifecycle.
+**Idle-fleet stalls self-heal — you don't manage a daemon.** The coordinator runs the
+`inbox-watcher` continuously (its `cc-watcher-keepalive` hook keeps one instance alive
+machine-wide), so any **parked message** or **errored/rate-limited peer** — crucially the
+review/test agents you'll be *waiting on* — gets re-nudged on a timer without a coordinator
+turn firing. Nothing to start or stop here.
 
 ## State machine
 
@@ -141,8 +145,6 @@ Once review is green **and** tests pass:
 ## Notify + final report
 
 The user is AFK, so actively get their attention, then leave a complete written report.
-
-**First, stop the idle-fleet watcher** — `.claude/scripts/inbox-watcher.sh stop`. This section is reached on EVERY termination (clean Finish, blocked path, or any Stop condition), so stopping it here guarantees the daemon never outlives the run.
 
 ```bash
 # macOS native desktop notification (always available); also ring the bell.

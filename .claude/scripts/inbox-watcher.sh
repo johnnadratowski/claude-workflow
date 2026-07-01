@@ -1,15 +1,17 @@
 #!/bin/bash
-# Optional fleet watcher — re-nudges (1) PARKED agents so messages don't wait on a
-# human keystroke, and (2) ERRORED agents (StopFailure marker) to continue.
+# Fleet watcher — the SINGLE engine that re-nudges (1) PARKED agents so messages don't
+# wait on a human keystroke, and (2) ERRORED agents (retriable StopFailure) to continue.
+# Both nudges are pure tmux send-keys — NO model/agent calls.
 #
-# The drain hook (.claude/hooks/drain-inbox.sh) already makes message delivery
-# lossless for any agent that takes another turn, and the cc-resume-errored Stop
-# hook auto-nudges errored peers whenever the coordinator stops. This daemon covers
-# the one gap NEITHER can: a fully idle fleet (no agent taking turns) — a parked
-# agent that won't run its drain, or an errored agent no coordinator turn will sweep.
-# Run it in its own tmux pane or as a background process (e.g. during /afk); it is
-# NOT auto-started (a long-running daemon doesn't belong in a hook). Both nudges are
-# pure tmux send-keys — NO model/agent calls.
+# Lifecycle: the COORDINATOR (cc) owns it. cc-watcher-keepalive.sh starts it on the
+# coordinator's SessionStart and re-starts it (idempotent `start`) on every cc Stop, so
+# a single instance runs machine-wide for as long as a cc is alive (one cc per machine →
+# one watcher). The errored-agent SWEEP lives HERE, not in the hook — the hook only keeps
+# this daemon up, so the nudge logic isn't duplicated across the two.
+#
+# The drain hook (.claude/hooks/drain-inbox.sh) still makes message delivery lossless for
+# any agent that takes another turn; this daemon covers the idle-fleet gap it can't: a
+# parked agent that won't run its drain, or an errored agent sitting idle.
 #
 # Usage:
 #   inbox-watcher.sh [interval_secs] [redeliver_after_secs]   # run the poll loop (foreground)
@@ -17,8 +19,8 @@
 #   inbox-watcher.sh stop                                     # kill the daemon
 #   inbox-watcher.sh status                                   # running? (pid)
 #   defaults: interval=5, redeliver_after=30
-# The start/stop/status control mode (single-instance via a pidfile) is what `/afk`
-# uses to run the watcher only for the duration of an unattended run.
+# The start/stop/status control mode (single-instance via a pidfile) is what the
+# coordinator's cc-watcher-keepalive.sh hook uses to keep exactly one instance alive.
 #
 # Each poll, for every staged message whose age >= redeliver_after that is still
 # present, it reconstructs the original `/agent-msg <sender> <path> [reply|
@@ -109,15 +111,18 @@ while :; do
     echo "re-nudged $recipient about $fname (sender=$sender kind=$kind)" >&2
   done
 
-  # (2) Nudge ERRORED agents (StopFailure marker) to continue — the idle-fleet gap the
-  # cc-resume-errored Stop hook can't cover when no coordinator turn is firing. Shares
-  # that hook's ~/.claude/agent-nudged/<name> throttle, so a given agent is nudged at
-  # most once per throttle window whether by the hook OR this watcher.
+  # (2) Nudge ERRORED agents (retriable StopFailure) to continue. This is the SOLE
+  # errored-agent sweep — the cc keep-alive hook no longer duplicates it. Throttled via
+  # ~/.claude/agent-nudged/<name> so a given agent is nudged at most once per window.
   throttle_min="${WORKFLOW_RESUME_THROTTLE_MIN:-2}"
   nudged_dir="$HOME/.claude/agent-nudged"; mkdir -p "$nudged_dir"
   for ef in "$HOME/.claude/agent-error"/*; do
     [ -f "$ef" ] || continue
     name="$(basename "$ef")"
+    # Only nudge RETRIABLE error categories (the marker's content, written by mark-error.sh).
+    # "Continue" can't fix auth/billing/invalid_request — nudging those would just retry a
+    # doomed error every throttle window. Those (and unparsed "error") are left for the user.
+    case "$(head -1 "$ef" 2>/dev/null)" in rate_limit|overloaded|server_error) ;; *) continue ;; esac
     pane="$(pane_for "$name" || true)"; [ -n "$pane" ] || continue   # not live → skip
     [ "$(tmux display-message -p -t "$pane" '#{pane_in_mode}' 2>/dev/null || echo 0)" = "1" ] && continue
     tf="$nudged_dir/$name"
