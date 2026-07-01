@@ -11,8 +11,14 @@
 # NOT auto-started (a long-running daemon doesn't belong in a hook). Both nudges are
 # pure tmux send-keys — NO model/agent calls.
 #
-# Usage: inbox-watcher.sh [interval_secs] [redeliver_after_secs]
+# Usage:
+#   inbox-watcher.sh [interval_secs] [redeliver_after_secs]   # run the poll loop (foreground)
+#   inbox-watcher.sh start [interval] [redeliver]             # spawn ONE detached daemon (single-instance)
+#   inbox-watcher.sh stop                                     # kill the daemon
+#   inbox-watcher.sh status                                   # running? (pid)
 #   defaults: interval=5, redeliver_after=30
+# The start/stop/status control mode (single-instance via a pidfile) is what `/afk`
+# uses to run the watcher only for the duration of an unattended run.
 #
 # Each poll, for every staged message whose age >= redeliver_after that is still
 # present, it reconstructs the original `/agent-msg <sender> <path> [reply|
@@ -24,6 +30,27 @@
 # are left alone for the drain's time-based GC to collect.
 
 set -u
+
+# --- daemon control (single-instance via pidfile) ---------------------------
+# `start` spawns ONE detached copy running the poll loop and records its pid;
+# a second `start` while one is live is a no-op. `stop`/`status` don't need tmux.
+PIDFILE="$HOME/.claude/inbox-watcher.pid"
+_running_pid() { local p; [ -f "$PIDFILE" ] && p="$(cat "$PIDFILE" 2>/dev/null)" && [ -n "$p" ] && kill -0 "$p" 2>/dev/null && printf '%s' "$p"; }
+case "${1:-}" in
+  start)
+    shift
+    p="$(_running_pid || true)"; [ -n "$p" ] && { echo "inbox-watcher: already running (pid $p)"; exit 0; }
+    mkdir -p "$(dirname "$PIDFILE")"
+    nohup "$0" "$@" >/dev/null 2>&1 &            # re-exec self in loop mode, detached
+    echo $! > "$PIDFILE"
+    echo "inbox-watcher: started (pid $(cat "$PIDFILE"))"; exit 0 ;;
+  stop)
+    p="$(_running_pid || true)"; if [ -n "$p" ]; then kill "$p" 2>/dev/null; echo "inbox-watcher: stopped (pid $p)"; else echo "inbox-watcher: not running"; fi
+    rm -f "$PIDFILE"; exit 0 ;;
+  status)
+    p="$(_running_pid || true)"; [ -n "$p" ] && echo "inbox-watcher: running (pid $p)" || echo "inbox-watcher: not running"; exit 0 ;;
+esac
+
 # This watcher's entire job is to re-NUDGE parked agents via tmux send-keys, so it
 # is a tmux-only convenience (DX-jn-8-019). Without tmux there's nothing it can do —
 # the durable mailbox + Stop-drain still deliver at each agent's next turn.
