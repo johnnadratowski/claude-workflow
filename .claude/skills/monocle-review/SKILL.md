@@ -157,17 +157,20 @@ only sends **context** (TODO + plan).
 ## Contract for the gates (the 3-option review-path prompt)
 
 At a review gate — the `/todo` **plan** gate and the **implementation/diff** gate — the
-agent presents the user a **3-option prompt**:
+agent presents the user a **3-option prompt via the `AskUserQuestion` tool** (native
+multiple-choice — not options printed as text with a typed reply):
 
 > **1) Send to Monocle** — `/monocle-review <plan|diff> <ID>` (this skill: sends the
 > context artifacts, groups + annotates a diff, blocks on `get_feedback`). Offered
 > **only when the engine is live** (`monocle-review.sh available`).
-> **2) Send to peer review** — a live `review`-role agent (`agent-send` / `base-pr`).
+> **2) Send to peer review** — the reviewer selection **Both / Only peer / Only subagent**
+> (a fleet `review`-role agent via `agent-send`/`base-pr`, and/or a local `/review-subagent`
+> — dispatched together on **Both**; a second `AskUserQuestion` if unspecified).
 > **3) Skip review → implementation/commit.**
 
 Monocle is **option 1**; when the engine is down it's omitted and the user picks peer or
-skip. **Under `/afk` the prompt is not shown — default to peer review.** (Full gate wiring:
-the `/todo` skill's plan gate + step 7.)
+skip. **Under `/afk` the prompt is not shown — default to peer review with Both reviewers.**
+(Full gate wiring: the `/todo` skill's plan gate + step 7; `/review-subagent`.)
 
 ## Declarative artifact set
 

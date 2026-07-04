@@ -152,14 +152,17 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
    link in the body.
 4. **Plan review gate — present the review-path prompt.** When you stop for plan
    review (complex plans — those warranting a "Best-practices rules this work
-   touches" section; small-fix plans may skip), ask the user which path, as a
-   **3-option prompt**:
+   touches" section; small-fix plans may skip), ask the user which path **via the
+   `AskUserQuestion` tool** (a native multiple-choice prompt — NOT options printed as
+   text with a typed reply), as a **3-option prompt**:
    - **1) Send to Monocle** — `/monocle-review plan <ID>` (the user reviews the plan
      in Monocle). **Blocks on the verdict** — send AND wait for it, never fire-and-forget
      (don't start implementing until the reviewer submits). Offer **only when the engine
      is live** (`monocle-review.sh available`); otherwise omit this option.
-   - **2) Send to peer review** — a live `review`-role agent hardens it to **PLAN
-     GREEN** (the peer-path substeps below).
+   - **2) Send to peer review** — hardens it to **PLAN GREEN**. Uses the reviewer
+     selection (**Both / Only peer / Only subagent** — `/review-subagent` is the subagent
+     arm; see [`agent-roles/feature.md`](../../agent-roles/feature.md)); ask it via a
+     second `AskUserQuestion` if unspecified.
    - **3) Skip review → implementation** — record `plan_review: skipped (<reason>)`.
 
    `--review` / `--no-review` force or skip the gate. **Under `/afk` do NOT prompt —
@@ -309,12 +312,16 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
    architecture change shipped without the architecture doc reconciled is exactly what
    `/base-pr` flags). The doc edits are part of the **same uncommitted change** as the code.
 7. **STOP for USER review — BEFORE any commit** (the human-in-the-loop gate; **`/afk` is the
-   only exception**). Present the **uncommitted** change and **prompt the user with the same
-   3 options as the plan gate** — now for the implementation/diff:
+   only exception**). Present the **uncommitted** change and **prompt the user via the
+   `AskUserQuestion` tool** (native multiple-choice, not a printed text menu) with the same
+   3 options as the plan gate — now for the implementation/diff:
    - **1) Send to Monocle** — `/monocle-review diff <ID>` (Monocle reviews the working-tree
      diff natively + attaches the TODO/plan as context artifacts, stable ids, then blocks on
      the verdict). Offer **only when the engine is live** (`monocle-review.sh available`).
-   - **2) Send to peer review** — `agent-send <reviewer> --stdin` / `/base-pr`.
+   - **2) Send to peer review** — uses the reviewer selection **Both / Only peer / Only
+     subagent** (a second `AskUserQuestion` if unspecified): a fleet peer (`agent-send
+     <reviewer> --stdin` / `/base-pr`) and/or a local **`/review-subagent`**, dispatched
+     together on **Both**. See [`agent-roles/feature.md`](../../agent-roles/feature.md).
    - **3) Skip review → commit** — proceed straight to step 8.
 
    Engine down ⇒ omit option 1 (fall back to `git diff` for option 1's intent). **Under `/afk`
@@ -322,10 +329,13 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
    review** — this holds for EVERY round of changes: the initial implementation AND each later
    fix round (step 9).
 8. **Commit** referencing the ID — only **after** the user's review in step 7.
-9. **Peer review** — send the committed change to a review agent (`agent-send <reviewer>
-   --stdin`) or run `/base-pr`; address findings. **Each fix round loops back through step 7
+9. **Peer review** — send the committed change using the **reviewer selection** (**Both /
+   Only peer / Only subagent** — ask via `AskUserQuestion` if unspecified; **Both** dispatches
+   a fleet peer (`agent-send <reviewer> --stdin` / `/base-pr`) AND a local **`/review-subagent`**
+   at the same time, both GREEN to pass — see [`agent-roles/feature.md`](../../agent-roles/feature.md));
+   address findings. **Each fix round loops back through step 7
    first:** fix on the working tree (uncommitted) → STOP for the user's review → commit →
-   re-send. Repeat until peer **GREEN**. Peer review precedes — never replaces — user review;
+   re-send. Repeat until **GREEN**. Peer review precedes — never replaces — user review;
    the human is the terminal reviewer of every loop (plan and diff). (Unchanged by the
    plan-review gate — that gate is additional and earlier.)
 10. **Test — before the merge, on the feature branch.** Once review is GREEN, run the test

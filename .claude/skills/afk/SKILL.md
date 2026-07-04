@@ -25,8 +25,9 @@ The **task** is the work the user set up before invoking this (the current branc
 
 > **Plan-review gate first:** if the TODO's plan has no recorded `plan_review:`
 > outcome (see the `todo` skill's start step 3) and the plan is complex, run the
-> gate against the `--pr` agent BEFORE implementing — same receipt-watch /
-> failover / stop-and-notify protocol as the review loop.
+> gate BEFORE implementing — under `/afk` the reviewers default to **Both** (the
+> `--pr` peer **and** a `/review-subagent`, dispatched together, both GREEN), same
+> receipt-watch / failover / stop-and-notify protocol as the review loop.
 
 ## Autonomy contract
 
@@ -87,9 +88,16 @@ Before review, run the documentation-sync step ([`docs/doc-sync.md`](../../../do
 
 ## Review loop
 
+**Reviewers under `/afk` — default to Both, no prompt.** `/afk` never shows the
+`AskUserQuestion` "Reviewers" gate (no human to answer); it defaults to **Both** — the `--pr`
+fleet peer **and** a local review subagent (**`/review-subagent`**, the current Sonnet by default),
+**dispatched at the same time** each round. Collect both verdicts; the round is GREEN only
+when **both** are. (A subagent has no fleet-liveness failover concern, so it's a free second
+opinion on an unattended run.)
+
 Repeat up to `--max-rounds`:
 
-1. Commit any pending work first (so the reviewer sees a clean branch). Send the review request — **always `--stdin` heredoc** so nothing in the body gets shell-expanded:
+1. Commit any pending work first (so the reviewer sees a clean branch). **Dispatch both reviews at once:** spawn `/review-subagent <sha>` (background) AND send the peer request — **always `--stdin` heredoc** so nothing in the body gets shell-expanded:
    ```bash
    .claude/scripts/agent-send.sh <pr-agent> --stdin <<'BODY'
    AFK review request — branch <BRANCH> @<sha>. Review locally: git diff <base>...<BRANCH>
@@ -109,10 +117,10 @@ Repeat up to `--max-rounds`:
 
    Suggested overall cap per reviewer: ~30 min after pickup (longer if the diff is large). On reply: you consume the file yourself (read + delete, like `agent-msg`). If the verdict instead arrives via a `/agent-msg … reply` turn (the run briefly yielded), handle it identically — the journal says you're mid-AFK, so route it into this loop rather than just integrating it.
 3. **Reviewer failover.** When step 2 says "fail over": advance to the next agent in the `--pr` list (or, if exhausted, a freshly-discovered live review-role peer not already tried — `agent-fanout.sh status`, ROLE `review`). Re-stage the same request to it, note the failover in the journal, and resume the wait. If **no** reviewer in the pool is reachable → **Stop** and notify (don't merge unreviewed).
-4. **Parse the verdict.** Look for an explicit **GREEN LIGHT** (approval). Otherwise treat the reply as findings.
-   - **Green** → exit the loop.
-   - **Findings** → fix every blocker (and reasonable nits); if a finding is itself a blocking question with no safe default, record it and address what you can. Append each finding + resolution to the journal. Commit the fixes, then loop (resend so the reviewer re-reviews the fixed branch — prefer the same reviewer for continuity).
-5. **Cap / non-convergence.** If you reach `--max-rounds`, or the same finding keeps recurring (the reviewer isn't converging), **Stop** and surface the state — do not keep looping.
+4. **Parse BOTH verdicts (Both default) — peer AND subagent.** Collect the peer's reply (steps 2–3) **and** the `/review-subagent` background Agent's result (from its completion notification — the Agent tool always returns a result or errors, so no liveness/failover concern for the subagent). Look for an explicit **GREEN LIGHT** in each.
+   - **Both green** → exit the loop.
+   - **Findings from either** → fix every blocker (and reasonable nits) from **both** reviewers; if a finding is itself a blocking question with no safe default, record it and address what you can. Append each finding + resolution to the journal. Commit the fixes, then loop — **re-dispatch both** (resend to the peer — prefer the same one for continuity — AND re-spawn `/review-subagent` on the fixed commit). The round is GREEN only when **both** are green.
+5. **Cap / non-convergence.** If you reach `--max-rounds`, or the same finding keeps recurring (a reviewer isn't converging), **Stop** and surface the state — do not keep looping.
 
 ## Test loop
 

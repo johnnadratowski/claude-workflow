@@ -76,6 +76,11 @@ WORKFLOW_BASE_BRANCH="main"
 # the user overrides per-invocation.
 # WORKFLOW_TESTING_AGENT=""
 
+# Default model for the /review-subagent local review subagent (a review-role Agent).
+# Overridable per-invocation via `/review-subagent --model <m>`. One of: sonnet | opus |
+# haiku | fable. Default sonnet (the current Sonnet).
+WORKFLOW_SUBAGENT_REVIEW_MODEL="sonnet"
+
 # Days before drain-inbox.sh garbage-collects an undelivered message left
 # in a mailbox (default 7). Only abandoned mail (in mailboxes of agents
 # that never drain) is ever swept — an active agent empties its box each turn.

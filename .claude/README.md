@@ -88,6 +88,17 @@ writes it as `<base>`.)
 `/add-worktree` · `/remove-worktree` · `/list-worktrees`. The coordinator worktree rides a
 dedicated `<base>-cc` branch (`/add-worktree cc --branch <base>-cc --from origin/<base>`).
 
+### Review
+| Skill | What it does |
+|---|---|
+| `/review-subagent` | Spawn a **local review subagent** (an Agent with our `review.md` + `base-pr` instructions) to audit a diff/commit read-only — a first-class reviewer alongside the fleet peer. Model defaults to the current Sonnet (`--model` / `WORKFLOW_SUBAGENT_REVIEW_MODEL`). The subagent arm of the peer-review gate's **Both / Only peer / Only subagent** choice. |
+| `/monocle-review` | The **human**-review gate — sends the diff to Monocle natively + attaches TODO/plan context, blocks on the verdict. |
+
+> **Gate prompts use `AskUserQuestion`.** The workflow's choice gates (the `/todo` plan +
+> diff review-path prompt, the **Reviewers** Both/Peer/Subagent prompt) present a **native
+> multiple-choice** via the `AskUserQuestion` tool — not options printed as text with a typed
+> reply. If the user already specified the choice, skip the ask.
+
 ### Deep audit (language-agnostic) — escalated by `/base-pr` on high-risk diffs
 `/feynman-auditor` · `/state-inconsistency-auditor` · `/nemesis-auditor`.
 
