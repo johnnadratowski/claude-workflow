@@ -133,12 +133,14 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
 
 ### `start` — open → in-progress
 1. Set `status: in-progress`, bump `updated`.
-2. **Sync base down first (before you plan)** — per the base-sync rule in
-   [`agent-roles/feature.md`](../../agent-roles/feature.md): if base has **no unpublished
-   content** (`git rev-list --no-merges <target>..<base>` empty) merge it down automatically
-   (`/base-merge down`); if it has unpublished content, **ask** before planning (interactive)
-   or **just continue** (`/afk`); honor any intent you were already given. Plan against the
+2. **Sync base down first (before you plan)** — **fleet mode only** (`WORKFLOW_FLEET_MODE=1`; source
+   `_config.sh`). Per the base-sync rule in [`agent-roles/feature.md`](../../agent-roles/feature.md):
+   if base has **no unpublished content** (`git rev-list --no-merges <target>..<base>` empty) merge it
+   down automatically (`/base-merge down`); if it has unpublished content, **ask** before planning
+   (interactive) or **just continue** (`/afk`); honor any intent you were already given. Plan against the
    synced state so you don't build on stale/removed code.
+   **Solo mode (no base branch):** skip this entirely — there's no base to sync. If the working branch
+   is behind its upstream and you want current, that's a plain `git pull --ff-only` (ask the user first).
 3. **Write the plan** — `docs/todo_plans/<slug>.md` (slug = lowercased ID + short
    topic, e.g. `srv-8001-db-platform-migration.md`) and set the TODO's `plan:` field.
    **Every started TODO gets a plan** — scale the depth to the work: a complex
@@ -352,12 +354,15 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
    failures the same way — through step 7's user-review gate — re-test until green.
 11. **Close — BEFORE you merge.** After review + test pass + the user's explicit go to ship,
    `done` the TODO (archive → `completed/` + `commits:` + `Closes:` + `pnpm gen:todos`)
-   **on the feature branch, as part of the SAME diff** you are about to ship — *then*
-   merge / `/base-push` / `/open-pr`. **A TODO is ALWAYS closed before its work merges to the
-   base — never after.** Closing after the merge is exactly how TODOs hang `in-progress` (and
-   lagged the published index — the DX-jn-8-007 lesson). The base / master / PR therefore
-   carries the closed TODO and the regenerated index. **Offer `/open-pr <ID>`** (the done
-   verb's step 6) when the work should also go up as a GitHub PR.
+   **on the feature branch, as part of the SAME diff** you are about to ship — *then* merge.
+   **A TODO is ALWAYS closed before its work merges — never after.** Closing after the merge is
+   exactly how TODOs hang `in-progress` (and lagged the published index — the DX-jn-8-007 lesson).
+   - **Fleet mode** (`WORKFLOW_FLEET_MODE=1`): merge / `/base-push` / `/open-pr` as usual (base carries
+     the closed TODO + regenerated index).
+   - **Solo mode (no base branch):** there is no base to land into — **ask the user where this goes**
+     via plain git: merge into their trunk (`git checkout <trunk> && git merge <feature>`) and/or push
+     (`git push`), or open a GitHub PR (`/open-pr <ID>` targets the trunk, works solo). Don't invoke
+     `/base-push` / `/base-merge` (they're disabled solo). **Offer `/open-pr <ID>`** either way.
 
 > The merge-to-base / `/base-push` steps remain gated on the user's explicit approval (see
 > the standing review-before-merge rule). The canonical order is **implement → doc-sync →

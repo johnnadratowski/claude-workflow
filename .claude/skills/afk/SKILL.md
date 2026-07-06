@@ -23,6 +23,17 @@ You are about to run **unattended**. The user is away and wants this task carrie
 
 The **task** is the work the user set up before invoking this (the current branch's in-progress changes and/or the referenced TODO). You own all the code and all the fixes; the `--pr` and `--test` agents are **services** you consult.
 
+> **Solo mode (no base branch / no fleet — `WORKFLOW_FLEET_MODE=0`).** `/afk` still works and is
+> genuinely useful ("keep going without me") — it just DEGRADES off the peer/base machinery:
+> - **`--pr` is NOT required.** Reviewers default to **Only subagent** (`/review-subagent`) — no fleet
+>   peer to consult. (`--pr <agent>` is honored only when peers actually exist.)
+> - **Test loop** runs **local `/base-test`** in this worktree (which itself degrades to a plain
+>   as-is gate sweep in solo mode), not a `--test` peer.
+> - **Finish** lands via **plain git** on the branch/trunk the user pre-specified (never `/base-push`
+>   or `/base-merge` — those are disabled solo); it never touches origin unless the user pre-authorized a
+>   `git push`. No agent messaging, no fan-out. Everything else (autonomy contract, journal, blocked-path
+>   stop, max-rounds) is unchanged.
+
 > **Plan-review gate first:** if the TODO's plan has no recorded `plan_review:`
 > outcome (see the `todo` skill's start step 3) and the plan is complex, run the
 > gate BEFORE implementing — under `/afk` the gate is not shown (no human): Q1 =

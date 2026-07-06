@@ -87,6 +87,14 @@ Invoked when the user says things like:
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
 source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"   # merge_into_branch_local (step 10 promotion)
+# Solo mode (no coordination base branch): the whole skill reviews "what's new on <base>" in a
+# <base>-review snapshot — neither exists without a base. Refuse and point at the solo review path.
+# (An explicit `--base <branch>` still works — the guard only trips when NO base is resolvable.)
+[ "${WORKFLOW_FLEET_MODE:-0}" = 1 ] || [ -n "${BASE:-}" ] || {
+  echo "Solo mode — no coordination base branch is configured, so /base-pr (review-what's-new-on-base) doesn't apply."
+  echo "For a local read-only review use /review-subagent; for a GitHub PR use /pr-comments. Enable fleet mode with /base-setup."
+  exit 0
+}
 BASE="${BASE:-$WORKFLOW_BASE_BRANCH}"      # overridden by --base <branch>
 # The DEDICATED review branch — a reserved snapshot base-pr owns, derived per-base
 # (so --base picks its own), env-overridable via WORKFLOW_REVIEW_BRANCH.

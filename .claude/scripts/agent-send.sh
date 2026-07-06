@@ -166,6 +166,15 @@ else
   elif [ "$target_busy" = "1" ]; then
     nudge="nudge skipped (target busy mid-turn) — drain delivers at its next Stop"
   else
+    # Delivery claim FIRST — BEFORE the send-keys. This live nudge now OWNS delivery of this
+    # message; the target's Stop-drain skips a fresh-claimed file so it won't ALSO inject it (the
+    # buffered /agent-msg would otherwise fire after the drain already delivered → a "file gone"
+    # duplicate). Claiming before the send-keys closes the gap where a Stop-drain could fire between
+    # the nudge and the claim and still double-deliver. A stale claim (>2min: nudge lost / long turn)
+    # is reclaimed by the drain, so the worst case is a short delay, never a lost message. Cleared on
+    # delivery by agent-msg.sh.
+    mkdir -p "$HOME/.claude/agent-nudge-claim" 2>/dev/null || true
+    : > "$HOME/.claude/agent-nudge-claim/$(basename "$rel_path")" 2>/dev/null || true
     # -l = literal; sends the slash command into the target's prompt buffer.
     tmux send-keys -t "$target_pane" -l "$slash"
     tmux send-keys -t "$target_pane" Enter

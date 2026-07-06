@@ -1,11 +1,11 @@
 ---
 name: base-push
-description: Land the current worktree's branch into the shared LOCAL base branch, then publish local base to origin — without ever checking the base out in the caller's working directory. This is the ONLY skill that pushes `origin/<base>` (the PR lifecycle skills /open-pr and /pr-comments make their own deliberate, user-gated origin writes — pr/* branches and comment posts — never the base); all inter-agent coordination happens on local refs. Base branch is configurable via `.claude/workflow.config` (default `main`).
+description: Land the current worktree's branch into the shared LOCAL base branch, then publish local base to origin — without ever checking the base out in the caller's working directory. This is the ONLY skill that pushes `origin/<base>` (the PR lifecycle skills /open-pr and /pr-comments make their own deliberate, user-gated origin writes — pr/* branches and comment posts — never the base); all inter-agent coordination happens on local refs. The base branch is a personal coordination branch off the trunk, configured via `/base-setup` into `.claude/workflow.config.local` (no default — unset = solo mode, where this skill is disabled).
 ---
 
 # base-push — advance local base + publish to origin
 
-Land the current worktree's branch into the shared **local** base branch (default `main`), then **publish** local base to `origin` — without ever checking the base branch out in the caller's working directory.
+Land the current worktree's branch into the shared **local** base branch (a personal coordination branch off the trunk, configured via `/base-setup`; unset ⇒ solo mode ⇒ this skill is disabled), then **publish** local base to `origin` — without ever checking the base branch out in the caller's working directory.
 
 `/base-push` is the **only** skill that pushes `origin/<base>`. (The PR lifecycle skills — `/open-pr`, `/pr-comments` — also write to origin, deliberately and user-gated: `pr/*` branch pushes and comment posts. They never touch `origin/<base>`.)
 
@@ -53,9 +53,15 @@ stale-worktree recovery — lives in [`docs/fleet-base-workflow.md`](../../../do
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
 source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"
+# Solo mode (no coordination base branch): there is no base to advance or publish. Refuse.
+[ "${WORKFLOW_FLEET_MODE:-0}" = 1 ] || {
+  echo "Solo mode — no coordination base branch is configured, so /base-push has nothing to publish."
+  echo "Enable fleet coordination with /base-setup, or push directly with plain git (git push origin <branch>)."
+  exit 0
+}
 ```
 
-`_config.sh` exports `WORKFLOW_BASE_BRANCH` (default `main`) and `WORKFLOW_MAIN_PATH` (default: git toplevel). `merge-helpers.sh` defines `merge_into_branch_local` + `regen_merged_artifacts`.
+`_config.sh` exports `WORKFLOW_BASE_BRANCH` (empty in solo mode — see the guard above; a personal branch off the trunk in fleet mode) and `WORKFLOW_MAIN_PATH` (default: git toplevel), plus `WORKFLOW_FLEET_MODE`. `merge-helpers.sh` defines `merge_into_branch_local` + `regen_merged_artifacts`.
 
 ### 1. Capture state and refuse the wrong starting branches
 

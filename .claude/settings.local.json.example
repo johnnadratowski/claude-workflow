@@ -1,0 +1,8 @@
+{
+  "$comment": "Per-engineer LOCAL Claude Code settings — gitignored, never shared. Copy to settings.local.json (or let /base-setup seed it). The SHARED safety guardrails (the permissions.deny rails — force-push / history-rewrite / rm -rf /, etc.) and the workflow machinery allow-grants live in the committed project .claude/settings.json (copied from settings.json.example), so you don't need them here. Put YOUR personal pre-approved commands (things you don't want to be prompted for) in allow; they accumulate as you work. NOTE on precedence: Claude Code evaluates deny -> ask -> allow (ask beats allow), so don't add an allow entry that a broader ask rule already shadows.",
+  "permissions": {
+    "allow": [],
+    "ask": [],
+    "deny": []
+  }
+}

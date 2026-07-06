@@ -32,8 +32,12 @@ body="$(.claude/scripts/agent-msg.sh <filename>)"
 > Invoke with the relative path from the repo root — the permission allow-list
 > anchors on `.claude/scripts/...`; absolute paths work but prompt.
 
-If it exits non-zero / prints "message file gone", abort with that one-line note ("message
-file gone — duplicate delivery?") and do not continue.
+If it exits **3** / prints "message file gone", the message was already delivered (by the
+Stop-drain or an earlier `/agent-msg`) — this is a **spent duplicate nudge**. Do NOT print a
+banner or any other text: **produce no output at all and end the turn silently.** (The
+delivery-claim mechanism makes this rare — the drain defers to a live nudge and vice-versa —
+but a straggler from a long turn can still fire; it must be invisible, not a "duplicate
+delivery" banner.) Any other non-zero exit (bad path, refused) → surface that one line and stop.
 
 > **Several at once?** When the `drain-inbox.sh` Stop hook lists multiple `/agent-msg` lines,
 > consume them all in one allow-listed call — `agent-msg.sh drain` reads+deletes every message

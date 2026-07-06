@@ -63,6 +63,16 @@ ok "2=rep -> reply"               'printf %s "$reason" | grep -qE "2\. /agent-ms
 ok "3=fwd -> followup, sender keeps hyphens" 'printf %s "$reason" | grep -qE "3\. /agent-msg peer-pr-2 testself/u3.peer-pr-2.fwd.txt followup$"'
 rm -rf "$H"
 
+echo "== delivery-claim: a FRESH claim defers the drain (kills the duplicate); a STALE claim reclaims =="
+backdate(){ touch -A -000300 "$1" 2>/dev/null || touch -d '3 minutes ago' "$1" 2>/dev/null; }  # ~3min ago (BSD||GNU)
+H="$(newhome)"; mkdir -p "$H/.claude/agent-nudge-claim"
+printf a > "$H/.claude/agent-inbox/testself/uc.peer-1.req.txt"
+: > "$H/.claude/agent-nudge-claim/uc.peer-1.req.txt"                       # FRESH claim → a live nudge owns delivery
+ok "fresh-claimed message is NOT injected (silent, no duplicate)" '[ -z "$(run "$H")" ]'
+backdate "$H/.claude/agent-nudge-claim/uc.peer-1.req.txt"                  # claim ages out (>2min) → nudge presumed lost
+ok "stale-claimed message IS delivered (reclaimed, never stranded)" '[ "$(run "$H" "{}" | jq -r .decision)" = block ]'
+rm -rf "$H"
+
 echo "== stop_hook_active guard stays silent despite pending =="
 H="$(newhome)"; printf x > "$H/.claude/agent-inbox/testself/u.peer-1.req.txt"
 out="$(run "$H" '{"stop_hook_active":true}')"

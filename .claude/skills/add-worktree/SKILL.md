@@ -25,8 +25,9 @@ Create a new git worktree at `<parent-of-repo>/<repo-name>-<worktree-name>` and 
    - Default: `git worktree add -b <name> <target> <from>` — creates new branch from from-ref.
    - With `--branch`: `git worktree add <target> <branch>` — uses existing branch.
 5. **Copy env files** — for each path in `WORKFLOW_WORKTREE_COPY_FILES` (array; defaults to none), copy from the main clone to the new worktree if it exists. Useful for `.env`, `.envrc`, etc. that are gitignored.
-6. **Run setup** — if `WORKFLOW_WORKTREE_SETUP_CMD` is set and `--no-setup` wasn't passed, run it in the new worktree (`cd <target> && eval "$WORKFLOW_WORKTREE_SETUP_CMD"`). Surface failures; don't abort the worktree creation.
-7. **Print summary** — path, branch, what was copied/run, the `cd` command to enter it.
+6. **Seed `.claude/settings.local.json`** — it's gitignored (per-engineer, not inherited via git), so a fresh worktree has none; copy the main clone's `.claude/settings.local.json` if present, else `.claude/settings.local.json.example`. The shared guardrails + machinery grants live in the committed `settings.json`, so the seed just carries personal allows and prevents prompt-flooding in the new worktree.
+7. **Run setup** — if `WORKFLOW_WORKTREE_SETUP_CMD` is set and `--no-setup` wasn't passed, run it in the new worktree (`cd <target> && eval "$WORKFLOW_WORKTREE_SETUP_CMD"`). Surface failures; don't abort the worktree creation.
+8. **Print summary** — path, branch, what was copied/run, the `cd` command to enter it.
 
 ## Configuration
 

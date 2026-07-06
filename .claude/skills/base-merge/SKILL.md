@@ -71,11 +71,18 @@ The "ahead" count is the normal state (work assembled locally, not yet published
 
 ## Execution Steps
 
-### 0. Load workflow config + merge helpers
+### 0. Load workflow config + merge helpers — and REFUSE in solo mode
 
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
 source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"
+# Solo mode (no coordination base branch configured): there is no base ref to sync, so this
+# skill has nothing to do. Stop with a pointer rather than syncing onto a phantom base.
+[ "${WORKFLOW_FLEET_MODE:-0}" = 1 ] || {
+  echo "Solo mode — no coordination base branch is configured, so /base-merge has nothing to sync."
+  echo "Enable fleet coordination with /base-setup, or just use plain git (git merge <branch>)."
+  exit 0
+}
 ```
 
 `merge-helpers.sh` defines `merge_into_branch_local` + `regen_merged_artifacts` (the down-merge below uses the latter; the up-merge uses the former).

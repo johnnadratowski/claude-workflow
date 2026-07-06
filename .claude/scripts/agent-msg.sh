@@ -13,6 +13,7 @@
 
 set -u
 inbox="$HOME/.claude/agent-inbox"
+claims="$HOME/.claude/agent-nudge-claim"   # delivery-claim markers (see agent-send.sh / drain-inbox.sh)
 
 case "${1:-}" in
   drain)
@@ -29,7 +30,7 @@ case "${1:-}" in
       fn="$(basename "$p")"; base="${fn%.txt}"; kind="${base##*.}"; rest="${base%.*}"; sender="${rest#*.}"
       echo "===== from: $sender  kind: $kind ====="
       cat "$p"; printf '\n'
-      rm -f "$p"
+      rm -f "$p"; rm -f "$claims/$fn"   # delivered → release the delivery-claim
     done < <(ls -1tr "${msgs[@]}")
     ;;
   ""|-h|--help)
@@ -38,9 +39,11 @@ case "${1:-}" in
     rel="$1"
     case "$rel" in *..*) echo "refusing path containing '..': $rel" >&2; exit 2;; esac
     p="$inbox/$rel"
-    [ -f "$p" ] || { echo "message file gone — duplicate delivery? ($rel)" >&2; exit 3; }
+    # Gone already = a spent duplicate nudge (the drain or an earlier /agent-msg delivered it).
+    # Release any orphan claim and signal exit 3 so the skill ends the turn SILENTLY (no banner).
+    [ -f "$p" ] || { rm -f "$claims/$(basename "$rel")" 2>/dev/null; echo "message file gone — duplicate delivery? ($rel)" >&2; exit 3; }
     rp="$(cd "$(dirname "$p")" 2>/dev/null && pwd)/$(basename "$p")"
     case "$rp" in "$inbox"/*) ;; *) echo "refusing path outside inbox: $rp" >&2; exit 2;; esac
-    cat "$p"; rm -f "$p"
+    cat "$p"; rm -f "$p"; rm -f "$claims/$(basename "$rel")"   # delivered → release the delivery-claim
     ;;
 esac

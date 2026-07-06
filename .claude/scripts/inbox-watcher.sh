@@ -105,6 +105,11 @@ while :; do
     bm="$HOME/.claude/agent-busy/$recipient"
     [ -f "$bm" ] && [ -n "$(find "$bm" -mmin -5 2>/dev/null)" ] && continue
 
+    # Claim delivery FIRST (same as agent-send): the target's Stop-drain skips this fresh-claimed
+    # file so it won't ALSO inject it → no "file gone" duplicate. Claim before the send-keys to
+    # close the drain-in-the-gap window. Cleared on delivery.
+    mkdir -p "$HOME/.claude/agent-nudge-claim" 2>/dev/null || true
+    : > "$HOME/.claude/agent-nudge-claim/$fname" 2>/dev/null || true
     tmux send-keys -t "$pane" -l "/agent-msg $sender $recipient/$fname$kw"
     tmux send-keys -t "$pane" Enter
     touch "$path"   # reset age — throttles re-nudge to once per redeliver_after

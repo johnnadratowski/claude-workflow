@@ -92,6 +92,17 @@ source "$(git rev-parse --show-toplevel)/.claude/scripts/_config.sh"
 # which lives there. (It used to be inline in base-push/SKILL.md, which base-test
 # never sourced, so the call was `command not found` mid-merge.)
 source "$(git rev-parse --show-toplevel)/.claude/scripts/merge-helpers.sh"
+
+# Solo mode (no coordination base branch, WORKFLOW_FLEET_MODE != 1): base-test DEGRADES to a plain
+# AS-IS gate sweep — there is no base to merge in. base-test IS the solo test path (it validates the
+# target's gates). Concretely, when FLEET_MODE != 1: (a) the base-existence check in step 1 is SKIPPED
+# ($WORKFLOW_BASE_BRANCH is empty — verifying it would wrongly hard-stop), and (b) step 3's base merge
+# is SKIPPED (treat every run as --as-is). Everything else (checkout, gates) is identical.
+SOLO=0
+if [ "${WORKFLOW_FLEET_MODE:-0}" != 1 ]; then
+  SOLO=1
+  echo "Solo mode — no base branch; running the gate sweep against the target AS-IS (no base merge)."
+fi
 ```
 
 ### 1. Preflight — starting branch, clean tree, prerequisites
@@ -121,12 +132,14 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-# Local base branch must exist whenever --with-base is in effect (the default) —
-# we merge from local, not from origin/<base>.
-git rev-parse --verify "$WORKFLOW_BASE_BRANCH" >/dev/null 2>&1 || {
-  echo "Local '$WORKFLOW_BASE_BRANCH' branch missing. Recovery: git fetch origin && git branch $WORKFLOW_BASE_BRANCH origin/$WORKFLOW_BASE_BRANCH"
-  exit 1
-}
+# Local base branch must exist whenever --with-base is in effect (the default) — we merge from
+# local, not from origin/<base>. Skipped entirely in SOLO mode (no base to verify; we run as-is).
+if [ "$SOLO" != 1 ]; then
+  git rev-parse --verify "$WORKFLOW_BASE_BRANCH" >/dev/null 2>&1 || {
+    echo "Local '$WORKFLOW_BASE_BRANCH' branch missing. Recovery: git fetch origin && git branch $WORKFLOW_BASE_BRANCH origin/$WORKFLOW_BASE_BRANCH"
+    exit 1
+  }
+fi
 ```
 
 > **Add project-specific preflight checks here.** Examples: container runtime (`docker info`), required CLIs (`command -v <tool>`), language toolchain present, ports free (`lsof -i :<port>`). Each failed check should print a clear recovery hint and `exit 1`.
@@ -147,7 +160,10 @@ After this step the worktree is on the target (or still on `$CURRENT_BRANCH` for
 
 > **Refuse to land the worktree on the literal base.** If resolving `<target>` would leave the worktree checked out on `$WORKFLOW_BASE_BRANCH` (e.g. someone passes the base name expecting a checkout), do not — apply the literal-base fallback above instead. The preflight already refuses *starting* on a protected branch; this refusal covers *landing* on the base via the target arg.
 
-### 3. Merge local base into the target (`--with-base`, default; `--as-is` skips)
+### 3. Merge local base into the target (`--with-base`, default; `--as-is` **and SOLO mode** skip)
+
+**SKIP this entire step when `SOLO=1`** (no base branch — set in step 0): there is nothing to merge, so
+go straight to the gates (step 4) against the target as-is. In fleet mode it runs as below.
 
 **Default behavior — runs every invocation unless the caller passed `--as-is` (see "`--with-base` vs `--as-is`" above).** This is the single most important step for the skill's default contract: gates run against the target **with the latest local `$WORKFLOW_BASE_BRANCH` merged in**, not against whatever it was sitting on before. Runs **after** the target is checked out (step 2), on whatever the worktree now points at.
 

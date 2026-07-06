@@ -13,10 +13,17 @@
 # <base>); /open-pr and /pr-comments write pr/* branches + comments, user-gated.
 # There is no pull skill for the base: origin/<base> is write-only.
 
-# The shared "trunk" branch every other branch merges into. It lives only as a
-# ref — never check it out in a persistent worktree (see add-worktree).
-# Common choices: main, master, trunk, develop.
-WORKFLOW_BASE_BRANCH="main"
+# The base branch is OPT-IN and PERSONAL — a coordination branch OFF the trunk
+# (e.g. your name/handle), NOT the trunk itself. It lives only as a ref — never
+# check it out in a persistent worktree (see add-worktree). There is NO committed
+# default: leaving it unset puts the repo in SOLO mode (WORKFLOW_FLEET_MODE=0 in
+# _config.sh) where the base-* skills disable themselves and /todo + /afk fall
+# back to plain git. So do NOT set it in this committed file — a value here would
+# coordinate everyone's work onto one person's branch. Run /base-setup to create
+# your personal base branch + enable fleet mode; it writes WORKFLOW_BASE_BRANCH
+# into the gitignored .claude/workflow.config.local, e.g.:
+#   WORKFLOW_BASE_BRANCH="yourname"   # off origin/master, in workflow.config.local
+# WORKFLOW_BASE_BRANCH=""   # unset ⇒ solo mode; set it via /base-setup (in .local)
 
 # Path to the canonical clone of the repo. Used by the transient-worktree
 # helper to anchor the temporary worktrees it creates. Default is the

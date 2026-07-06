@@ -39,6 +39,9 @@ stdin_payload=$(cat 2>/dev/null || true)
 # tree; runs on any Stop regardless of whether we have mail ourselves.
 gc_days="${AGENT_INBOX_GC_DAYS:-7}"
 find "$HOME/.claude/agent-inbox" -type f -name '*.txt' -mtime "+$gc_days" -delete 2>/dev/null || true
+# GC expired/orphan delivery-claims (agent-msg.sh clears a claim on delivery; this backstops
+# claims whose delivery path died). Same conservative threshold.
+find "$HOME/.claude/agent-nudge-claim" -type f -mtime "+$gc_days" -delete 2>/dev/null || true
 
 reg="$HOME/.claude/running-agents"
 [ -d "$reg" ] || exit 0
@@ -97,6 +100,14 @@ n=0
 while IFS= read -r path; do
   [ -f "$path" ] || continue
   fname="$(basename "$path")"   # <uuid>.<sender>.<kind>.txt
+  # A FRESH delivery-claim means a live nudge (agent-send / inbox-watcher) already owns this
+  # file — the buffered /agent-msg will deliver it, so don't ALSO inject it here (that double
+  # is the "message file gone" duplicate). A STALE claim (>2min: nudge lost or a >2min turn)
+  # is reclaimed — fall through and deliver. Never strands: worst case is a ≤2min delay.
+  claim="$HOME/.claude/agent-nudge-claim/$fname"
+  if [ -f "$claim" ] && [ -n "$(find "$claim" -mmin -2 2>/dev/null)" ]; then
+    continue
+  fi
   base="${fname%.txt}"
   kind="${base##*.}"            # req | rep | fwd
   rest="${base%.*}"             # <uuid>.<sender>

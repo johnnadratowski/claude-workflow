@@ -13,3 +13,8 @@
 # Per-clone workflow overrides (per-engineer/per-machine, NOT shared) — e.g.
 # WORKFLOW_TODO_NS. Sourced after the committed .claude/workflow.config.
 .claude/workflow.config.local
+
+# Per-engineer local Claude settings (personal allow-list). Shared safety guardrails +
+# machinery grants live in the committed .claude/settings.json (from settings.json.example);
+# the personal file is local-only. Template: .claude/settings.local.json.example (seeded by /base-setup).
+.claude/settings.local.json

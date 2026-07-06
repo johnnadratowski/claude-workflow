@@ -152,7 +152,7 @@ Fixes go through the normal internal flow: implement on the working branch, gate
 
 ### 6. Package audit — peer review of the whole round (near-last)
 
-Bundle = original comments + the implementation diff + every draft reply. Send it to a live review-role agent (classifier: `.claude/scripts/agent-fanout.sh status`, ROLE `review`) to audit **coherence**: do the fixes actually address the comments; do the replies describe the fixes accurately; are the refutations correct; is anything left unanswered? Apply its feedback, then show the user **both the audit feedback AND the delta it caused** (diff + changed drafts).
+Bundle = original comments + the implementation diff + every draft reply. Send it to a review-role reviewer to audit **coherence**: do the fixes actually address the comments; do the replies describe the fixes accurately; are the refutations correct; is anything left unanswered? **Pick the reviewer by mode:** in **fleet mode** (`WORKFLOW_FLEET_MODE=1`) send it to a live review-role peer (classifier: `.claude/scripts/agent-fanout.sh status`, ROLE `review`); in **solo mode** (no peers) run **`/review-subagent`** on the bundle instead — same read-only coherence audit, no fleet needed. Apply its feedback, then show the user **both the audit feedback AND the delta it caused** (diff + changed drafts).
 
 ### 7. Atomic posting — only on the user's final approval
 
