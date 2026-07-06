@@ -292,7 +292,7 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
 3. **Plan review gate** — present the **two-axis prompt** (Q1 Monocle-_or-not_ · Q2
    Reviewers: **Both / Only peer / Only subagent / None**), asked together in one
    `AskUserQuestion` call — never merged into a single Monocle-xor-peer choice (see `start`
-   step 3 + the canonical contract in [`monocle-review`](../monocle-review/SKILL.md)). For
+   step 4 + the canonical contract in [`monocle-review`](../monocle-review/SKILL.md)). For
    the peer path: send the plan inline via `agent-send`,
    revise on blockers until **PLAN GREEN**, record the outcome in the TODO's
    `plan_review:` frontmatter, then **present the user the gate's deltas for sign-off**

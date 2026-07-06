@@ -91,7 +91,7 @@ dedicated `<base>-cc` branch (`/add-worktree cc --branch <base>-cc --from origin
 ### Review
 | Skill | What it does |
 |---|---|
-| `/review-subagent` | Spawn a **local review subagent** (an Agent with our `review.md` + `base-pr` instructions) to audit a diff/commit read-only — a first-class reviewer alongside the fleet peer. Model defaults to the current Sonnet (`--model` / `WORKFLOW_SUBAGENT_REVIEW_MODEL`). The subagent arm of the peer-review gate's **Both / Only peer / Only subagent** choice. |
+| `/review-subagent` | Spawn a **local review subagent** (an Agent with our `review.md` + `base-pr` instructions) to audit a diff/commit read-only — a first-class reviewer alongside the fleet peer. Model defaults to the current Sonnet (`--model` / `WORKFLOW_SUBAGENT_REVIEW_MODEL`). The subagent arm of the peer-review gate's **Both / Only peer / Only subagent / None** choice. |
 | `/monocle-review` | The **human**-review gate — sends the diff to Monocle natively + attaches TODO/plan context, blocks on the verdict. |
 
 > **Gate prompts use `AskUserQuestion`.** The workflow's choice gates present a **native
