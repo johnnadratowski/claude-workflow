@@ -94,10 +94,14 @@ dedicated `<base>-cc` branch (`/add-worktree cc --branch <base>-cc --from origin
 | `/review-subagent` | Spawn a **local review subagent** (an Agent with our `review.md` + `base-pr` instructions) to audit a diff/commit read-only — a first-class reviewer alongside the fleet peer. Model defaults to the current Sonnet (`--model` / `WORKFLOW_SUBAGENT_REVIEW_MODEL`). The subagent arm of the peer-review gate's **Both / Only peer / Only subagent** choice. |
 | `/monocle-review` | The **human**-review gate — sends the diff to Monocle natively + attaches TODO/plan context, blocks on the verdict. |
 
-> **Gate prompts use `AskUserQuestion`.** The workflow's choice gates (the `/todo` plan +
-> diff review-path prompt, the **Reviewers** Both/Peer/Subagent prompt) present a **native
+> **Gate prompts use `AskUserQuestion`.** The workflow's choice gates present a **native
 > multiple-choice** via the `AskUserQuestion` tool — not options printed as text with a typed
-> reply. If the user already specified the choice, skip the ask.
+> reply. Both `/todo` review gates (plan **and** diff) ask **two independent questions in one
+> call, never merged into a single Monocle-xor-peer choice**: **Q1 — Monocle _or not_** (the
+> human-review engine) and **Q2 — Reviewers** (**Both / Only peer / Only subagent / None**).
+> The axes are orthogonal — choosing Monocle never skips peer review, and declining peer never
+> skips Monocle (canonical contract: `/monocle-review` → "Contract for the gates"). If the user
+> already specified a choice, skip that ask.
 
 ### Deep audit (language-agnostic) — escalated by `/base-pr` on high-risk diffs
 `/feynman-auditor` · `/state-inconsistency-auditor` · `/nemesis-auditor`.

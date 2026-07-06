@@ -154,22 +154,38 @@ only sends **context** (TODO + plan).
    if the file set changed; re-run step 6 to re-annotate the new code) → re-wait until
    approved. (Only skip the wait if the user explicitly asked for fire-and-forget.)
 
-## Contract for the gates (the 3-option review-path prompt)
+## Contract for the gates (two independent axes — human review + peer/agent review)
 
-At a review gate — the `/todo` **plan** gate and the **implementation/diff** gate — the
-agent presents the user a **3-option prompt via the `AskUserQuestion` tool** (native
-multiple-choice — not options printed as text with a typed reply):
+**Both** review gates — the `/todo` **plan** gate and the **implementation/diff** gate —
+work the same way: the agent asks the user **via the `AskUserQuestion` tool** (native
+multiple-choice, NOT options printed as text). It is **two independent questions asked
+together, never one merged choice.** The old single "Monocle / peer / skip" prompt was
+wrong: it let picking Monocle silently drop peer review (and let "skip" drop everything).
+The two axes are orthogonal — **choosing a human-review method must NEVER drop peer review,
+and declining peer review must NEVER drop the Monocle human review:**
 
-> **1) Send to Monocle** — `/monocle-review <plan|diff> <ID>` (this skill: sends the
-> context artifacts, groups + annotates a diff, blocks on `get_feedback`). Offered
-> **only when the engine is live** (`monocle-review.sh available`).
-> **2) Send to peer review** — the reviewer selection **Both / Only peer / Only subagent**
-> (a fleet `review`-role agent via `agent-send`/`base-pr`, and/or a local `/review-subagent`
-> — dispatched together on **Both**; a second `AskUserQuestion` if unspecified).
-> **3) Skip review → implementation/commit.**
+> **Q1 — Human review (header "Monocle"): _Monocle, or not._**
+> **Monocle** = `/monocle-review <plan|diff> <ID>` (this skill sends the context artifacts,
+> groups + annotates the diff, blocks on `get_feedback`). **No Monocle** = the user reviews
+> the plain plan / `git diff` in the terminal instead. Offer the Monocle choice **only when
+> the engine is live** (`monocle-review.sh available`); when it's down, Q1 is not asked and
+> the axis is "No Monocle".
+>
+> **Q2 — Peer / agent review (header "Reviewers"): _peer + subagent, just peer, just
+> subagent, or not._**
+> **Both** = fleet peer (`agent-send`/`base-pr`) **and** local **`/review-subagent`**,
+> dispatched together, both must go GREEN · **Only peer** · **Only subagent** · **None**.
+> See [`agent-roles/feature.md`](../../agent-roles/feature.md).
 
-Monocle is **option 1**; when the engine is down it's omitted and the user picks peer or
-skip. **Under `/afk` the prompt is not shown — default to peer review with Both reviewers.**
+Ask **both questions in a single `AskUserQuestion` call** (the tool takes multiple
+questions). The answers **compose independently** — any of *Monocle + Both*, *No Monocle +
+Only peer*, *Monocle + None*, *No Monocle + None*, etc. Monocle is the **human**-review
+engine; peer/subagent is **agent** corroboration that runs before the human's terminal
+sign-off — **one is never a substitute for the other.** Whatever the answers, **the human is
+the terminal reviewer of every loop** (a "No Monocle + None" pick still ends with the user's
+go, just reviewed as a plain diff — it is not "no review").
+
+**Under `/afk`:** no prompt — Q1 = **No Monocle** (no human present), Q2 = **Both**.
 (Full gate wiring: the `/todo` skill's plan gate + step 7; `/review-subagent`.)
 
 ## Declarative artifact set

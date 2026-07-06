@@ -25,9 +25,10 @@ The **task** is the work the user set up before invoking this (the current branc
 
 > **Plan-review gate first:** if the TODO's plan has no recorded `plan_review:`
 > outcome (see the `todo` skill's start step 3) and the plan is complex, run the
-> gate BEFORE implementing — under `/afk` the reviewers default to **Both** (the
-> `--pr` peer **and** a `/review-subagent`, dispatched together, both GREEN), same
-> receipt-watch / failover / stop-and-notify protocol as the review loop.
+> gate BEFORE implementing — under `/afk` the gate is not shown (no human): Q1 =
+> **No Monocle**, Q2 (reviewers) = **Both** (the `--pr` peer **and** a
+> `/review-subagent`, dispatched together, both GREEN), same receipt-watch /
+> failover / stop-and-notify protocol as the review loop.
 
 ## Autonomy contract
 
@@ -88,8 +89,8 @@ Before review, run the documentation-sync step ([`docs/doc-sync.md`](../../../do
 
 ## Review loop
 
-**Reviewers under `/afk` — default to Both, no prompt.** `/afk` never shows the
-`AskUserQuestion` "Reviewers" gate (no human to answer); it defaults to **Both** — the `--pr`
+**Reviewers under `/afk` — No Monocle + Both, no prompt.** `/afk` never shows the
+two-axis review gate (no human to answer): Q1 = **No Monocle**, Q2 (reviewers) = **Both** — the `--pr`
 fleet peer **and** a local review subagent (**`/review-subagent`**, the current Sonnet by default),
 **dispatched at the same time** each round. Collect both verdicts; the round is GREEN only
 when **both** are. (A subagent has no fleet-liveness failover concern, so it's a free second

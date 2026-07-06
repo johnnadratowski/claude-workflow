@@ -150,25 +150,27 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
    clickable plan link — as a collapsible `.todo-meta` panel above the body, and
    GitHub renders frontmatter as a table on the raw file. Do NOT duplicate the
    link in the body.
-4. **Plan review gate — present the review-path prompt.** When you stop for plan
-   review (complex plans — those warranting a "Best-practices rules this work
-   touches" section; small-fix plans may skip), ask the user which path **via the
-   `AskUserQuestion` tool** (a native multiple-choice prompt — NOT options printed as
-   text with a typed reply), as a **3-option prompt**:
-   - **1) Send to Monocle** — `/monocle-review plan <ID>` (the user reviews the plan
-     in Monocle). **Blocks on the verdict** — send AND wait for it, never fire-and-forget
-     (don't start implementing until the reviewer submits). Offer **only when the engine
-     is live** (`monocle-review.sh available`); otherwise omit this option.
-   - **2) Send to peer review** — hardens it to **PLAN GREEN**. Uses the reviewer
-     selection (**Both / Only peer / Only subagent** — `/review-subagent` is the subagent
-     arm; see [`agent-roles/feature.md`](../../agent-roles/feature.md)); ask it via a
-     second `AskUserQuestion` if unspecified.
-   - **3) Skip review → implementation** — record `plan_review: skipped (<reason>)`.
+4. **Plan review gate — two independent axes (Monocle-or-not · Reviewers).** When you stop
+   for plan review (complex plans — those warranting a "Best-practices rules this work
+   touches" section; small-fix plans may skip), ask the user **via the `AskUserQuestion`
+   tool** (native multiple-choice, NOT options printed as text) — **two questions asked
+   together in one call, never merged into one choice** (canonical contract:
+   [`monocle-review`](../monocle-review/SKILL.md) → "Contract for the gates"):
+   - **Q1 — Monocle, _or not_:** **Monocle** = `/monocle-review plan <ID>` (the user reviews
+     the plan in Monocle; **blocks on the verdict** — send AND wait, never fire-and-forget,
+     don't implement until it's submitted). **No Monocle** = the user reads the plan in the
+     terminal. Offer the Monocle choice **only when the engine is live**
+     (`monocle-review.sh available`); otherwise omit Q1.
+   - **Q2 — Reviewers: _peer + subagent, just peer, just subagent, or not_** — **Both / Only
+     peer / Only subagent / None**. The peer path hardens the plan to **PLAN GREEN**
+     (`/review-subagent` is the subagent arm; see
+     [`agent-roles/feature.md`](../../agent-roles/feature.md)).
 
-   `--review` / `--no-review` force or skip the gate. **Under `/afk` do NOT prompt —
-   default to peer review (option 2)**, per the autonomous protocol. Record the chosen
-   path's outcome in `plan_review:`; implementation does not start until it's resolved.
-   The **peer-review path (option 2)**:
+   The two answers **compose** — picking Monocle never skips peer, and picking None-peer
+   never skips Monocle. `--review` / `--no-review` force or skip the gate. **Under `/afk` do
+   NOT prompt — default No Monocle + Both reviewers**, per the autonomous protocol. Record
+   the chosen paths' outcome in `plan_review:`; implementation does not start until it's
+   resolved. The **peer-review path (Q2 = Both / Only peer / Only subagent)**:
    1. **Find a live review agent** — do NOT invent a name glob; use the
       canonical role classifier via `.claude/scripts/agent-fanout.sh status`
       and pick a live agent whose ROLE column is `review`. None alive → tell
@@ -287,9 +289,11 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
    verified against which doc source + date, and which `integration-notes.md` entries you'll
    add/update in the same diff (money-movement / state-mutating ops are re-verified every time,
    regardless of note age).
-3. **Plan review gate** — present the **3-option review-path prompt** (1) Monocle /
-   (2) peer review / (3) skip → implementation (see `start` step 3 for the full
-   prompt + the peer path). For the peer path: send the plan inline via `agent-send`,
+3. **Plan review gate** — present the **two-axis prompt** (Q1 Monocle-_or-not_ · Q2
+   Reviewers: **Both / Only peer / Only subagent / None**), asked together in one
+   `AskUserQuestion` call — never merged into a single Monocle-xor-peer choice (see `start`
+   step 3 + the canonical contract in [`monocle-review`](../monocle-review/SKILL.md)). For
+   the peer path: send the plan inline via `agent-send`,
    revise on blockers until **PLAN GREEN**, record the outcome in the TODO's
    `plan_review:` frontmatter, then **present the user the gate's deltas for sign-off**
    (user → agent → user). Small plans skip (`--review`/`--no-review` override either way).
@@ -313,26 +317,29 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
    `/base-pr` flags). The doc edits are part of the **same uncommitted change** as the code.
 7. **STOP for USER review — BEFORE any commit** (the human-in-the-loop gate; **`/afk` is the
    only exception**). Present the **uncommitted** change and **prompt the user via the
-   `AskUserQuestion` tool** (native multiple-choice, not a printed text menu) with the same
-   3 options as the plan gate — now for the implementation/diff:
-   - **1) Send to Monocle** — `/monocle-review diff <ID>` (Monocle reviews the working-tree
-     diff natively + attaches the TODO/plan as context artifacts, stable ids, then blocks on
-     the verdict). Offer **only when the engine is live** (`monocle-review.sh available`).
-   - **2) Send to peer review** — uses the reviewer selection **Both / Only peer / Only
-     subagent** (a second `AskUserQuestion` if unspecified): a fleet peer (`agent-send
-     <reviewer> --stdin` / `/base-pr`) and/or a local **`/review-subagent`**, dispatched
-     together on **Both**. See [`agent-roles/feature.md`](../../agent-roles/feature.md).
-   - **3) Skip review → commit** — proceed straight to step 8.
+   `AskUserQuestion` tool** (native multiple-choice, not a printed text menu) — the **same two
+   independent axes as the plan gate**, now for the implementation/diff (canonical contract:
+   [`monocle-review`](../monocle-review/SKILL.md)):
+   - **Q1 — Monocle, _or not_:** **Monocle** = `/monocle-review diff <ID>` (reviews the
+     working-tree diff natively + attaches the TODO/plan context artifacts, stable ids, then
+     blocks on the verdict). **No Monocle** = the user reads the `git diff` in the terminal.
+     Offer the Monocle choice **only when the engine is live** (`monocle-review.sh available`);
+     otherwise omit Q1.
+   - **Q2 — Reviewers: _peer + subagent, just peer, just subagent, or not_** — **Both / Only
+     peer / Only subagent / None**: a fleet peer (`agent-send <reviewer> --stdin` / `/base-pr`)
+     and/or a local **`/review-subagent`**, dispatched together on **Both** (executed on the
+     committed change in step 9). See [`agent-roles/feature.md`](../../agent-roles/feature.md).
 
-   Engine down ⇒ omit option 1 (fall back to `git diff` for option 1's intent). **Under `/afk`
-   do NOT prompt — peer review (option 2)**. **Never commit until the user has had a chance to
-   review** — this holds for EVERY round of changes: the initial implementation AND each later
-   fix round (step 9).
+   The two answers **compose independently** — Monocle never skips peer, None-peer never skips
+   Monocle. **Under `/afk` do NOT prompt — No Monocle + Both.** **Never commit until the user
+   has had a chance to review** — this holds for EVERY round of changes: the initial
+   implementation AND each later fix round (step 9).
 8. **Commit** referencing the ID — only **after** the user's review in step 7.
-9. **Peer review** — send the committed change using the **reviewer selection** (**Both /
-   Only peer / Only subagent** — ask via `AskUserQuestion` if unspecified; **Both** dispatches
+9. **Peer review** — execute the committed change against the **Reviewers (Q2) selection from
+   step 7's gate** (**Both / Only peer / Only subagent / None** — ask via `AskUserQuestion` if
+   still unspecified; **None** ⇒ skip peer review, go straight to test): **Both** dispatches
    a fleet peer (`agent-send <reviewer> --stdin` / `/base-pr`) AND a local **`/review-subagent`**
-   at the same time, both GREEN to pass — see [`agent-roles/feature.md`](../../agent-roles/feature.md));
+   at the same time, both GREEN to pass — see [`agent-roles/feature.md`](../../agent-roles/feature.md);
    address findings. **Each fix round loops back through step 7
    first:** fix on the working tree (uncommitted) → STOP for the user's review → commit →
    re-send. Repeat until **GREEN**. Peer review precedes — never replaces — user review;
