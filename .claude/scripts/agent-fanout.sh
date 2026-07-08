@@ -29,10 +29,10 @@ SEND="$here/agent-send.sh"
 [ -r "$here/_fleet.sh" ] && . "$here/_fleet.sh"   # fleet_self_token/_tmux_ok/_alive/_find_self
 BASE="${WORKFLOW_BASE_BRANCH:-main}"
 
-# Keep these patterns IDENTICAL to resolve_role() in hooks/register-agent.sh —
-# a divergence means status/targeting classify an agent differently from the
-# role context it was booted with (e.g. "x-print" must NOT read as review).
-role_of() { case "$1" in cc|coordinator|*-cc|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator;; test|*-test|*-test-*|test-*) echo test;; review|pr|*-pr|*-pr-*|pr-*|*-review|*-review-*|review-*) echo review;; *) echo feature;; esac; }
+# Delegates to fleet_resolve_role() in _fleet.sh (the single source of the name→role
+# patterns) so status/targeting can never classify an agent differently from the role
+# context it was booted with (e.g. "x-print" must NOT read as review).
+role_of() { fleet_resolve_role "$1"; }
 # Identity/liveness via the shared helper (tmux-optional); fall back inline if unsourced.
 self_name() { fleet_find_self "$reg" 2>/dev/null; }
 is_busy()  { local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]; }
@@ -101,9 +101,13 @@ enumerate() {  # args: role only_csv exclude_csv -> "name pid pane" per live pee
   for f in "$reg"/*; do
     [ -f "$f" ] || continue
     local bn name pid pane; bn="$(basename "$f")"; name="${bn%.*}"; pid="${bn##*.}"; pane="$(cat "$f" 2>/dev/null)"
-    case "$seen" in *" $name "*) continue;; esac; seen="$seen$name "
+    # Dedupe check first, but mark "seen" only AFTER the liveness check passes —
+    # otherwise a stale twin entry (dead pid globbing first) consumes the name and
+    # hides the live agent from every fan-out (same pattern as agent-broadcast.sh).
+    case "$seen" in *" $name "*) continue;; esac
     [ "$name" = "$self" ] && continue
     alive "$pid" "$pane" || continue
+    seen="$seen$name "
     case ",$excl," in *",$name,"*) continue;; esac
     [ -n "$only" ] && { case ",$only," in *",$name,"*) ;; *) continue;; esac; }
     [ "$want_role" != all ] && [ "$(role_of "$name")" != "$want_role" ] && continue
@@ -111,7 +115,7 @@ enumerate() {  # args: role only_csv exclude_csv -> "name pid pane" per live pee
   done
 }
 
-ROLE=all; ONLY=""; EXCL=""; DRY=0; YES=0; STDIN=0; THRESH=80; EXTRA=()
+ROLE=all; ONLY=""; EXCL=""; DRY=0; YES=0; STDIN=0; THRESH=80
 parse() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -122,7 +126,7 @@ parse() {
       --dry-run) DRY=1;;
       --yes) YES=1;;
       --stdin) STDIN=1;;
-      *) EXTRA+=("$1");;
+      *) echo "unknown argument: $1" >&2; exit 2;;
     esac; shift
   done
 }
@@ -134,12 +138,25 @@ case "$cmd" in
   status)
     self="$(self_name)"; basesha="$(git rev-parse --short "$BASE" 2>/dev/null || echo '?')"; shopt -s nullglob
     printf '%-14s %-11s %-9s %-24s %-7s %s\n' NAME ROLE STATE BRANCH CTX PANE
+    # Pre-scan: names with at least one LIVE registry entry, so a stale twin
+    # (dead pid globbing first) neither shadows nor duplicates the live row.
+    live_names=" "
+    for f in "$reg"/*; do
+      [ -f "$f" ] || continue
+      bn="$(basename "$f")"; n="${bn%.*}"; p="${bn##*.}"; pa="$(cat "$f" 2>/dev/null)"
+      alive "$p" "$pa" && live_names="$live_names$n "
+    done
     seen=" "
     for f in "$reg"/*; do
       [ -f "$f" ] || continue
       bn="$(basename "$f")"; name="${bn%.*}"; pid="${bn##*.}"; pane="$(cat "$f" 2>/dev/null)"
-      case "$seen" in *" $name "*) continue;; esac; seen="$seen$name "
-      st=live; alive "$pid" "$pane" || st=STALE
+      case "$seen" in *" $name "*) continue;; esac
+      st=live
+      if ! alive "$pid" "$pane"; then
+        case "$live_names" in *" $name "*) continue;; esac   # live twin exists — skip the stale row
+        st=STALE
+      fi
+      seen="$seen$name "
       # errored takes precedence over busy/idle (busy is cleared by mark-error.sh on StopFailure).
       errnote=""
       if is_errored "$name"; then st="$st/ERR"; errnote="  ⚠ $(head -c 24 "$HOME/.claude/agent-error/$name" 2>/dev/null | tr -d '\n')"
@@ -165,7 +182,9 @@ case "$cmd" in
     echo "recipients:"; echo "$targets" | awk '{print "  - "$1}'
     if [ "$DRY" = 1 ]; then echo "(dry-run — nothing sent)"; exit 0; fi
     echo "$targets" | while read -r name pid pane; do
-      printf '%s' "$body" | "$SEND" "$name" --stdin >/dev/null 2>&1 && echo "  sent -> $name" || echo "  FAILED -> $name"
+      err="$(printf '%s' "$body" | "$SEND" "$name" --stdin 2>&1 >/dev/null)" \
+        && echo "  sent -> $name" \
+        || echo "  FAILED -> $name${err:+ — $(printf '%s' "$err" | head -1)}"
     done
     ;;
 

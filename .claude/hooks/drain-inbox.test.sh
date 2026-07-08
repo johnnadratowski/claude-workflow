@@ -109,20 +109,25 @@ ok "fresh message kept"  '[ -f "$H/.claude/agent-inbox/testself/keep.peer-1.req.
 rm -rf "$H"
 
 echo "== lazy self-heal: missing self-entry is repaired, then drains =="
-# Copy drain next to a STUB register-agent that writes the missing registry entry.
-TD="$(mktemp -d)"; cp "$HOOK" "$TD/drain-inbox.sh"
-cat > "$TD/register-agent.sh" <<'STUB'
+# Copy drain into a hooks/-shaped dir WITH the ../scripts/_fleet.sh sibling it
+# sources (a bare copy left fleet_find_self undefined, so self-id failed even
+# after the stub healed the registry), next to a STUB register-agent that
+# writes the missing registry entry.
+TD="$(mktemp -d)"; mkdir -p "$TD/hooks" "$TD/scripts"
+cp "$HOOK" "$TD/hooks/drain-inbox.sh"
+cp "$here/../scripts/_fleet.sh" "$TD/scripts/_fleet.sh"
+cat > "$TD/hooks/register-agent.sh" <<'STUB'
 #!/bin/bash
 # stub: register 'testself' on the current pane, as the real self-heal would
 mkdir -p "$HOME/.claude/running-agents"
 echo "$TMUX_PANE" > "$HOME/.claude/running-agents/testself.123"
 STUB
-chmod +x "$TD/register-agent.sh" "$TD/drain-inbox.sh"
+chmod +x "$TD/hooks/register-agent.sh" "$TD/hooks/drain-inbox.sh"
 H="$(mktemp -d)"; mkdir -p "$H/.claude/running-agents" "$H/.claude/agent-inbox/testself"
 # NOTE: no registry entry yet — the scan must fail, trigger self-heal, then succeed.
 printf hi > "$H/.claude/agent-inbox/testself/m.peer-1.req.txt"
 CWD="$(mktemp -d)"
-out="$( cd "$CWD" && HOME="$H" TMUX_PANE='%99' bash "$TD/drain-inbox.sh" <<< '{}' )"
+out="$( cd "$CWD" && HOME="$H" TMUX_PANE='%99' bash "$TD/hooks/drain-inbox.sh" <<< '{}' )"
 ok "self-healed and produced block" 'printf %s "$out" | jq -e ".decision==\"block\"" >/dev/null'
 ok "registry entry was created"     '[ -f "$H/.claude/running-agents/testself.123" ]'
 rm -rf "$TD" "$H" "$CWD"

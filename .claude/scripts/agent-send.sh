@@ -160,9 +160,19 @@ else
   # A marker older than 5 min is treated as stale (a turn that crashed OR was interrupted without
   # clearing) so we never suppress the nudge forever; a fresher marker means busy.
   [ -f "$busy_marker" ] && [ -n "$(find "$busy_marker" -mmin -5 2>/dev/null)" ] && target_busy=1
+  # HOLD marker (DX-jn-8-031): target is blocked on a Monocle interactive verdict wait — a
+  # single long tool call whose busy marker goes stale, so the 5-min rule above would let the
+  # nudge through and the watcher would then re-nudge every 30s. A held+live target must NOT be
+  # nudged at all: the message is durably staged and drains ONCE at its next Stop. NO staleness
+  # test here on purpose — a human review can run for hours; the hold is bounded by the target's
+  # Stop / next-tool / SessionEnd clears, and the target is already verified live above.
+  target_held=0
+  [ -f "$HOME/.claude/agent-hold/$target" ] && target_held=1
 
   if [ "$pane_in_mode" = "1" ]; then
     nudge="nudge skipped (pane scrolled/in copy-mode) — drain will deliver"
+  elif [ "$target_held" = "1" ]; then
+    nudge="nudge skipped (target parked on a Monocle wait) — drain delivers at its next Stop"
   elif [ "$target_busy" = "1" ]; then
     nudge="nudge skipped (target busy mid-turn) — drain delivers at its next Stop"
   else

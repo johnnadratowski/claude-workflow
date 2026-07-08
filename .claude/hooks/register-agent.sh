@@ -173,15 +173,9 @@ session_name_sanitized=$(printf '%s' "$session_name" | tr -c 'A-Za-z0-9_-' '-' |
 # from the agent name; override per-agent with ~/.claude/agents/<name>.role (a
 # single word). Role docs live in .claude/agent-roles/<role>.md and ship with
 # the repo (so they propagate via merge-down). Only loaded on sessionstart.
-# Keep these patterns IDENTICAL to role_of() in scripts/agent-fanout.sh.
-resolve_role() {
-  case "$1" in
-    cc|coordinator|*-cc|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator ;;
-    test|*-test|*-test-*|test-*)                                       echo test ;;
-    review|pr|*-pr|*-pr-*|pr-*|*-review|*-review-*|review-*)           echo review ;;
-    *)                                                                 echo feature ;;
-  esac
-}
+# Delegates to fleet_resolve_role() in scripts/_fleet.sh (sourced above) — the single
+# source of the name→role patterns, shared with agent-fanout.sh's role_of().
+resolve_role() { fleet_resolve_role "$1"; }
 role_context=""
 if [ "$source" = "sessionstart" ]; then
   role=""
@@ -306,6 +300,14 @@ if [ -f "$target" ] && [ "$(cat "$target" 2>/dev/null)" = "$self_token" ]; then
 fi
 
 # Slow path: rebuild this name's entry (keyed by the identity token).
+# Also remove any OTHER name's entry claiming the SAME identity token — after a
+# mid-session branch switch (name re-derived from the new branch) the old-name
+# entry would otherwise survive, making fleet_find_self nondeterministic and
+# stranding mail staged under whichever name loses the glob race.
+for _stale in "$HOME/.claude/running-agents"/*; do
+  [ -f "$_stale" ] || continue
+  [ "$(cat "$_stale" 2>/dev/null)" = "$self_token" ] && rm -f "$_stale"
+done
 rm -f "$HOME/.claude/running-agents/$name".*
 printf '%s\n' "$self_token" > "$target"
 log "wrote $target -> $self_token"
@@ -315,14 +317,26 @@ if fleet_tmux_ok 2>/dev/null; then
   # tmux pane title (right granularity for split panes).
   tmux select-pane -t "$TMUX_PANE" -T "$name" 2>/dev/null || true
 
-  # tmux window rename — only when it would actually change something.
-  if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
-    current_window_name=$(tmux display-message -t "$window_id" -p '#{window_name}' 2>/dev/null)
-    if [ "$current_window_name" != "$name" ]; then
-      tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
-      tmux rename-window -t "$window_id" "$name" 2>/dev/null || true
-    fi
-  fi
+  # tmux window rename — only for the window-OWNING roles (cc/feature) and only when it
+  # would change something. review + test agents are layered into a SHARED window (many
+  # panes in one), so renaming it from their pane clobbers the co-tenants' label — skip
+  # it; the per-pane title above still identifies each. Same rule as agent-rename.sh.
+  # Honor a ~/.claude/agents/<name>.role override, else the _fleet.sh name classifier.
+  tmux_role=""
+  [ -f "$HOME/.claude/agents/$name.role" ] && tmux_role="$(tr -dc 'A-Za-z0-9_-' < "$HOME/.claude/agents/$name.role")"
+  [ -z "$tmux_role" ] && tmux_role="$(resolve_role "$name")"
+  case "$tmux_role" in
+    coordinator|feature)
+      if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
+        current_window_name=$(tmux display-message -t "$window_id" -p '#{window_name}' 2>/dev/null)
+        if [ "$current_window_name" != "$name" ]; then
+          tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
+          tmux rename-window -t "$window_id" "$name" 2>/dev/null || true
+        fi
+      fi
+      ;;
+    *) log "window rename skipped (role=$tmux_role — shares a window)" ;;
+  esac
 
   # Type /rename into the prompt on the initial-startup path — but ONLY when the
   # session isn't already named correctly (avoids a no-op /rename re-firing on

@@ -73,6 +73,29 @@ if [ -z "${WORKFLOW_TODO_NS:-}" ]; then
 fi
 : "${WORKFLOW_TODO_NS:=0}"
 
+# WORKFLOW_DOCS_URL — base URL of the local docs:dev server, for the /todo skill's clickable TODO
+# links + its plan/TODO link output. Neutral default :4000; a consuming project overrides it
+# per-clone in workflow.config.local (e.g. to a per-lane port).
+: "${WORKFLOW_DOCS_URL:=http://localhost:4000}"
+
+# WORKFLOW_TODO_AGENT — this agent's fleet id (cc | f<N> | pr<N> | test<N>), the per-worktree
+# segment the /todo skill mints into new IDs — AREA-<NS>-<agentid>-NNN — so an id names WHICH agent
+# made it. Resolved from the agent's registered name via fleet_agent_id (_fleet.sh); falls back to
+# "0" when self can't be resolved (headless / CI / unregistered). A consuming project that derives a
+# numeric worktree lane may instead fall this back to that lane (see the /todo ID-allocation notes).
+# Computed in a subshell so sourcing _fleet.sh here doesn't leak its functions into the caller.
+if [ -z "${WORKFLOW_TODO_AGENT:-}" ]; then
+  WORKFLOW_TODO_AGENT="$(
+    _f="$_workflow_root/.claude/scripts/_fleet.sh"
+    [ -r "$_f" ] || exit 0
+    # shellcheck disable=SC1090
+    . "$_f"
+    _self="$(fleet_find_self "$HOME/.claude/running-agents" 2>/dev/null || true)"
+    [ -n "$_self" ] && fleet_agent_id "$_self"
+  )"
+fi
+: "${WORKFLOW_TODO_AGENT:=0}"
+
 # WORKFLOW_FLEET_MODE — 1 when a coordination base branch is configured (FLEET mode: base-*
 # skills + agent comms are active), 0 when the base is unset (SOLO mode: base-* skills disable
 # themselves, /todo + /afk fall back to plain git + prompting the user). Turned on by
@@ -80,5 +103,5 @@ fi
 # gitignored workflow.config.local. Skills read this instead of re-checking the base themselves.
 if [ -n "${WORKFLOW_BASE_BRANCH:-}" ]; then WORKFLOW_FLEET_MODE=1; else WORKFLOW_FLEET_MODE=0; fi
 
-export WORKFLOW_BASE_BRANCH WORKFLOW_MAIN_PATH WORKFLOW_TODO_NS WORKFLOW_FLEET_MODE
+export WORKFLOW_BASE_BRANCH WORKFLOW_MAIN_PATH WORKFLOW_TODO_NS WORKFLOW_DOCS_URL WORKFLOW_TODO_AGENT WORKFLOW_FLEET_MODE
 unset _workflow_root _wf_overrides _wf_line _wf_ns_email

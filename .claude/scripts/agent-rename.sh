@@ -65,12 +65,15 @@ if [ -f "$agents_dir/$old_name" ]; then
 fi
 
 git_rename_result="no-op"
+record_branch="$new_name"   # what ~/.claude/agents/<new_name> will record (must be a REAL branch)
+current_branch=""
 if [ -n "$base_branch" ] && git -C "$PWD" rev-parse --verify "$base_branch" >/dev/null 2>&1; then
   # The recorded base branch exists locally — try to rename it.
   if git -C "$PWD" branch -m "$base_branch" "$new_name" 2>/dev/null; then
     git_rename_result="renamed git branch $base_branch -> $new_name"
   else
     git_rename_result="git branch rename failed ($base_branch -> $new_name); branch may already exist or be checked out elsewhere"
+    record_branch="$base_branch"   # rename failed — keep recording the branch that actually exists
   fi
 else
   # No recorded base — fall back to renaming whatever we're currently on.
@@ -80,13 +83,30 @@ else
       git_rename_result="renamed current git branch $current_branch -> $new_name"
     else
       git_rename_result="git branch rename failed ($current_branch -> $new_name); branch may already exist"
+      record_branch="$current_branch"
     fi
   fi
 fi
 
-# Persist the new base branch name.
+# Persist the base-branch record under the new agent name. On a FAILED git
+# rename this records the branch that actually exists — recording $new_name
+# unconditionally made every future SessionStart recommend checking out a
+# branch that was never created.
 rm -f "$agents_dir/$old_name"
-printf '%s\n' "$new_name" > "$agents_dir/$new_name"
+printf '%s\n' "$record_branch" > "$agents_dir/$new_name"
+
+# Migrate the name-keyed SIDECARS too. These live beside the base file as
+# ~/.claude/agents/<name>.<ext> — currently `.role` (role override) and `.cwd`
+# (cwd→self identity for the statusline widgets). Leaving them under <old_name>
+# means: a `.role` override stops classifying the agent after its next
+# SessionStart (register-agent would re-derive from <new_name> and could pick the
+# WRONG role — e.g. resume the shared-window rename this feature suppresses), and
+# `.cwd`-based statusline self-id keeps showing the OLD name. The dotted glob never
+# matches the extensionless base file (handled above), so this only moves sidecars.
+for _sc in "$agents_dir/$old_name".*; do
+  [ -f "$_sc" ] || continue
+  mv -f "$_sc" "$agents_dir/$new_name.${_sc##*.}"
+done
 
 # --- Migrate the durable mailbox + clear the stale busy marker ---
 # Both are keyed by agent name. After this rename our Stop-drain reads
@@ -120,24 +140,48 @@ fi
 # next tool call, so just clear the stale leftover.
 rm -f "$HOME/.claude/agent-busy/$old_name"
 
+# Role gates the WINDOW rename. cc + feature agents own their tmux window, so we label
+# it with the agent name. review + test agents are layered into a SHARED window (several
+# panes in one), so renaming the window from any one pane would clobber the label the
+# others rely on — skip the window rename for them. The per-pane title (set below) still
+# identifies each agent within the shared window. Honor a ~/.claude/agents/<name>.role
+# override (the sidecar was migrated to <new_name> above; <old_name> is checked too as a
+# belt-and-suspenders in case that mv was skipped), else the name classifier from _fleet.sh.
+agent_role=""
+for _n in "$new_name" "$old_name"; do
+  if [ -f "$agents_dir/$_n.role" ]; then
+    agent_role="$(tr -dc 'A-Za-z0-9_-' < "$agents_dir/$_n.role")"
+    [ -n "$agent_role" ] && break
+  fi
+done
+[ -n "$agent_role" ] || agent_role="$(fleet_resolve_role "$new_name" 2>/dev/null || echo feature)"
+
 # tmux cosmetics + the built-in /rename keystroke — only when tmux is drivable.
 tmux_note="tmux unavailable — registry/branch/mailbox renamed; pane title + /rename skipped"
 if fleet_tmux_ok 2>/dev/null; then
   # Set the tmux pane title (right granularity — survives split-pane setups).
   tmux select-pane -t "$TMUX_PANE" -T "$new_name" 2>/dev/null || true
 
-  # Also rename the window for convenience on single-pane windows.
-  if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
-    tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
-    tmux rename-window -t "$window_id" "$new_name" 2>/dev/null || true
-  fi
+  # Rename the window only for the window-owning roles (cc/feature).
+  case "$agent_role" in
+    coordinator|feature)
+      if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
+        tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
+        tmux rename-window -t "$window_id" "$new_name" 2>/dev/null || true
+      fi
+      window_note="window renamed"
+      ;;
+    *)
+      window_note="window rename skipped (role=$agent_role — shares a window)"
+      ;;
+  esac
 
   # Also rename the Claude session itself via its built-in /rename slash
   # command. We're inside the running session, so just type it into our
   # own prompt — it'll fire on the next turn.
   tmux send-keys -t "$TMUX_PANE" -l "/rename $new_name"
   tmux send-keys -t "$TMUX_PANE" Enter
-  tmux_note="tmux + Claude session renamed"
+  tmux_note="tmux + Claude session renamed ($window_note)"
 fi
 
 echo "renamed: $old_name -> $new_name (registry + branch; $tmux_note)"

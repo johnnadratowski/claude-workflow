@@ -4,7 +4,7 @@
 
 The TODO system tracks every substantive unit of work as a **file-per-TODO** with
 structured frontmatter (status, priority, area, milestone, dates, dependencies),
-a **stable ID** (`AREA-<NS>-<lane>-NNN`), a **generated published index**, and a **completed
+a **stable ID** (`AREA-<NS>-<agentid>-NNN`), a **generated published index**, and a **completed
 archive** (closed TODOs are moved, never deleted). This skill is how you create,
 move through, query, and close those TODOs.
 
@@ -36,7 +36,7 @@ Each TODO file is frontmatter + body:
 
 ```markdown
 ---
-id: SEC-jn-8-001             # AREA-<NS>-<lane>-NNN, stable forever (never changes, even on defer)
+id: SEC-jn-8-001             # AREA-<NS>-<agentid>-NNN, stable forever (never changes, even on defer)
 title: Short imperative title
 status: open                 # open | in-progress | blocked | deferred | done | cancelled
 priority: critical           # critical | high | medium | low
@@ -73,15 +73,26 @@ The generator validates every file against it.
 
 ## ID allocation
 
-**Format:** `AREA-<NS>-<lane>-NNN` — the area's prefix from `milestones.json` + a
-per-engineer namespace `<NS>` + this worktree's lane number + a zero-padded 3-digit
-per-(area, NS, lane) sequence (e.g. `SEC-jn-8-001`). IDs are **immutable** — deferring,
-blocking, or re-scoping never changes an ID, and legacy forms grandfather; **never
-renumber an existing ID**.
+**Format:** `AREA-<NS>-<agentid>-NNN` — the area's prefix from `milestones.json` + a
+per-engineer namespace `<NS>` + the minting agent's fleet id `<agentid>` (`cc` | `f<N>` |
+`pr<N>` | `test<N>`, from `WORKFLOW_TODO_AGENT`; falls back to `0` / a numeric lane) + a
+zero-padded 3-digit per-(area, NS, agentid) sequence (e.g. `DX-jn-cc-032`, `SRV-jn-f2-001`).
+IDs are **immutable** — deferring, blocking, or re-scoping never changes an ID, and legacy
+forms (incl. numeric-lane `SEC-jn-8-001`) grandfather; **never renumber an existing ID**.
 
 **Allocate via the procedure in [`docs/todo-system-internals.md`](../../../docs/todo-system-internals.md#id-allocation)**
-(resolve NS → lane → end-anchored scan for the next sequence; the shell snippets +
+(resolve NS → agent id → end-anchored scan for the next sequence; the shell snippets +
 legacy-grandfathering rules live there).
+
+## Linking TODO ids in output
+
+Whenever you print a TODO id to the user in terminal output — reporting a newly minted id,
+citing one in a status update, listing them — render it as a **markdown link to the local
+docs server** so it's clickable: `[<ID>](${WORKFLOW_DOCS_URL}/todos/<ID>.html)` for an active
+TODO, or `.../todos/completed/<ID>.html` for a closed one. `WORKFLOW_DOCS_URL` comes from
+`_config.sh` (the docs:dev base — default `http://localhost:4000`, overridable per clone).
+Example: ``[SEC-jn-cc-001](http://localhost:4000/todos/SEC-jn-cc-001.html)``. The links need
+the docs:dev server running.
 
 ## Priority
 
@@ -122,7 +133,7 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
 1. Read `docs/todos/milestones.json` for valid areas/priorities/milestones.
 2. Decide `area` (→ prefix), `priority` (auto-suggest from area, confirm), `milestone`
    (default `pre-release` for launch-blocking, else ask/infer), `tags`.
-3. Mint the next `AREA-<NS>-<lane>-NNN` (resolve NS + lane + scan existing — see ID allocation).
+3. Mint the next `AREA-<NS>-<agentid>-NNN` (resolve NS + agent id + scan existing — see ID allocation).
 4. Write `docs/todos/<ID>.md` with frontmatter (`status: open`, `created`/`updated` =
    today) + body.
 5. `pnpm gen:todos`; report the new ID.
@@ -132,6 +143,18 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
 > TODO" for substantive work; just do it and tell them the ID.
 
 ### `start` — open → in-progress
+
+0. **Compact check — ask FIRST, before anything else (interactive only).** Starting a TODO on
+   a bloated context degrades planning and burns tokens on every turn, and it's easy to begin a
+   TODO at high context without noticing. So before you set the status, sync, or plan, **ask the
+   user via `AskUserQuestion` whether to `/compact` first — and recommend compacting** (that's
+   the default lean; most of the time you want a lean window for a fresh TODO). You can't
+   self-compact — the user runs `/compact`; its summary preserves "starting `<ID>`", and you
+   resume `start` at step 1 in the fresh context. Only skip the prompt when the window is
+   genuinely fresh (early in a session, little prior work). Gauge freshness from the session
+   length / how much you've done this turn — the statusline `CTX%` (and `/agent-fanout status`)
+   is the signal where you can see it. **Skip this step entirely under `/afk`** (autonomous — no
+   prompts) and when the user already told you to compact-or-not for this pickup.
 1. Set `status: in-progress`, bump `updated`.
 2. **Sync base down first (before you plan)** — **fleet mode only** (`WORKFLOW_FLEET_MODE=1`; source
    `_config.sh`). Per the base-sync rule in [`agent-roles/feature.md`](../../agent-roles/feature.md):
@@ -378,7 +401,7 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
 
 | Input | Action |
 |-------|--------|
-| `/todo add <desc>` (or any substantive work request) | mint `AREA-<NS>-<lane>-NNN`, write file, `gen:todos` |
+| `/todo add <desc>` (or any substantive work request) | mint `AREA-<NS>-<agentid>-NNN`, write file, `gen:todos` |
 | `/todo start <ID>` | → in-progress + write plan in `docs/todo_plans/` + set `plan:` + **plan-review gate** for complex plans (peer `PLAN GREEN` → `plan_review:` frontmatter) before implementing |
 | `/todo <ID>` / `/todo do the <keyword> todo` | locate + plan + implement (planning workflow) |
 | `/todo done <ID>` / `/todo continue` | gates → doc-sync → **USER review → commit** (no commit before user review; `/afk` excepted) → **peer review** (fixes re-gate through user review) → **test** (feature branch, no base merge first) → user go → **archive TODO + plan (close) + regen index** → THEN merge/`/base-push`/`/open-pr` (**close always BEFORE the merge**, same diff) → offer `/open-pr <ID>` |

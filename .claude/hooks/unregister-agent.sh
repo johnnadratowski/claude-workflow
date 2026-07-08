@@ -7,13 +7,27 @@ set -u
 
 cat >/dev/null 2>&1 || true
 
-# Hook runs as a direct child of claude, so $PPID is the claude pid.
-# Remove any registry file whose filename ends in .<PPID>.
+# Match our registry entry by IDENTITY TOKEN first (tmux pane, else cwd token —
+# the same key registration uses), falling back to the .<PPID> filename match.
+# PPID alone is the least-reliable signal (hooks may run under an intermediate
+# shell — see register-agent.sh's PID ladder), and trusting only it made this
+# cleanup silently no-op, accumulating stale registry twins.
 shopt -s nullglob 2>/dev/null || true
-for f in "$HOME/.claude/running-agents/"*."$PPID"; do
+hook_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+# shellcheck disable=SC1090
+[ -r "$hook_dir/../scripts/_fleet.sh" ] && . "$hook_dir/../scripts/_fleet.sh"
+tok=""
+type fleet_self_token >/dev/null 2>&1 && tok="$(fleet_self_token)"
+for f in "$HOME/.claude/running-agents/"*; do
+  [ -f "$f" ] || continue
   bn="$(basename "$f")"
+  match=0
+  [ -n "$tok" ] && [ "$(cat "$f" 2>/dev/null)" = "$tok" ] && match=1
+  [ "${bn##*.}" = "$PPID" ] && match=1
+  [ "$match" = 1 ] || continue
   rm -f "$HOME/.claude/agent-busy/${bn%.*}"    # clear the busy marker too
   rm -f "$HOME/.claude/agent-error/${bn%.*}"   # and the error marker
+  rm -f "$HOME/.claude/agent-hold/${bn%.*}"    # and the Monocle-wait hold (DX-jn-8-031)
   rm -f "$f"
 done
 

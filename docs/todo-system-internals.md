@@ -8,25 +8,39 @@ only when you change the ID scheme or the link generation.
 
 ## ID allocation
 
-`AREA-<NS>-<lane>-NNN`: the area's prefix from `milestones.json` (`SEC`, `MON`, `SRV`,
-`UI`, `INF`, `CMP`, `FEAT`, `DX`) + a **per-engineer namespace** `<NS>` + **this
-worktree's lane number** + a zero-padded 3-digit sequence — **each its own dash-delimited
-segment**, scoped per (area, NS, lane). Example: `SEC-jn-8-001` (namespace `jn`, lane 8,
-sequence 001).
+`AREA-<NS>-<agentid>-NNN`: the area's prefix from `milestones.json` (`SEC`, `MON`, `SRV`,
+`UI`, `INF`, `CMP`, `FEAT`, `DX`) + a **per-engineer namespace** `<NS>` + **the minting
+agent's fleet id** `<agentid>` + a zero-padded 3-digit sequence — **each its own
+dash-delimited segment**, scoped per (area, NS, agentid). Example: `DX-jn-cc-032` (namespace
+`jn`, agent `cc`, sequence 032) or `SRV-jn-f2-001` (agent `f2`).
 
-> **Why the lane is its own segment.** It used to be concatenated onto the sequence
-> (`SEC-jn-8001`), which aliases once lanes reach two digits: an end-unanchored scan for
-> lane 1 (`…-1[0-9]{3}`) also matched lane 10's `…-10001`. The dash makes the lane
-> unambiguous from the sequence at ANY width — `jn-1-` ≠ `jn-10-` ≠ `jn-100-`. (DX-jn-8-006.)
+> **Agent id vs lane (DX-jn-8-032).** The middle segment used to be the worktree's numeric
+> **lane**; it's now the agent's short **fleet id** — `cc` | `f<N>` | `pr<N>` | `test<N>`
+> (from `fleet_agent_id` in `_fleet.sh`) — so an id names *which* agent minted it (`DX-jn-cc-032`
+> reads better than `DX-jn-8-032`). It serves the identical collision-guard role: one unique
+> value per worktree. Numeric-lane ids (`SEC-jn-8-001`) are grandfathered and never renumbered.
+
+> **Why it's its own segment.** It used to be concatenated onto the sequence (`SEC-jn-8001`),
+> which aliases once lanes reach two digits: an end-unanchored scan for lane 1 (`…-1[0-9]{3}`)
+> also matched lane 10's `…-10001`. The dash makes the segment unambiguous from the sequence
+> at ANY width. (DX-jn-8-006.)
 
 **Two namespacing axes, both needed:**
 - **`<NS>` (per-engineer)** guards against collisions *across clones* — a second engineer
   (e.g. Patrick) mints on their own machine with no shared lock, so without a per-engineer
   namespace their `SEC-0001` would collide with ours and a TODO could be lost on merge.
-- **`<lane>` (per-worktree)** guards against collisions *within one engineer's machine* —
+- **`<agentid>` (per-worktree)** guards against collisions *within one engineer's machine* —
   parallel worktrees all share one git identity (so the same `<NS>`), and mint in parallel
-  with no lock; the lane keeps them disjoint (this is the original DX-003 fix). NS does not
-  subsume the lane, nor vice-versa.
+  with no lock; the per-agent id keeps them disjoint (the original DX-003 fix, formerly the
+  lane). NS does not subsume it, nor vice-versa.
+  > **The agent id must be UNIQUE across concurrent worktrees** — it's the collision guard, and
+  > `fleet_agent_id` derives it from role + trailing number, so **same-role agents MUST have
+  > distinct trailing numbers** (`john-1`/`john-2`, `john-pr`/`john-pr-2`) — two review agents
+  > both named without a number would both resolve to `pr1` and could mint the same `NNN`
+  > concurrently → a dup on merge (the exact DX-003 class). Unlike the numeric lane (structurally
+  > unique from a project's worktree registry), this is **convention-dependent**: a fleet that can't
+  > guarantee distinct role+number names should set `WORKFLOW_TODO_AGENT` to the numeric lane, or
+  > leave it unset so `_config.sh` falls back to `WORKFLOW_LANE` (structurally unique per worktree).
 
 **Step 1 — namespace `NS`:** resolved by `_config.sh` as `WORKFLOW_TODO_NS`. Precedence:
 the explicit per-clone knob (**recommended** — set `WORKFLOW_TODO_NS` in the gitignored
@@ -40,41 +54,43 @@ source "$ROOT/.claude/scripts/_config.sh"     # exports WORKFLOW_TODO_NS
 NS="$WORKFLOW_TODO_NS"
 ```
 
-**Step 2 — lane number:** look up the current worktree's path in
-`~/.config/goals-worktrees.json` (`worktrees[].path` → `lane`). **If not found, use `0`.**
+**Step 2 — agent id:** `_config.sh` exports `WORKFLOW_TODO_AGENT` — this agent's fleet id
+(`cc` | `f<N>` | `pr<N>` | `test<N>`) via `fleet_agent_id`, falling back to the numeric
+`WORKFLOW_LANE` when self can't be resolved (headless / CI / unregistered). Either way it's a
+unique per-worktree segment.
 
 ```bash
-LANE=$(python3 -c "import json; d=json.load(open('$HOME/.config/goals-worktrees.json')); print(next((w['lane'] for w in d['worktrees'] if w['path']=='$ROOT'), 0))" 2>/dev/null || echo 0)
+AGENT="$WORKFLOW_TODO_AGENT"   # e.g. cc, f2, pr1, test1 (fallback: the numeric lane)
 ```
 
 **Step 3 — next sequence:** scan existing IDs across BOTH `docs/todos/` and
-`docs/todos/completed/` for that prefix **and this NS and lane**, take `max + 1` (start
-`001`). The scan is **end-anchored** and accepts both the new dash form and any legacy
-concatenated id for the same lane (`-?` = optional lane dash), so the sequence stays
-continuous across the format change and a one-digit lane never grabs a two-digit lane's ids:
+`docs/todos/completed/` for that prefix **and this NS and agent id**, take `max + 1` (start
+`001`). The scan is **end-anchored** and accepts both the dash form and any legacy
+concatenated id for the same segment (`-?` = optional dash), so the sequence stays continuous:
 
 ```bash
 PREFIX=SEC   # the area's prefix from milestones.json (SEC, MON, DX, …)
 last=$(ls docs/todos docs/todos/completed 2>/dev/null \
   | sed 's/\.md$//' \
-  | grep -oE "^${PREFIX}-${NS}-${LANE}-?[0-9]{3}$" \   # anchored: lane 8 ≠ lane 80; `-?` spans old+new
+  | grep -oE "^${PREFIX}-${NS}-${AGENT}-?[0-9]{3}$" \  # anchored per (prefix, NS, agent); `-?` spans old+new
   | grep -oE '[0-9]{3}$' | sort -n | tail -1)          # the 3-digit seq is always the last group
 NEXT=$(printf '%03d' $(( 10#${last:-000} + 1 )))        # 10# forces base-10 (ignore leading-zero octal)
-# mint:  ${PREFIX}-${NS}-${LANE}-${NEXT}   →  e.g. DX-jn-8-006 (none yet ⇒ ${PREFIX}-${NS}-${LANE}-001)
+# mint:  ${PREFIX}-${NS}-${AGENT}-${NEXT}   →  e.g. DX-jn-cc-032 (none yet ⇒ ${PREFIX}-${NS}-${AGENT}-001)
 ```
 
-So engineer `jn` in lane 8 mints `DX-jn-8-006`; lane 10 mints `SEC-jn-10-001`; engineer `pk`
-in lane 0 mints `SEC-pk-0-001` — never the same string as `jn`'s, across machines OR
-worktrees, **at any lane width**.
+So agent `cc` (engineer `jn`) mints `DX-jn-cc-032`; agent `f2` mints `SRV-jn-f2-001`; engineer
+`pk`'s `pr1` mints `SEC-pk-pr1-001` — never the same string as another agent's, across machines
+OR worktrees. (A numeric-lane fallback like `SEC-jn-8-001` is treated identically — it's just
+another value in the same segment.)
 
-**Legacy IDs grandfather** — bare `AREA-NNN` (`SEC-002`), legacy lane-concatenated
-`AREA-<lane>NNN` (`DX-8011`), and the prior NS-concatenated `AREA-<NS>-<lane>NNN`
-(`DX-jn-8001`) all stay valid and untouched. `ID_RE`
-(`/^[A-Z]+-([a-z0-9]+-)?(\d+-)?\d{3,}$/`) accepts every form: the optional `(\d+-)?` is the
-new lane segment, and when it's absent the `\d{3,}` tail absorbs an old concatenated
-lane+seq. Step 3's `-?` reads max-seq across old and new forms for a lane, so the sequence
-continues unbroken (lane 8's `DX-jn-8001..8005` → next `DX-jn-8-006`). **Never renumber an
-existing ID.**
+**Legacy IDs grandfather** — bare `AREA-NNN` (`SEC-002`), lane-concatenated `AREA-<lane>NNN`
+(`DX-8011`), NS-concatenated `AREA-<NS>-<lane>NNN` (`DX-jn-8001`), and numeric-lane
+`AREA-<NS>-<lane>-NNN` (`DX-jn-8-030`) all stay valid and untouched. `ID_RE`
+(`/^[A-Z]+-([a-z0-9]+-)?([a-z0-9]+-)?\d{3,}$/`) accepts every form: the optional second
+`([a-z0-9]+-)?` is the agent-id/lane segment (now alphanumeric, so `f2`/`pr1`/`test1`/`cc`
+validate alongside `8`), and when it's absent the `\d{3,}` tail absorbs an old concatenated
+lane+seq. Step 3's `-?` reads max-seq across old and new forms for a segment, so the sequence
+continues unbroken. **Never renumber an existing ID.**
 
 IDs are **immutable** — deferring, blocking, or re-scoping a TODO never changes its
 ID, so commit references stay valid forever. (Milestone/priority are mutable fields.)

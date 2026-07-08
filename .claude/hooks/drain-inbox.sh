@@ -72,6 +72,7 @@ fi
 # processed a drained message stays falsely busy and peers suppress its live nudge.
 rm -f "$HOME/.claude/agent-busy/$self_name"
 rm -f "$HOME/.claude/agent-error/$self_name"   # a clean Stop = recovered from any prior StopFailure
+rm -f "$HOME/.claude/agent-hold/$self_name"    # backstop clear of the Monocle-wait hold (DX-jn-8-031)
 
 # Now that we've marked ourselves idle, guard against re-BLOCKING a Stop that is itself
 # a Stop-hook continuation — infinite-drain-loop belt-and-suspenders.

@@ -25,11 +25,13 @@
 # Each poll, for every staged message whose age >= redeliver_after that is still
 # present, it reconstructs the original `/agent-msg <sender> <path> [reply|
 # followup]` and send-keys it to the recipient's live pane (skipping panes in
-# copy-mode). Nudging `touch`es the file, resetting its age — so a given message
-# is re-nudged at most once per redeliver_after (portable throttle, no bash-4
-# associative arrays). A processed message disappears (drain/skill deletes it),
-# so the watcher naturally stops nudging it. Messages to a non-live recipient
-# are left alone for the drain's time-based GC to collect.
+# copy-mode). The re-nudge throttle is the DELIVERY-CLAIM's age (a fresh claim —
+# whether agent-send's original or our last re-nudge — means a nudge is already
+# in flight, so skip). The message file itself is NEVER mtime-bumped: touching
+# it broke the drain's oldest-first ordering and reset the 7-day GC clock
+# forever for parked mailboxes. A processed message disappears (drain/skill
+# deletes it), so the watcher naturally stops nudging it. Messages to a
+# non-live recipient are left alone for the drain's time-based GC to collect.
 
 set -u
 
@@ -104,16 +106,52 @@ while :; do
     # re-nudging a busy agent would just buffer and replay as a duplicate.
     bm="$HOME/.claude/agent-busy/$recipient"
     [ -f "$bm" ] && [ -n "$(find "$bm" -mmin -5 2>/dev/null)" ] && continue
+    # Skip HELD recipients (DX-jn-8-031) — parked on a Monocle interactive verdict wait, a
+    # single long tool call whose busy marker goes stale (so the check above stops catching
+    # it). NO staleness test: a human review can run for hours, and the hold is bounded by the
+    # recipient's Stop / next-tool / SessionEnd clears. The message drains ONCE at its Stop.
+    [ -f "$HOME/.claude/agent-hold/$recipient" ] && continue
 
+    # Respect an existing FRESH claim (< redeliver_after): a nudge is already in
+    # flight — agent-send's original, or our own last re-nudge — so re-nudging now
+    # would just buffer a duplicate /agent-msg line. The claim's age IS the re-nudge
+    # throttle (replaces the old `touch "$path"`, which corrupted ordering + GC).
+    # The claim file also carries the redelivery COUNT (see the cap below).
+    claim="$HOME/.claude/agent-nudge-claim/$fname"
+    count=0
+    if [ -f "$claim" ]; then
+      cmt="$(mtime_of "$claim")"
+      [ -n "$cmt" ] && [ $(( now - cmt )) -lt "$redeliver_after" ] && continue
+      count="$(cat "$claim" 2>/dev/null)"; case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    fi
+    # Re-nudge CAP (DX-jn-8-031): after WORKFLOW_MAX_REDELIVER re-nudges, stop nudging this
+    # message and leave it for the lossless Stop-drain, so ANY long block (not just a
+    # Monocle wait — e.g. a 20-min test run that trips the same 5-min busy staleness) can't
+    # spam the recipient's prompt. count is redeliveries so far (agent-send's original nudge
+    # isn't counted here — it doesn't write a count).
+    max_redeliver="${WORKFLOW_MAX_REDELIVER:-3}"
+    case "$max_redeliver" in ''|*[!0-9]*) max_redeliver=3 ;; esac   # non-int override → default (avoid `[ -ge ]` throw)
+    if [ "$count" -ge "$max_redeliver" ]; then
+      if [ "$count" -eq "$max_redeliver" ]; then
+        echo "re-nudge cap reached for $recipient/$fname (${max_redeliver}x) — leaving for Stop-drain" >&2
+        printf '%s' "$((count + 1))" > "$claim" 2>/dev/null || true  # bump once past the log threshold
+      fi
+      continue
+    fi
     # Claim delivery FIRST (same as agent-send): the target's Stop-drain skips this fresh-claimed
     # file so it won't ALSO inject it → no "file gone" duplicate. Claim before the send-keys to
-    # close the drain-in-the-gap window. Cleared on delivery.
+    # close the drain-in-the-gap window. The claim's CONTENT is the running redelivery count.
+    # Cleared on delivery by agent-msg.sh.
     mkdir -p "$HOME/.claude/agent-nudge-claim" 2>/dev/null || true
-    : > "$HOME/.claude/agent-nudge-claim/$fname" 2>/dev/null || true
+    printf '%s' "$((count + 1))" > "$claim" 2>/dev/null || true
+    # Final existence re-check immediately before send-keys (DX-jn-8-032): the file may have
+    # been consumed by a live nudge / manual drain during the busy/hold/claim/cap checks above.
+    # Injecting a doomed /agent-msg costs the recipient a full skill-load turn to discover it's
+    # spent — the exact waste we're cutting — so drop it here if it's already gone.
+    [ -f "$path" ] || { rm -f "$claim" 2>/dev/null; continue; }
     tmux send-keys -t "$pane" -l "/agent-msg $sender $recipient/$fname$kw"
     tmux send-keys -t "$pane" Enter
-    touch "$path"   # reset age — throttles re-nudge to once per redeliver_after
-    echo "re-nudged $recipient about $fname (sender=$sender kind=$kind)" >&2
+    echo "re-nudged $recipient about $fname (sender=$sender kind=$kind n=$((count + 1)))" >&2
   done
 
   # (2) Nudge ERRORED agents (retriable StopFailure) to continue. This is the SOLE

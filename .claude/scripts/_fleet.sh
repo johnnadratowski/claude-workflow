@@ -40,3 +40,45 @@ fleet_find_self() {
   done
   return 1
 }
+
+# fleet_resolve_role <name> — canonical agent-name → role classifier
+# (coordinator|test|review|feature). THE single source of these name patterns;
+# register-agent.sh's resolve_role() and agent-fanout.sh's role_of() delegate here so
+# status/targeting/role-context can never classify an agent differently. Pure pattern
+# match — callers that ALSO honor a per-agent ~/.claude/agents/<name>.role override
+# (register-agent.sh, agent-rename.sh, statusline-role.sh) apply that override first and
+# only fall back to this.
+fleet_resolve_role() {
+  case "$1" in
+    cc|coordinator|*-cc|*-coordinator|*-coordinator-*|coordinator-*) echo coordinator ;;
+    test|*-test|*-test-*|test-*)                                       echo test ;;
+    review|pr|*-pr|*-pr-*|pr-*|*-review|*-review-*|review-*)           echo review ;;
+    *)                                                                 echo feature ;;
+  esac
+}
+
+# fleet_agent_id <name> — the agent's short fleet id: cc | f<N> | pr<N> | test<N>. Used as the
+# per-worktree segment of a TODO id (AREA-<NS>-<agentid>-NNN) in place of the numeric lane, so
+# an id names WHICH agent minted it (DX-jn-8-032). Role from fleet_resolve_role; instance number
+# = the trailing digits of the name, defaulting to 1 when the role has instances but the name
+# carries none (john-pr → pr1). Coordinator is singular → no number (cc). Output is always
+# [a-z0-9]+ (id-segment safe, no dashes).
+#
+# UNIQUENESS is convention-dependent (unlike the numeric lane, which was structurally unique per
+# worktree): the id must be distinct across an engineer's CONCURRENT worktrees, since it's the
+# per-(area,NS,agentid) sequence's collision guard. So **same-role agents MUST have distinct
+# trailing numbers** (john-1/john-2, john-pr/john-pr-2) — two review agents both named without a
+# number would both resolve to pr1. A fleet that can't guarantee this should set
+# WORKFLOW_TODO_AGENT to the numeric lane (structurally unique) or leave it to fall back there.
+fleet_agent_id() {
+  local name="$1" role num
+  role="$(fleet_resolve_role "$name")"
+  num="$(printf '%s' "$name" | grep -oE '[0-9]+$' 2>/dev/null || true)"
+  case "$role" in
+    coordinator) printf 'cc' ;;
+    feature)     printf 'f%s'    "${num:-1}" ;;
+    review)      printf 'pr%s'   "${num:-1}" ;;
+    test)        printf 'test%s' "${num:-1}" ;;
+    *)           printf 'f%s'    "${num:-1}" ;;  # unreachable (role is exhaustive) — id-safe default
+  esac
+}
