@@ -6,19 +6,34 @@
 # identifiable at a glance. Falls back to just "<role>" when no lane is known. Silent
 # (exit 0, no output) when this worktree isn't a registered fleet agent.
 #
-# Self is identified by matching $PWD against the ~/.claude/agents/<name>.cwd sidecars
-# (tmux-independent, same mechanism as statusline-unread.sh). Role comes from a
-# ~/.claude/agents/<name>.role override, else the name pattern (matches resolve_role in
-# register-agent.sh / role_of in agent-fanout.sh). Lane comes from
+# Self is identified in two passes (tmux-independent). LIVE pass first: a name with a
+# live-pid ~/.claude/running-agents entry whose ~/.claude/agents/<name>.cwd sidecar
+# matches $PWD — crash debris (dead entries, stale sidecars) can never shadow a live
+# registration (DX-jn-cc-007; a stale alphabetically-earlier sidecar once mislabeled the
+# coordinator `feat`). Fallback: first $PWD-matching .cwd sidecar, which keeps headless /
+# unregistered sessions working. Plain `kill -0` liveness only — this widget renders on
+# every statusline tick and must stay dependency-free (no _fleet.sh source). Role comes
+# from a ~/.claude/agents/<name>.role override, else the name pattern (matches
+# resolve_role in register-agent.sh / role_of in agent-fanout.sh). Lane comes from
 # ~/.config/goals-worktrees.json (worktree path → lane).
 
 cat >/dev/null 2>&1 || true   # drain the StatusJSON ccstatusline pipes in (unused)
 
 shopt -s nullglob
 self=""
-for f in "$HOME"/.claude/agents/*.cwd; do
-  [ "$(cat "$f" 2>/dev/null)" = "$PWD" ] && { self="$(basename "$f" .cwd)"; break; }
+for f in "$HOME"/.claude/running-agents/*; do
+  [ -f "$f" ] || continue
+  base="${f##*/}"; pid="${base##*.}"; name="${base%.*}"
+  case "$pid" in ''|*[!0-9]*) continue ;; esac
+  [ "$(cat "$HOME/.claude/agents/$name.cwd" 2>/dev/null)" = "$PWD" ] || continue
+  kill -0 "$pid" 2>/dev/null || continue
+  self="$name"; break
 done
+if [ -z "$self" ]; then
+  for f in "$HOME"/.claude/agents/*.cwd; do
+    [ "$(cat "$f" 2>/dev/null)" = "$PWD" ] && { self="$(basename "$f" .cwd)"; break; }
+  done
+fi
 [ -n "$self" ] || exit 0
 
 # Role: explicit override file, else derive from the name (keep patterns in sync with
