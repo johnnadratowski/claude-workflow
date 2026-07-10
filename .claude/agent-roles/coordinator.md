@@ -42,7 +42,7 @@ before it lands — you can't be both author and approver. **One bounded excepti
   - The **repo-root workflow infrastructure** that machinery owns: `scripts/gen-todos.mjs`
     (the TODO tooling), the workflow's `.gitattributes` / `.gitignore` / `package.json`
     script entries (the merge-driver + generator wiring), `docs/todos/**`.
-  - **Workflow docs**: `docs/inter-agent-comms.md`, `docs/doc-sync.md`, and other docs
+  - **Workflow docs**: `.claude/docs/inter-agent-comms.md`, `docs/doc-sync.md`, and other docs
     describing the fleet/workflow machinery itself.
 
   Once your own such work is **peer-reviewed GREEN** (a *different* review-role agent —

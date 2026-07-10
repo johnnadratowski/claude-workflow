@@ -25,8 +25,8 @@ flags.
 ## What it does / doesn't touch
 
 - **Syncs** (from upstream `HEAD`): everything tracked under `.claude/` —
-  `agent-roles/`, `hooks/`, `scripts/`, the workflow `skills/`, and
-  `settings.json.example`.
+  `agent-roles/`, `docs/` (the shared workflow docs), `hooks/`, `scripts/`, the
+  workflow `skills/`, and `settings.json.example`.
 - **Never touches** (project-owned): the active `.claude/settings.json`,
   `.claude/workflow.config`, `.claude/skills/base-test/SKILL.md` (your project's
   gate commands), the generated `.claude/skills/tickets/` skill, and any glob in
@@ -34,8 +34,10 @@ flags.
 - **Flags, never clobbers:** a shared file the consuming repo has *locally
   customized* (differs from both upstream HEAD and the last-synced version) is
   reported as **DIVERGED** and left untouched for you to reconcile by hand.
-- **Out of scope:** shared docs under `docs/` and `README.md`/`CLAUDE.md` — these
-  drift per-project, so reconcile prose by hand if upstream changed it.
+- **Out of scope:** project prose — `README.md`, `CLAUDE.md`, and the project's own
+  `docs/` — reconcile by hand if upstream changed something it mirrors. (The shared
+  workflow docs live under `.claude/docs/` and sync like any other machinery file;
+  locally-customized copies are flagged DIVERGED, never clobbered.)
 
 ## The sync marker
 

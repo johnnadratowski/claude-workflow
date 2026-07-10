@@ -48,7 +48,7 @@ writes it as `<base>`.)
 > context in full on **every invocation**, so it holds only what the agent needs at
 > **runtime**. Version history → a sibling `CHANGELOG.md` (not loaded); deep
 > reference/internals → a linked `docs/*.md`; methodology shared across skills → one
-> shared doc the skills point to (e.g. `AUDITING-SHARED.md`, `docs/fleet-base-workflow.md`).
+> shared doc the skills point to (e.g. `AUDITING-SHARED.md`, `.claude/docs/fleet-base-workflow.md`).
 > **Do not append changelog entries to `SKILL.md`** — record them in the skill's
 > `CHANGELOG.md` (or rely on git log).
 
@@ -62,7 +62,7 @@ writes it as `<base>`.)
 | `/open-pr` | Open a GitHub PR on a dedicated **frozen `pr/*` branch** rooted at the PR target (never the base!) — scoped from the TODO ledger's `commits:` or `--snapshot`. Create is user-gated; posts a **commit-manifest comment** (per-commit walkthrough + diff links, `--no-merges`); `--absorb` merges the merged PR back into the local base. Also **`--update <n>`** ("update pr 88") — revise an already-open PR **on its own head branch** (never rebuild locally + orphan it), merging the PR's base in before implementing (stacked-PR safe). |
 | `/pr-comments` | Service a PR review round: full inventory, investigate-before-believing, clustered triage, internal-flow fixes + TODO linkage, peer package audit, **atomic user-gated posting**. |
 
-### Inter-agent comms → [`../docs/inter-agent-comms.md`](../docs/inter-agent-comms.md)
+### Inter-agent comms → [`docs/inter-agent-comms.md`](docs/inter-agent-comms.md)
 | Skill | What it does |
 |---|---|
 | `/agent-send` | Message a peer (`--reply` / `--followup`; `--stdin` heredoc preferred). |
@@ -132,6 +132,6 @@ See the project root README (or the template's) for the install checklist. Key f
 - `workflow.config.example` → `.claude/workflow.config` (`WORKFLOW_*` knobs).
 
 ## Where to read more
-- [`../docs/inter-agent-comms.md`](../docs/inter-agent-comms.md) — full messaging + registration protocol.
+- [`docs/inter-agent-comms.md`](docs/inter-agent-comms.md) — full messaging + registration protocol.
 - [`agent-roles/`](agent-roles/) — per-role startup instructions injected at SessionStart.
 - Each skill's own `SKILL.md` under `skills/<name>/` — the authoritative, detailed spec.

@@ -65,7 +65,7 @@ Body — the full description, scope, links. Preserve detail; this is the record
 **Cross-links (forward `todos/<ID>.html` from the index + the generator-injected
 `gen:todos:backlink` block above) are generator-managed — never hand-write them.**
 `pnpm gen:todos` owns both directions, idempotently; write your body below the backlink
-markers. Full `.html`/Jekyll mechanics + the back-link depth rules → [`docs/todo-system-internals.md`](../../../docs/todo-system-internals.md#cross-links-generator-managed).
+markers. Full `.html`/Jekyll mechanics + the back-link depth rules → [`.claude/docs/todo-system-internals.md`](../../docs/todo-system-internals.md#cross-links-generator-managed).
 
 The **canonical taxonomy** (valid areas/prefixes, priorities, milestones→version,
 statuses) lives in `docs/todos/milestones.json`. Read it before assigning fields.
@@ -80,7 +80,7 @@ zero-padded 3-digit per-(area, NS, agentid) sequence (e.g. `DX-jn-cc-032`, `SRV-
 IDs are **immutable** — deferring, blocking, or re-scoping never changes an ID, and legacy
 forms (incl. numeric-lane `SEC-jn-8-001`) grandfather; **never renumber an existing ID**.
 
-**Allocate via the procedure in [`docs/todo-system-internals.md`](../../../docs/todo-system-internals.md#id-allocation)**
+**Allocate via the procedure in [`.claude/docs/todo-system-internals.md`](../../docs/todo-system-internals.md#id-allocation)**
 (resolve NS → agent id → end-anchored scan for the next sequence; the shell snippets +
 legacy-grandfathering rules live there).
 

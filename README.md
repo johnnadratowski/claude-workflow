@@ -201,6 +201,10 @@ Until it's registered, merges fall back to a normal (possibly-conflicting) merge
 │   └── base-initialize/         One-time bootstrap (reset .git, install docs +
 │                                hooks, seed TODO index, create worktrees, run
 │                                /define-project).
+├── docs/                        Shared workflow docs (sync like any machinery file):
+│   ├── fleet-base-workflow.md   Base-branch model + merge-helper contract.
+│   ├── inter-agent-comms.md     Protocol writeup for the comms layer.
+│   └── todo-system-internals.md TODO-system internals (cross-links, ID allocation).
 ├── settings.json.example        Project-level (deny + mark-busy/drain/unregister).
 └── settings-user-level.json.example   SessionStart hook for ~/.claude/.
 
@@ -221,7 +225,8 @@ templates/
     └── todos/                   milestones.json taxonomy + README (the TODO model).
 
 docs/
-└── inter-agent-comms.md         Protocol writeup for the comms layer.
+└── integration-notes.md         C-13 integration-notes template (copied into the
+                                 consuming project's docs/).
 ```
 
 ## Skills reference

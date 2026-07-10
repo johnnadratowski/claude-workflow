@@ -9,7 +9,7 @@ Land the current worktree's branch into the shared **local** base branch (a pers
 
 `/base-push` is the **only** skill that pushes `origin/<base>`. (The PR lifecycle skills — `/open-pr`, `/pr-comments` — also write to origin, deliberately and user-gated: `pr/*` branch pushes and comment posts. They never touch `origin/<base>`.)
 
-> **Shared model** — the configurable base branch, the local-first / origin-write-only invariant, and the canonical `merge_into_branch_local` helper contract (signature, return codes, transient-worktree behaviour) — lives in [`docs/fleet-base-workflow.md`](../../../docs/fleet-base-workflow.md). Read it for the helper's full contract; this skill keeps only its own procedure.
+> **Shared model** — the configurable base branch, the local-first / origin-write-only invariant, and the canonical `merge_into_branch_local` helper contract (signature, return codes, transient-worktree behaviour) — lives in [`.claude/docs/fleet-base-workflow.md`](../../docs/fleet-base-workflow.md). Read it for the helper's full contract; this skill keeps only its own procedure.
 
 Performs, in order:
 
@@ -44,7 +44,7 @@ Invoked when the user says things like:
 is defined once in [`.claude/scripts/merge-helpers.sh`](../../scripts/merge-helpers.sh) and sourced
 by every caller (step 0). **Its full contract — signature, return codes 0/1/2/3, the `merge=ours` /
 `regen_merged_artifacts` reconcile, design decisions, the never-checkout-the-base precondition, and
-stale-worktree recovery — lives in [`docs/fleet-base-workflow.md`](../../../docs/fleet-base-workflow.md#the-transient-worktree-merge-helper-canonical-local-only).** Read it before routing on the return codes below.
+stale-worktree recovery — lives in [`.claude/docs/fleet-base-workflow.md`](../../docs/fleet-base-workflow.md#the-transient-worktree-merge-helper-canonical-local-only).** Read it before routing on the return codes below.
 
 ## Execution Steps
 
@@ -96,7 +96,7 @@ merge_into_branch_local "$WORKFLOW_BASE_BRANCH" "$ORIGINAL_BRANCH" \
   "Merge branch '$ORIGINAL_BRANCH' into $WORKFLOW_BASE_BRANCH"
 ```
 
-Route by return code ([full contract in `docs/fleet-base-workflow.md`](../../../docs/fleet-base-workflow.md#signature--return-code-contract--merge_into_branch_local-target-source_ref-msg)):
+Route by return code ([full contract in `.claude/docs/fleet-base-workflow.md`](../../docs/fleet-base-workflow.md#signature--return-code-contract--merge_into_branch_local-target-source_ref-msg)):
 - **0**: continue to publish.
 - **1**: surface the worktree-add error and stop (likely the base checked out somewhere, or a stale transient worktree — see the cleanup note above).
 - **2 (conflict)**: stop. The user resolves the conflict markers in the transient worktree at the printed path, regenerates, commits, and removes it. The caller's working tree is intact.

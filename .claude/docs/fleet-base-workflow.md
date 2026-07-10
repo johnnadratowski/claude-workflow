@@ -66,7 +66,7 @@ work; that's by design and is why review/tests source their ranges from local `<
 
 `merge_into_branch_local` is the single mechanism every skill uses to advance the shared base
 branch — `/base-push`, `/base-merge` (`up`), `/base-test` (its pre-test base merge), and
-`/open-pr` (`--absorb`). It is defined **once** in [`.claude/scripts/merge-helpers.sh`](../.claude/scripts/merge-helpers.sh)
+`/open-pr` (`--absorb`). It is defined **once** in [`.claude/scripts/merge-helpers.sh`](../scripts/merge-helpers.sh)
 and **sourced** by every caller (see the source block above). (It previously lived inline in
 `base-push` as prose-only code, which meant callers that never sourced `base-push` — e.g.
 `base-test`, which calls `regen_merged_artifacts` — hit `command not found` mid-merge. One sourced

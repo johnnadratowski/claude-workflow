@@ -7,13 +7,16 @@
 # claude-workflow itself is a no-op (this IS the source).
 #
 # WHAT IT SYNCS: the shared machinery tracked under .claude/ in the upstream
-#   — agent-roles/, hooks/, scripts/, the workflow skills/, settings.json.example.
+#   — agent-roles/, docs/, hooks/, scripts/, the workflow skills/,
+#   settings.json.example. The shared workflow docs live under .claude/docs/
+#   and sync like any other machinery file (locally-customized copies are
+#   flagged, see below).
 # WHAT IT LEAVES ALONE (project-owned): the active .claude/settings.json,
 #   .claude/workflow.config, .claude/skills/base-test/SKILL.md (project gate
 #   commands), the generated .claude/skills/tickets/ skill, and anything you
 #   list in WORKFLOW_SYNC_EXCLUDE. Files the consuming repo has *locally
-#   customized* are FLAGGED, never clobbered. Shared docs (docs/) are out of
-#   scope — reconcile those by hand.
+#   customized* are FLAGGED, never clobbered. Project prose (README.md,
+#   CLAUDE.md, the project's docs/) is out of scope — reconcile by hand.
 #
 # Usage:
 #   update-workflow.sh                  # sync; report new/updated/skipped/diverged

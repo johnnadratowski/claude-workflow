@@ -1,7 +1,7 @@
 #!/bin/bash
 # Stop hook: drain this agent's per-recipient inbox.
 #
-# Inter-agent messages are delivered two ways (see docs/inter-agent-comms.md):
+# Inter-agent messages are delivered two ways (see .claude/docs/inter-agent-comms.md):
 #   1. A best-effort `tmux send-keys` nudge of `/agent-msg ...` — low latency,
 #      but lost if the recipient is mid-turn / in a permission prompt / scrolled.
 #   2. A durable file under ~/.claude/agent-inbox/<recipient>/ — this drain.

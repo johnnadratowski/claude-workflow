@@ -7,7 +7,7 @@ description: Local-only sync of the configured base branch — no network. Merge
 
 Sync the **local** base-branch ref with the caller's current branch — **no network**. No `fetch`, no `push`. Pure local-ref management.
 
-> **Shared model** (configurable base branch, local-first / origin-write-only invariant, the canonical `merge_into_branch_local` helper contract) lives in [`docs/fleet-base-workflow.md`](../../../docs/fleet-base-workflow.md). This skill keeps only its own procedure.
+> **Shared model** (configurable base branch, local-first / origin-write-only invariant, the canonical `merge_into_branch_local` helper contract) lives in [`.claude/docs/fleet-base-workflow.md`](../../docs/fleet-base-workflow.md). This skill keeps only its own procedure.
 
 Two directions, both off by default unless you opt in. **Both halves operate on local `refs/heads/<base>`:**
 
@@ -164,7 +164,7 @@ The source ref is the local branch name (`$ORIGINAL_BRANCH`) — there's no remo
 
 A conflict in the up-merge is unusual when `DIRECTION=both` (we just merged local `<base>` into the current branch in step 3, so the current branch already includes everything on local `<base>`). It's more likely when `DIRECTION=up` alone and local `<base>` has commits the current branch doesn't.
 
-Route by return code ([full contract in `docs/fleet-base-workflow.md`](../../../docs/fleet-base-workflow.md)): **0** continue; **1** worktree-add failure (base checked out somewhere, or a stale transient worktree — surface cleanup; no worktree to clean); **2** conflict — tmp worktree retained at the printed path for manual resolution; **3** post-merge failure (merge was clean, regen/commit failed) — tmp worktree retained at the printed path to finish the commit. On 2 or 3, do NOT advance local `<base>` from a half-merged state.
+Route by return code ([full contract in `.claude/docs/fleet-base-workflow.md`](../../docs/fleet-base-workflow.md)): **0** continue; **1** worktree-add failure (base checked out somewhere, or a stale transient worktree — surface cleanup; no worktree to clean); **2** conflict — tmp worktree retained at the printed path for manual resolution; **3** post-merge failure (merge was clean, regen/commit failed) — tmp worktree retained at the printed path to finish the commit. On 2 or 3, do NOT advance local `<base>` from a half-merged state.
 
 ### 5. Report
 
