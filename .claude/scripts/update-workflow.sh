@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --check|-n) DRY=1 ;;
     --upstream) shift; UPSTREAM_OVERRIDE="${1:-}" ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -u/{ /^set -u/d; p; }' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
