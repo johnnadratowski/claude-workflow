@@ -1038,7 +1038,15 @@ _boot_sweep_dead() {
   done
 }
 
-_boot_window_exists() { tmux list-windows -t "$FL_HOME_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$1"; }
+# A blind reply must not read as "no window" — that is a LAUNCH decision, and reading blindness as
+# absence is how a second claude gets launched into a worktree. rc 0 = the window exists; rc 1 = it
+# does not; rc 2 = we could not see (callers must not launch). Same discipline as _panes_at_path.
+_boot_window_exists() {
+  local wins
+  wins="$(tmux list-windows -t "$FL_HOME_SESSION" -F '#{window_name}' 2>/dev/null)" || return 2
+  [ -n "$wins" ] || return 2
+  printf '%s\n' "$wins" | grep -qx "$1"
+}
 
 _boot_report() { printf '  %-14s %s\n' "$1" "$2"; }
 
@@ -1125,7 +1133,7 @@ boot_fleet() {
   self="$(fleet_find_self "$HOME/.claude/running-agents" 2>/dev/null || true)"
   toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 
-  local agent active path apath cmd pane live_row occ occ_rc occ_first
+  local agent active path apath cmd pane live_row occ occ_rc occ_first wex
   # Canonical order: agents by trailing number (the fleet_agent_id instance number);
   # number-less names sort last. The manifest's own order is not a contract.
   while IFS="$TAB" read -r agent active path; do
@@ -1143,8 +1151,15 @@ boot_fleet() {
       _boot_report "$agent" "live (as ${live_row%%"$TAB"*} — transient name)"; continue
     fi
     if [ ! -d "$path" ]; then _boot_report "$agent" "missing-path ($path)"; continue; fi
-    if _boot_window_exists "$agent"; then
+    # rc 0 = the window exists (leave it); rc 1 = it does not; rc 2 = WE COULD NOT SEE. A blind
+    # reply must never fall through to the launch below — that is how a second claude lands in a
+    # worktree. (The bare `if` here tested only zero-vs-nonzero, so a guarded rc 2 was still read as
+    # "no window" — the guard was inert until this call site learned to read it.)
+    _boot_window_exists "$agent"; wex=$?
+    if [ "$wex" = 0 ]; then
       _boot_report "$agent" "window-exists (left untouched — launch manually or close it)"; continue
+    elif [ "$wex" = 2 ]; then
+      _boot_report "$agent" "REFUSED (cannot list windows — not launching blind)"; rc=1; continue
     fi
     # Occupancy by path, name-independent — the direct plug for the double-launch hazard.
     # rc 2 (blind pane list inside tmux) is a contradiction: REFUSE to launch, never read

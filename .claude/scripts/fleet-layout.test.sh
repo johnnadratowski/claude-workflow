@@ -1654,6 +1654,26 @@ og_rc=0; blib "$OBH" '
   _pane_path_settled %7 >/dev/null' || og_rc=$?
 eq "_pane_path_settled: a readable list without the pane => rc 1 (genuinely gone)" "1" "$og_rc"
 
+# --- boot: a blind WINDOW list must not launch ---------------------------------------------------
+# The last unguarded oracle on a launch-decision path (reviewer follow-up). _boot_window_exists
+# piped `list-windows` straight into grep, so a blind reply matched nothing and read as "no window"
+# => boot launches a SECOND claude into the worktree. Note the guard alone was NOT enough: the call
+# site tested only zero-vs-nonzero, so a guarded rc 2 still fell through to the launch. Unknown is
+# not absent — and a status nobody reads is not a guard.
+echo
+echo "DX-jn-cc-015 — boot refuses to launch when the window list is blind"
+
+BWH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$BWH"; mkdir -p "$BWH/w1"
+manifest "$BWH" "$(printf '{"agent":"bw-1","active":true,"path":"%s"}' "$BWH/w1")"
+t new-session -d -s bootsess -n keep 2>/dev/null || true
+bw_out="$(blib "$BWH" '
+  tmux(){ if [ "$1" = list-windows ]; then printf ""; else command tmux -L "$FLEET_TMUX_SOCKET" "$@"; fi; }
+  FLEET_BOOT_LAUNCH_RECORDER="'"$BWH/rec"'" boot_fleet' 2>&1)"; bw_rc=$?
+eq "blind window list: boot REFUSES rather than launching" "1" "$(printf '%s' "$bw_out" | grep -qi 'not launching blind' && echo 1 || echo 0)"
+eq "blind window list: nothing is launched" "0" "$([ -s "$BWH/rec" ] && echo 1 || echo 0)"
+eq "blind window list: the run exits non-zero" "1" "$([ "$bw_rc" -ne 0 ] && echo 1 || echo 0)"
+t kill-session -t bootsess 2>/dev/null || true
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
