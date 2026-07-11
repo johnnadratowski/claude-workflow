@@ -149,7 +149,18 @@ printf '%s\n' "$T/proj" > "$FAKEHOME/.claude/agents/x-dead.cwd"
 # TMUX_PANE must be non-empty or the dispatcher's fleet_tmux_ok gate exits 0 before doing
 # anything — every `run` test then passes its "exits 0" check while asserting against a
 # layout that never ran (27 silent failures when the suite is invoked headless).
-export TMUX_PANE="${TMUX_PANE:-%fl-test}"
+#
+# FORCE the sentinel — NEVER inherit the ambient $TMUX_PANE. This is the root of the 12% flake
+# (root-caused 2026-07-11): the real pane running the suite has an id like %59; the SCRATCH server
+# mints its own ids from %0 upward; and the fixtures below deliberately use $TMUX_PANE as the
+# self-token. Once a run had created enough panes to reach that number, an AGENT's scratch pane id
+# COLLIDED with the self-token — `down` saw the agent as ITSELF and refused to kill it
+# ("REFUSED (self …)"), and boot's self-skip could misfire the same way. Intermittent by
+# construction (it depended on how many panes the run happened to create) and invisible whenever
+# the suite ran outside tmux. A wider FLEET_DOWN_SETTLE cannot mask it: a REFUSED kill never
+# reaches the settle loop, which only waits on kills it actually attempted.
+# Reproduce the old bug with:  TMUX_PANE='%59' bash fleet-layout.test.sh
+export TMUX_PANE='%fl-test'
 lib(){ HOME="$FAKEHOME" FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
 run(){ HOME="$FAKEHOME" FLEET_TMUX_SOCKET="$SOCKET" bash "$SCRIPT" "$@"; }
 
@@ -906,6 +917,21 @@ for d in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 other other2; do mkdir -p "$T
 dwin(){ t new-window   -d -P -F '#{pane_id}' -t downsess -n "$1" -c "$2" 'sleep 600'; }
 dsplit(){ t split-window -d -P -F '#{pane_id}' -t "downsess:$1" -c "$2" 'sleep 600'; }
 alive(){ t list-panes -a -F '#{pane_id}' | grep -qx "$1"; }
+# wait_path <pane_id> <expected-path> — block until tmux reports the pane's cwd. A pane's
+# pane_current_path is NOT populated the instant it is created; `down` correctly refuses to kill a
+# pane whose location it cannot corroborate, so a test that races the pane's cwd is testing the
+# race, not the verb. (Diff review reproduced this at 12% — and proved FLEET_DOWN_SETTLE cannot
+# mask it: a refused kill never reaches the settle loop.)
+wait_path(){
+  local pid="$1" want="$2" i=0 got
+  while [ "$i" -lt 100 ]; do
+    got="$(t display-message -p -t "$pid" '#{pane_current_path}' 2>/dev/null)"
+    [ "$got" = "$want" ] && return 0
+    i=$((i+1)); sleep 0.05
+  done
+  echo "  WARN: pane $pid never reported cwd $want (got '$got')" >&2
+  return 1
+}
 drun(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=downsess WORKFLOW_WORKTREES_MANIFEST="$h/$MANIFEST_REL" FLEET_TMUX_SOCKET="$SOCKET" FLEET_DOWN_SETTLE=0 TMUX_PANE="${DPANE:-$TMUX_PANE}" bash "$SCRIPT" "$@"; }
 dlib(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=downsess WORKFLOW_WORKTREES_MANIFEST="$h/$MANIFEST_REL" FLEET_TMUX_SOCKET="$SOCKET" FLEET_DOWN_SETTLE=0 TMUX_PANE="${DPANE:-$TMUX_PANE}" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
 dreg(){ printf '%s\n' "$3" > "$1/.claude/running-agents/$2.$$"; printf '%s\n' "$4" > "$1/.claude/agents/$2.cwd"; }
@@ -1300,6 +1326,7 @@ manifest "$DFH" "$(printf '{"agent":"d-a","active":true,"path":"%s"},{"agent":"d
 t new-session -d -s bootsess -n keep
 pa="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n d-a -c "$DFH/wa")"
 pb="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n d-b -c "$DFH/wb")"
+wait_path "$pa" "$DFH/wa"; wait_path "$pb" "$DFH/wb"
 printf '%s' "$pa" > "$DFH/.claude/running-agents/d-a.$$"; printf '%s' "$DFH/wa" > "$DFH/.claude/agents/d-a.cwd"
 printf '%s' "$pb" > "$DFH/.claude/running-agents/d-b.$$"; printf '%s' "$DFH/wb" > "$DFH/.claude/agents/d-b.cwd"
 
@@ -1323,6 +1350,7 @@ eq "down <invalid>: says the name is invalid" "1" "$(echo "$bad_out" | grep -qi 
 # a requested SELF is a loud refusal, never a silent skip (an exemption must not satisfy a
 # per-request success claim — remove-worktree would read exit 0 as "agent is down")
 selfp="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n d-self -c "$DFH/wb")"
+wait_path "$selfp" "$DFH/wb"
 printf '%s' "$selfp" > "$DFH/.claude/running-agents/d-self.$$"; printf '%s' "$DFH/wb" > "$DFH/.claude/agents/d-self.cwd"
 self_out="$(FLEET_DOWN_SETTLE=1 BPANE="$selfp" brun "$DFH" down d-self 2>&1)"; self_rc=$?
 eq "down <self>: refuses non-zero (never a silent skip)" "1" "$([ "$self_rc" -ne 0 ] && echo 1 || echo 0)"
@@ -1332,10 +1360,13 @@ eq "down <self>: own pane survives" "1" "$(t list-panes -a -F '#{pane_id}' 2>/de
 # MIXED valid + unknown: the unknown name TAINTS the run, but must NOT spare the agent that DID
 # match. Refusing everything here would make the run's own message a lie and send the operator
 # hunting the wrong agent. (Caught in diff review: the first cut refused all and killed nothing.)
-pb2="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n d-b2 -c "$DFH/wb")"
-printf '%s' "$pb2" > "$DFH/.claude/running-agents/d-b.$$"; printf '%s' "$DFH/wb" > "$DFH/.claude/agents/d-b.cwd"
-mix_out="$(FLEET_DOWN_SETTLE=3 brun "$DFH" down d-b nope-agent 2>&1)"; mix_rc=$?
-eq "down <valid> <unknown>: the VALID agent is still downed" "0" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$pb2")"
+mkdir -p "$DFH/wc"
+manifest "$DFH" "$(printf '{"agent":"d-a","active":true,"path":"%s"},{"agent":"d-b","active":true,"path":"%s"},{"agent":"d-c","active":true,"path":"%s"}' "$DFH/wa" "$DFH/wb" "$DFH/wc")"
+pc="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n d-c -c "$DFH/wc")"
+wait_path "$pc" "$DFH/wc"          # settle the cwd BEFORE down runs — see wait_path
+printf '%s' "$pc" > "$DFH/.claude/running-agents/d-c.$$"; printf '%s' "$DFH/wc" > "$DFH/.claude/agents/d-c.cwd"
+mix_out="$(FLEET_DOWN_SETTLE=0 brun "$DFH" down d-c nope-agent 2>&1)"; mix_rc=$?
+eq "down <valid> <unknown>: the VALID agent is still downed" "0" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$pc")"
 eq "down <valid> <unknown>: …and the run still exits non-zero (the unknown taints)" "1" "$([ "$mix_rc" -ne 0 ] && echo 1 || echo 0)"
 eq "down <valid> <unknown>: …naming the unknown, not a blanket refusal" "1" "$(echo "$mix_out" | grep -qi 'nope-agent' && echo 1 || echo 0)"
 
@@ -1452,6 +1483,99 @@ eq "name-windows from the WORKTREE (separate process) resolves the seeded sessio
 seen="$(cd "$PWT" && HOME="$PH" FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="$p_anchor" bash -c 'source .claude/scripts/_config.sh 2>/dev/null; printf "%s" "${WORKFLOW_FLEET_HOME_SESSION:-UNSET}"')"
 eq "…because the worktree's OWN config resolves it (not the default)" "realsess" "$seen"
 t kill-session -t realsess 2>/dev/null || true
+
+# --- NB2: an UNREADABLE pane cwd is UNKNOWN, not "absent" --------------------------------------
+# _panes_at_path used to `continue` past a pane whose cwd field came back empty — silently dropping
+# it — while treating an empty pane LIST as UNKNOWN (rc 2, refuse). Field-level blindness read as
+# "not here"; the same empty-enumeration class, one level down. It is REACHABLE: a pane's cwd is not
+# populated the instant tmux creates it (that race is what made this suite flaky at 12%).
+# Consequences: boot's occupancy backstop — the direct plug for the double-launch hazard, whose own
+# comment says "never read blindness as 'unoccupied'" — would MISS the pane and launch a second
+# claude into the worktree; down's UNACCOUNTED probe would report a live pane as "not running".
+echo
+echo "DX-jn-cc-014 — a blind pane cwd is UNKNOWN (fail closed), never 'absent'"
+
+NBH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$NBH"; mkdir -p "$NBH/w1"
+manifest "$NBH" "$(printf '{"agent":"nb-1","active":true,"path":"%s"}' "$NBH/w1")"
+t new-session -d -s bootsess -n keep
+# A pane IS sitting at the worktree, but tmux reports NO path for it (the stub reproduces the
+# not-yet-populated-cwd state exactly). boot must refuse to launch, not launch blind.
+occ_pane="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n squatter -c "$NBH/w1")"
+nb_out="$(HOME="$NBH" WORKFLOW_WORKTREES_MANIFEST="$NBH/$MANIFEST_REL" WORKFLOW_FLEET_HOME_SESSION=bootsess \
+  WORKFLOW_CELL_COMMAND='' FLEET_BOOT_LAUNCH_RECORDER="$NBH/rec" FLEET_TMUX_SOCKET="$SOCKET" \
+  bash -c '
+    tmux() {
+      if [ "$1" = list-panes ]; then
+        # every field intact EXCEPT the cwd of the pane at the worktree — i.e. tmux knows the pane
+        # exists but cannot say where it is.
+        command tmux -L "$FLEET_TMUX_SOCKET" "$@" | awk -F"\t" -v p="'"$occ_pane"'" \
+          "BEGIN{OFS=\"\t\"} \$1==p {\$NF=\"\"} {print}"
+      else
+        command tmux -L "$FLEET_TMUX_SOCKET" "$@"
+      fi
+    }
+    export -f tmux 2>/dev/null || true
+    source "'"$SCRIPT"'" 
+  ' 2>&1 || true)"
+# The stub above only works if the script consults list-panes through the shell function; rather
+# than depend on that, assert the PREDICATE directly — it is the one every caller routes through.
+nb_rc=0; blib "$NBH" '
+  tmux(){ if [ "$1" = list-panes ]; then printf "%%99999\tsquatter\t\n"; else command tmux -L "$FLEET_TMUX_SOCKET" "$@"; fi; }
+  _panes_at_path "'"$NBH/w1"'" >/dev/null' || nb_rc=$?
+eq "_panes_at_path: a pane with an UNREADABLE cwd => rc 2 (UNKNOWN), never rc 1 ('none')" "2" "$nb_rc"
+# and the whole-list-empty case still returns 2 (unchanged)
+nb2_rc=0; blib "$NBH" '
+  tmux(){ if [ "$1" = list-panes ]; then printf ""; else command tmux -L "$FLEET_TMUX_SOCKET" "$@"; fi; }
+  _panes_at_path "'"$NBH/w1"'" >/dev/null' || nb2_rc=$?
+eq "_panes_at_path: an EMPTY pane list still => rc 2 (unchanged)" "2" "$nb2_rc"
+# a readable pane at a DIFFERENT path is still an honest "none" (rc 1) — the fix must not turn
+# every miss into UNKNOWN, which would refuse every legitimate boot.
+nb3_rc=0; blib "$NBH" '
+  tmux(){ if [ "$1" = list-panes ]; then printf "%%99999\tw\t/somewhere/else\n"; else command tmux -L "$FLEET_TMUX_SOCKET" "$@"; fi; }
+  _panes_at_path "'"$NBH/w1"'" >/dev/null' || nb3_rc=$?
+eq "_panes_at_path: a readable pane elsewhere is still an honest 'none' (rc 1)" "1" "$nb3_rc"
+t kill-session -t bootsess 2>/dev/null || true
+
+# --- down: a BLIND path field in the snapshot is not "no pane" ---------------------------------
+# THE FLAKE, root-caused 2026-07-11 (12% of runs). down corroborates its kill against a
+# `list-panes` snapshot. tmux does not populate pane_current_path the instant a pane is created —
+# and `list-panes` and `display-message` settle at different moments — so a LIVE pane can appear in
+# the snapshot with an EMPTY path. down read that as "token resolves to no pane" and REFUSED to
+# kill a live agent. The refusal is the right instinct (fail closed) but the premise was a race:
+# absence and blindness are different, and blindness must be re-read, not concluded from.
+echo
+echo "DX-jn-cc-014 — down re-reads a blind pane path instead of calling it 'no pane'"
+
+BPH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$BPH"; mkdir -p "$BPH/wx"
+manifest "$BPH" "$(printf '{"agent":"bp-1","active":true,"path":"%s"}' "$BPH/wx")"
+t new-session -d -s blindsess -n keep 2>/dev/null || true
+bp="$(t new-window -d -P -F '#{pane_id}' -t blindsess -n bp-1 -c "$BPH/wx")"
+wait_path "$bp" "$BPH/wx"
+printf '%s' "$bp" > "$BPH/.claude/running-agents/bp-1.$$"; printf '%s' "$BPH/wx" > "$BPH/.claude/agents/bp-1.cwd"
+# Stub tmux so the SNAPSHOT reports this pane with an EMPTY path (exactly the transient state),
+# while display-message still resolves it — i.e. reproduce the race deterministically.
+dlib "$BPH" '
+  tmux(){
+    if [ "$1" = list-panes ]; then
+      command tmux -L "$FLEET_TMUX_SOCKET" "$@" | awk -F"\t" -v p="'"$bp"'" "BEGIN{OFS=\"\t\"} (NF>=2 && \$1==p){\$NF=\"\"} {print}"
+    else
+      command tmux -L "$FLEET_TMUX_SOCKET" "$@"
+    fi
+  }
+  down_fleet' >/dev/null 2>&1 || true
+eq "down: a live pane whose snapshot path is BLIND is re-read and killed (not refused as 'no pane')" \
+   "0" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$bp")"
+
+# …and a token that truly resolves to NOTHING is still refused, with nothing killed.
+mkdir -p "$BPH/wy"
+manifest "$BPH" "$(printf '{"agent":"bp-2","active":true,"path":"%s"}' "$BPH/wy")"
+keep_p="$(t new-window -d -P -F '#{pane_id}' -t blindsess -n bystander -c "$BPH/wy")"
+wait_path "$keep_p" "$BPH/wy"
+printf '%%99999' > "$BPH/.claude/running-agents/bp-2.$$"; printf '%s' "$BPH/wy" > "$BPH/.claude/agents/bp-2.cwd"
+gone_rc=0; drun "$BPH" down >/dev/null 2>&1 || gone_rc=$?
+eq "down: a token that resolves to NO pane is still refused (rc≠0)" "1" "$([ "$gone_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "down: …and the bystander pane at that worktree is NOT killed" "1" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$keep_p")"
+t kill-session -t downsess 2>/dev/null || true
 
 echo
 echo "  $pass passed, $fail failed"

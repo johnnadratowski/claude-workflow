@@ -1252,16 +1252,56 @@ EOF
 
 # Panes whose cwd is <path> or a subdirectory — boundary-aware ("$p"|"$p"/*): sibling
 # worktrees share string prefixes (see attribute_panes). rc 0 = hit(s), echoed as
-# "pane_id\twindow_name"; rc 1 = none; rc 2 = the server pane list came back EMPTY,
-# which is self-contradictory inside tmux (our own pane exists) — callers treat it as
-# UNKNOWN, never as "unoccupied"/"not running".
+# "pane_id\twindow_name"; rc 1 = none; rc 2 = UNKNOWN — callers treat it as blindness,
+# never as "unoccupied"/"not running".
+#
+# TWO ways to be blind, and BOTH are rc 2:
+#   - the whole server pane list came back empty (self-contradictory inside tmux: our own
+#     pane exists), and
+#   - ANY pane's cwd field came back empty/unresolvable. A pane exists but we cannot say
+#     WHERE it is, so we cannot say the queried path is unoccupied. This branch used to
+#     `continue` — dropping that pane silently — which read field-level blindness as
+#     "absent" while the list-level case was correctly read as "unknown". The same
+#     empty-enumeration class, one level down: an unreadable FIELD is UNKNOWN, not absent.
+#     It is reachable in practice: a pane's cwd is not populated the instant it is created,
+#     so a freshly-split pane can appear with no path (this is what made the suite flaky).
+#     Consequences of the old behavior: boot's occupancy backstop — the direct plug for the
+#     double-launch hazard — would miss the pane and launch a SECOND claude into the
+#     worktree; down's UNACCOUNTED probe would report "not running" for a live pane.
+# Re-read ONE pane's cwd, briefly, for the transient not-yet-populated case (see _panes_at_path).
+# Echoes the path and returns 0 when it settles; echoes nothing and returns 1 when it does not
+# (genuinely unreadable — the caller must treat that as UNKNOWN, not as "absent").
+_pane_path_settled() {
+  local pid="$1" i=0 p
+  while [ "$i" -lt 10 ]; do
+    p="$(tmux display-message -p -t "$pid" '#{pane_current_path}' 2>/dev/null)"
+    [ -n "$p" ] && { printf '%s' "$p"; return 0; }
+    i=$((i+1)); sleep 0.05
+  done
+  return 1
+}
+
 _panes_at_path() {
   local rows pid win ppath hit=1
   rows="$(tmux list-panes -a -F "#{pane_id}${TAB}#{window_name}${TAB}#{pane_current_path}" 2>/dev/null)"
   [ -n "$rows" ] || return 2
   while IFS="$TAB" read -r pid win ppath; do
     [ -n "$pid" ] || continue
+    # BLINDNESS is the EMPTY RAW FIELD: tmux knows the pane exists but reports no location — we
+    # cannot say the queried path is unoccupied, so it is UNKNOWN (rc 2), never "absent".
+    #
+    # But an empty field is usually TRANSIENT: tmux does not populate pane_current_path the instant
+    # a pane is created, and panes get created all the time (every split, every new window, by us
+    # and by the user). Failing closed on the first empty read would refuse boot/down for the WHOLE
+    # fleet whenever any unrelated pane happens to be a few milliseconds old. So re-query that one
+    # pane before declaring blindness: transient => it resolves; genuinely unreadable => it doesn't.
+    if [ -z "$ppath" ]; then
+      ppath="$(_pane_path_settled "$pid")"
+      [ -n "$ppath" ] || return 2
+    fi
     ppath="$(_abs "$ppath")"
+    # A path we CAN read but cannot canonicalize (the pane's cwd was deleted) is not blindness: we
+    # know where the pane is, and it is not the worktree we asked about (which exists). Honest miss.
     [ -n "$ppath" ] || continue
     case "$ppath" in
       "$1"|"$1"/*) printf '%s\t%s\n' "$pid" "$win"; hit=0 ;;
@@ -1501,11 +1541,27 @@ EOF
       # Corroborate the token before killing: it must resolve to a pane at this
       # worktree (boundary-aware). Registry and tmux contradicting each other is a
       # refusal, not a kill.
-      tpath="$(printf '%s\n' "$all_panes" | awk -F"$TAB" -v p="$tk" '$1==p{print $2; exit}')"
+      # Two DIFFERENT failures hide behind one lookup, and only one of them is "no pane":
+      #   (a) the token is absent from the snapshot   -> the pane is gone. Refuse.
+      #   (b) the token IS in the snapshot but its path field is EMPTY -> tmux knows the pane
+      #       exists and cannot yet say where it is. That is BLINDNESS, not absence — and it is
+      #       routine: pane_current_path is not populated the instant a pane is created, and
+      #       `list-panes` and `display-message` settle at different moments. Reading (b) as "no
+      #       pane" made `down` REFUSE to kill live agents (the 12%-flaky suite rows were this,
+      #       root-caused 2026-07-11: "token %62 resolves to 'no pane'" while %62 sat at the
+      #       worktree in the very same pane dump).
+      # So re-read the pane directly before concluding anything; only then refuse — still
+      # fail-closed, but on evidence rather than on a race.
+      tline="$(printf '%s\n' "$all_panes" | awk -F"$TAB" -v p="$tk" '$1==p{print; exit}')"
+      if [ -z "$tline" ]; then
+        _down_report "$agent" "REFUSED (token $tk resolves to no pane, as $n)"; bad=1; continue
+      fi
+      tpath="${tline#*"$TAB"}"
+      [ -n "$tpath" ] || tpath="$(_pane_path_settled "$tk")"
       tpath="$(_abs "$tpath")"
       case "$tpath" in
         "$apath"|"$apath"/*) : ;;
-        *) _down_report "$agent" "REFUSED (token $tk resolves to '${tpath:-no pane}', not this worktree, as $n)"; bad=1; continue ;;
+        *) _down_report "$agent" "REFUSED (token $tk resolves to '${tpath:-an unreadable location}', not this worktree, as $n)"; bad=1; continue ;;
       esac
       # Skip marker on the claude pane: a PRE-kill decision (the user's explicit
       # hands-off; --force never overrides it — removing the marker is the override).
