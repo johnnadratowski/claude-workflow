@@ -41,6 +41,20 @@ fleet_find_self() {
   return 1
 }
 
+# fleet_busy <name> — a fresh busy marker (~/.claude/agent-busy/<name>, touched within
+# 5 min) means the agent is mid-turn. THE canonical predicate (DX-jn-cc-010).
+# agent-fanout.sh / agent-send.sh / inbox-watcher.sh / statusline-fleet.sh still carry
+# inline copies: they are byte-identical to their upstream claude-workflow mirrors, and
+# forking them here would make every /update-workflow pull a divergence hazard — the
+# consolidation is upstream-first follow-up work. NOTE the failure direction: an
+# unreadable marker dir or a failed find reads as IDLE — right for status display,
+# fail-OPEN for a kill gate. fleet-layout.sh's _down_busy wraps this with fail-closed
+# unknown handling; use that (not this) to gate anything destructive.
+fleet_busy() {
+  local m="$HOME/.claude/agent-busy/$1"
+  [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]
+}
+
 # fleet_resolve_role <name> — canonical agent-name → role classifier
 # (coordinator|test|review|feature). THE single source of these name patterns;
 # register-agent.sh's resolve_role() and agent-fanout.sh's role_of() delegate here so
@@ -61,13 +75,13 @@ fleet_resolve_role() {
 # per-worktree segment of a TODO id (AREA-<NS>-<agentid>-NNN) in place of the numeric lane, so
 # an id names WHICH agent minted it (DX-jn-8-032). Role from fleet_resolve_role; instance number
 # = the trailing digits of the name, defaulting to 1 when the role has instances but the name
-# carries none (john-pr → pr1). Coordinator is singular → no number (cc). Output is always
+# carries none (pr → pr1). Coordinator is singular → no number (cc). Output is always
 # [a-z0-9]+ (id-segment safe, no dashes).
 #
 # UNIQUENESS is convention-dependent (unlike the numeric lane, which was structurally unique per
 # worktree): the id must be distinct across an engineer's CONCURRENT worktrees, since it's the
 # per-(area,NS,agentid) sequence's collision guard. So **same-role agents MUST have distinct
-# trailing numbers** (john-1/john-2, john-pr/john-pr-2) — two review agents both named without a
+# trailing numbers** (feature-1/feature-2, pr-1/pr-2) — two review agents both named without a
 # number would both resolve to pr1. A fleet that can't guarantee this should set
 # WORKFLOW_TODO_AGENT to the numeric lane (structurally unique) or leave it to fall back there.
 fleet_agent_id() {

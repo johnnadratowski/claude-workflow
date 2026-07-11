@@ -97,12 +97,12 @@ printf '%s\n' "$record_branch" > "$agents_dir/$new_name"
 
 # Migrate the name-keyed SIDECARS too. These live beside the base file as
 # ~/.claude/agents/<name>.<ext> — currently `.role` (role override) and `.cwd`
-# (cwd→self identity for the statusline widgets). Leaving them under <old_name>
-# means: a `.role` override stops classifying the agent after its next
-# SessionStart (register-agent would re-derive from <new_name> and could pick the
-# WRONG role — e.g. resume the shared-window rename this feature suppresses), and
-# `.cwd`-based statusline self-id keeps showing the OLD name. The dotted glob never
-# matches the extensionless base file (handled above), so this only moves sidecars.
+# (cwd→self identity for the statusline widgets and fleet-layout's pane attribution).
+# Leaving them under <old_name> means: a `.role` override stops classifying the agent
+# after its next SessionStart (register-agent, agent-identity and statusline-role would
+# re-derive from <new_name> and could pick the WRONG role), and `.cwd`-based self-id keeps
+# showing the OLD name. The dotted glob never matches the extensionless base file (handled
+# above), so this only moves sidecars.
 for _sc in "$agents_dir/$old_name".*; do
   [ -f "$_sc" ] || continue
   mv -f "$_sc" "$agents_dir/$new_name.${_sc##*.}"
@@ -140,41 +140,22 @@ fi
 # next tool call, so just clear the stale leftover.
 rm -f "$HOME/.claude/agent-busy/$old_name"
 
-# Role gates the WINDOW rename. cc + feature agents own their tmux window, so we label
-# it with the agent name. review + test agents are layered into a SHARED window (several
-# panes in one), so renaming the window from any one pane would clobber the label the
-# others rely on — skip the window rename for them. The per-pane title (set below) still
-# identifies each agent within the shared window. Honor a ~/.claude/agents/<name>.role
-# override (the sidecar was migrated to <new_name> above; <old_name> is checked too as a
-# belt-and-suspenders in case that mv was skipped), else the name classifier from _fleet.sh.
-agent_role=""
-for _n in "$new_name" "$old_name"; do
-  if [ -f "$agents_dir/$_n.role" ]; then
-    agent_role="$(tr -dc 'A-Za-z0-9_-' < "$agents_dir/$_n.role")"
-    [ -n "$agent_role" ] && break
-  fi
-done
-[ -n "$agent_role" ] || agent_role="$(fleet_resolve_role "$new_name" 2>/dev/null || echo feature)"
-
 # tmux cosmetics + the built-in /rename keystroke — only when tmux is drivable.
 tmux_note="tmux unavailable — registry/branch/mailbox renamed; pane title + /rename skipped"
 if fleet_tmux_ok 2>/dev/null; then
   # Set the tmux pane title (right granularity — survives split-pane setups).
   tmux select-pane -t "$TMUX_PANE" -T "$new_name" 2>/dev/null || true
 
-  # Rename the window only for the window-owning roles (cc/feature).
-  case "$agent_role" in
-    coordinator|feature)
-      if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
-        tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
-        tmux rename-window -t "$window_id" "$new_name" 2>/dev/null || true
-      fi
-      window_note="window renamed"
-      ;;
-    *)
-      window_note="window rename skipped (role=$agent_role — shares a window)"
-      ;;
-  esac
+  # Window names belong to fleet-layout.sh (DX-jn-cc-001), which recomputes each label
+  # from all of a window's resident agents — so a renamed agent's window updates without
+  # this pane stamping its own name over any co-tenants'.
+  layout_sh="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/fleet-layout.sh"
+  if [ -x "$layout_sh" ]; then
+    "$layout_sh" name-windows >/dev/null 2>&1 && window_note="window relabeled" \
+      || window_note="window relabel failed (non-fatal)"
+  else
+    window_note="fleet-layout.sh not found — window name unchanged"
+  fi
 
   # Also rename the Claude session itself via its built-in /rename slash
   # command. We're inside the running session, so just type it into our

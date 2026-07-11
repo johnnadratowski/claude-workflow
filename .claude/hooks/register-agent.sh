@@ -12,9 +12,14 @@
 # (the "role context") via additionalContext — see "Role context" below.
 #
 # Usage:
-#   register-agent.sh sessionstart      — full setup; role context + /rename keystroke
+#   register-agent.sh sessionstart      — full setup; role context; schedules settle-recheck
 #   register-agent.sh send-selfheal     — quiet re-sync; no role context, no /rename
 #   register-agent.sh rename-selfheal   — quiet re-sync; no role context, no /rename
+#   register-agent.sh settle-recheck    — delayed self-invocation (DX-jn-cc-006): after the
+#                                         session's real name has settled, re-register if a
+#                                         user-set name won the boot race, or type the
+#                                         /rename fallback (fresh startups only). Identity
+#                                         arrives via REGISTER_AGENT_* env, fail-closed.
 
 set -u
 
@@ -51,10 +56,16 @@ log "fired. TMUX_PANE=${TMUX_PANE:-(unset)} cwd=$PWD payload_bytes=${#stdin_payl
 claude_pid=""
 
 session_id=""
+session_source=""
 if [ -n "$stdin_payload" ] && command -v jq >/dev/null 2>&1; then
   session_id=$(printf '%s' "$stdin_payload" | jq -r '.session_id // empty' 2>/dev/null)
+  # startup | resume | clear | compact — drives the settle verb's keystroke rule.
+  session_source=$(printf '%s' "$stdin_payload" | jq -r '.source // empty' 2>/dev/null)
 fi
-if [ -n "$session_id" ]; then
+# settle-recheck gets its pid via REGISTER_AGENT_PID (validated in the verb) —
+# running the ladder here would just burn a tree walk and stamp a misleading
+# "via PPID fallback (probably wrong)" line into the log on every settle.
+if [ -n "$session_id" ] && [ "$source" != "settle-recheck" ]; then
   for f in "$HOME/.claude/sessions/"*.json; do
     [ -f "$f" ] || continue
     if grep -q "\"sessionId\":\"$session_id\"" "$f" 2>/dev/null; then
@@ -71,7 +82,7 @@ if [ -n "$session_id" ]; then
   done
 fi
 
-if [ -z "$claude_pid" ]; then
+if [ -z "$claude_pid" ] && [ "$source" != "settle-recheck" ]; then
   pid=$$
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if ! read -r ppid cmd < <(ps -p "$pid" -o ppid=,command= 2>/dev/null); then
@@ -87,7 +98,7 @@ if [ -z "$claude_pid" ]; then
   done
 fi
 
-if [ -z "$claude_pid" ]; then
+if [ -z "$claude_pid" ] && [ "$source" != "settle-recheck" ]; then
   claude_pid="$PPID"
   log "pid=$claude_pid via PPID fallback (probably wrong)"
 fi
@@ -99,6 +110,7 @@ fi
 #   WORKFLOW_AGENT_NAME_TRANSFORM   — sed expr applied to derived name
 #   WORKFLOW_AGENT_SKIP_RENAME      — set to "1" to skip /rename keystroke
 #   WORKFLOW_AGENT_SKIP_BRANCH_WARN — set to "1" to suppress mismatch warning
+#   WORKFLOW_AGENT_SETTLE_SECONDS   — delay before the settle-recheck fires (default 4)
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 config_loader="${script_dir%/hooks}/scripts/_config.sh"
 if [ -r "$config_loader" ]; then
@@ -111,6 +123,175 @@ fleet_helper="${script_dir%/hooks}/scripts/_fleet.sh"
 # Identity token: $TMUX_PANE inside tmux, else cwd-based (works headless).
 self_token="$(fleet_self_token 2>/dev/null || printf '%s' "${TMUX_PANE:-cwd:$PWD}")"
 
+# The one sanitizer every name in this script must pass through (no dots — dots
+# are field delimiters in the mailbox filenames).
+_sanitize() { tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//'; }
+
+# DX-jn-cc-006: Claude Code's TRANSIENT session auto-name is <cwd-basename>-<2hex>.
+# On `claude --continue` that is what the session file holds when SessionStart
+# fires — the resumed session's real name lands ~2s later. The pattern is
+# therefore RESERVED: a session name matching it is never trusted as the agent
+# name (a genuine user name matching it gets branch-derived registration — the
+# documented limitation).
+_is_transient_name() { # $1 = sanitized candidate
+  local _cb; _cb="$(basename "$PWD" | _sanitize)"
+  case "$1" in
+    "$_cb"-[0-9a-f][0-9a-f]) return 0 ;;
+  esac
+  return 1
+}
+
+# THE name pipeline: transform -> sanitize -> prefix (with the double-application
+# guard). Boot-time resolution AND the settle-recheck swap must both route
+# through this — two resolvers for one identity that normalize differently
+# oscillate the registry/mailbox/sidecar identity on every restart.
+_normalize_name() { # stdin: raw candidate -> stdout: normalized name
+  local n prefix
+  n="$(cat)"
+  # Transform BEFORE sanitization, so user patterns can match the raw branch
+  # (e.g. "s|^feature/||").
+  if [ -n "${WORKFLOW_AGENT_NAME_TRANSFORM:-}" ]; then
+    n=$(printf '%s' "$n" | sed -E "$WORKFLOW_AGENT_NAME_TRANSFORM")
+    log "applied transform: $n"
+  fi
+  # Sanitize: alnum/dash/underscore only. (No dots — dots are field delimiters
+  # in the message-mailbox filenames; a dot would break drain parsing.)
+  n=$(printf '%s' "$n" | _sanitize)
+  # Prefix (sanitized WITHOUT edge-trim — a trailing dash like "wf-" is the
+  # point). Guard against double-application: a name already carrying the
+  # prefix (set by /rename, re-derived on `claude --continue`) must NOT become
+  # <prefix><prefix>name, which forks a duplicate registry identity.
+  if [ -n "${WORKFLOW_AGENT_NAME_PREFIX:-}" ]; then
+    prefix=$(printf '%s' "$WORKFLOW_AGENT_NAME_PREFIX" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g')
+    case "$n" in
+      "$prefix"*) log "prefix already present, not re-applying: $n" ;;
+      *) n="${prefix}${n}"; log "applied prefix: $n" ;;
+    esac
+  fi
+  # Floor: a transform can reduce the name to sanitize-empty. The floor lives
+  # IN the pipeline (post-prefix, byte-identical to the old boot-side fallback)
+  # so every resolver shares it — an empty name reaching a mutation path writes
+  # a hidden '.{pid}' registry file that fleet_find_self's glob can't see.
+  if [ -z "$n" ]; then
+    n="agent"
+    log "name normalized to empty — floored to 'agent'"
+  fi
+  printf '%s' "$n"
+}
+
+# --- Settle re-check (DX-jn-cc-006) ---
+# Scheduled by sessionstart (schedule_settle below). By the time this fires the
+# session's REAL name has had time to land; if a user-set name won the boot
+# race, re-register under it — the registry follows the session, never the
+# reverse. Identity arrives via env: this runs from a detached background job
+# (parent isn't claude, hook stdin is gone).
+if [ "$source" = "settle-recheck" ]; then
+  spid="${REGISTER_AGENT_PID:-}"
+  boot_name="${REGISTER_AGENT_BOOT_NAME:-}"
+  sess_file="$HOME/.claude/sessions/$spid.json"
+  # FAIL-CLOSED on every input's failure value: a stale job from a
+  # killed-and-relaunched session would otherwise act for a dead pid — and the
+  # token-match prune below would DELETE the successor session's fresh registry
+  # entry. Any doubt → exit with ZERO mutation.
+  if [ -z "$spid" ] || ! kill -0 "$spid" 2>/dev/null \
+     || ! ps -p "$spid" -o command= 2>/dev/null | grep -qE '(^|/)claude( |$)'; then
+    log "settle: pid '${spid:-}' is not a live claude — fail-closed, no mutation"
+    exit 0
+  fi
+  if [ -z "$boot_name" ] || [ "$(printf '%s' "$boot_name" | _sanitize)" != "$boot_name" ]; then
+    log "settle: boot name '$boot_name' empty/unsanitized — fail-closed, no mutation"
+    exit 0
+  fi
+  if [ ! -r "$sess_file" ] || ! command -v jq >/dev/null 2>&1; then
+    log "settle: session file unreadable ($sess_file) — fail-closed, no mutation"
+    exit 0
+  fi
+
+  # Transient check on the plain-sanitized name (mirroring the boot-side guard),
+  # then the SAME normalization pipeline boot used — fed the RAW session name,
+  # exactly as boot feeds it: the transform runs before sanitization by design
+  # (patterns match the raw string, e.g. "s|^feature/||"), so normalizing a
+  # pre-sanitized form makes the transform miss and boot/settle resolve one
+  # session to two identities, oscillating on every restart.
+  settled_json="$(jq -r '.name // empty' "$sess_file" 2>/dev/null)"
+  settled_raw="$(printf '%s' "$settled_json" | _sanitize)"
+  settled="$settled_raw"
+  if [ -n "$settled_raw" ] && ! _is_transient_name "$settled_raw"; then
+    settled="$(printf '%s' "$settled_json" | _normalize_name)"
+  fi
+
+  if [ -n "$settled_raw" ] && ! _is_transient_name "$settled_raw" && [ "$settled" != "$boot_name" ]; then
+    # A real (user-set) name won — swap the whole identity to it.
+    mkdir -p "$HOME/.claude/running-agents" "$HOME/.claude/agents"
+    for _stale in "$HOME/.claude/running-agents"/*; do
+      [ -f "$_stale" ] || continue
+      [ "$(cat "$_stale" 2>/dev/null)" = "$self_token" ] && rm -f "$_stale"
+    done
+    rm -f "$HOME/.claude/running-agents/$settled".*
+    printf '%s\n' "$self_token" > "$HOME/.claude/running-agents/$settled.$spid"
+    printf '%s\n' "$PWD" > "$HOME/.claude/agents/$settled.cwd"
+    [ -n "${REGISTER_AGENT_TRANSCRIPT:-}" ] \
+      && printf '%s\n' "$REGISTER_AGENT_TRANSCRIPT" > "$HOME/.claude/agents/$settled.transcript"
+    if [ ! -f "$HOME/.claude/agents/$settled" ]; then
+      # No prior user state under this name — record the current branch as base.
+      _cb_now="$(git -C "$PWD" branch --show-current 2>/dev/null | _sanitize)"
+      [ -n "$_cb_now" ] && printf '%s\n' "$_cb_now" > "$HOME/.claude/agents/$settled"
+    fi
+    # Retire the boot name's sidecars written this boot — unless another live
+    # registration (foreign token) legitimately owns that name.
+    boot_foreign=0
+    for _e in "$HOME/.claude/running-agents/$boot_name".*; do
+      [ -f "$_e" ] || continue
+      [ "$(cat "$_e" 2>/dev/null)" = "$self_token" ] || boot_foreign=1
+    done
+    if [ "$boot_foreign" = 0 ]; then
+      rm -f "$HOME/.claude/agents/$boot_name" \
+            "$HOME/.claude/agents/$boot_name.cwd" \
+            "$HOME/.claude/agents/$boot_name.transcript"
+    fi
+    log "settle: session name settled to '$settled' — re-registered from '$boot_name'"
+    if fleet_tmux_ok 2>/dev/null; then
+      tmux select-pane -t "$TMUX_PANE" -T "$settled" 2>/dev/null || true
+      layout_sh="${script_dir%/hooks}/scripts/fleet-layout.sh"
+      [ -x "$layout_sh" ] && "$layout_sh" name-windows >/dev/null 2>&1
+    fi
+  elif [ -z "$settled_raw" ] || _is_transient_name "$settled_raw"; then
+    # Still transient/empty. Keystroke rule by session source: a RESUME buffers
+    # keystrokes until AFTER initialization, so typing /rename now could land ON
+    # TOP of a late-arriving user name — the clobber this verb exists to prevent.
+    # Only a fresh startup (whose auto-name never settles on its own) gets the
+    # keystroke; prefer launching with `claude --name` + SKIP_RENAME=1, which
+    # makes this fallback a no-op (DX-jn-8-024).
+    src_kind="${REGISTER_AGENT_SESSION_SOURCE:-}"
+    if [ "$src_kind" = "startup" ]; then
+      if fleet_tmux_ok 2>/dev/null && [ "${WORKFLOW_AGENT_SKIP_RENAME:-}" != "1" ] \
+         && [ "$settled" != "$boot_name" ]; then
+        tmux send-keys -t "$TMUX_PANE" -l "/rename $boot_name" 2>/dev/null
+        tmux send-keys -t "$TMUX_PANE" Enter 2>/dev/null
+        log "settle: typed /rename $boot_name (startup, name never settled)"
+      else
+        log "settle: keystroke skipped (startup: tmux/skip-rename/already-named)"
+      fi
+    elif [ "${REGISTER_AGENT_SETTLE_RETRY:-}" != "1" ]; then
+      # One bounded retry — the name may just be slow to land under load.
+      settle_secs="${WORKFLOW_AGENT_SETTLE_SECONDS:-4}"
+      hook_self="$script_dir/$(basename "${BASH_SOURCE[0]}")"
+      nohup env REGISTER_AGENT_PID="$spid" REGISTER_AGENT_BOOT_NAME="$boot_name" \
+        REGISTER_AGENT_TRANSCRIPT="${REGISTER_AGENT_TRANSCRIPT:-}" \
+        REGISTER_AGENT_SESSION_SOURCE="$src_kind" REGISTER_AGENT_SETTLE_RETRY=1 \
+        TMUX_PANE="${TMUX_PANE:-}" \
+        bash -c "sleep $(printf %q "$settle_secs"); exec bash $(printf %q "$hook_self") settle-recheck" \
+        </dev/null >/dev/null 2>&1 &
+      log "settle: still transient on '$src_kind' — one retry scheduled (+${settle_secs}s)"
+    else
+      log "settle: still transient after retry on '$src_kind' — keystroke skipped (never clobber a late name)"
+    fi
+  else
+    log "settle: settled name matches boot name '$boot_name' — no-op"
+  fi
+  exit 0
+fi
+
 # --- Determine agent name ---
 # Priority:
 #   1. Session file's `name` field (set by `/rename`; persists across resumes).
@@ -121,6 +302,13 @@ name=""
 session_name=""
 if [ -n "$claude_pid" ] && [ -f "$HOME/.claude/sessions/$claude_pid.json" ] && command -v jq >/dev/null 2>&1; then
   session_name=$(jq -r '.name // empty' "$HOME/.claude/sessions/$claude_pid.json" 2>/dev/null)
+  # DX-jn-cc-006: never trust a transient auto-name here — on `claude --continue`
+  # it's what the file holds until the real name lands (~2s after this hook).
+  # Fall through to config/branch; the settle-recheck converges any late name.
+  if [ -n "$session_name" ] && _is_transient_name "$(printf '%s' "$session_name" | _sanitize)"; then
+    log "session name '$session_name' matches the transient auto-name pattern — treating as absent"
+    session_name=""
+  fi
   name="$session_name"
 fi
 if [ -z "$name" ] && [ -n "${WORKFLOW_AGENT_DEFAULT_BRANCH:-}" ]; then
@@ -133,40 +321,13 @@ if [ -z "$name" ] && [ -n "$current_branch" ]; then
 fi
 [ -z "$name" ] && name="$(basename "$PWD")"
 
-# Apply optional sed transform BEFORE sanitization, so user-provided
-# patterns can match the raw branch (e.g. "s|^feature/||").
-if [ -n "${WORKFLOW_AGENT_NAME_TRANSFORM:-}" ]; then
-  name=$(printf '%s' "$name" | sed -E "$WORKFLOW_AGENT_NAME_TRANSFORM")
-  log "applied transform: $name"
-fi
-
-# Sanitize: alnum/dash/underscore only. (No dots — dots are field delimiters
-# in the message-mailbox filenames; a dot in a name would break drain parsing.)
-name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
-
-# Apply optional prefix (also sanitized so the joined name stays clean).
-# Guard against double-application: a session whose name already carries the
-# prefix (set by /rename, then re-derived from session_name on `claude
-# --continue`) must NOT become <prefix><prefix>name (e.g. wf-todo-wf-todo-feat-1),
-# which would fork a duplicate registry entry + corrupt the agent's identity.
-if [ -n "${WORKFLOW_AGENT_NAME_PREFIX:-}" ]; then
-  prefix=$(printf '%s' "$WORKFLOW_AGENT_NAME_PREFIX" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g')
-  case "$name" in
-    "$prefix"*) log "prefix already present, not re-applying: $name" ;;
-    *) name="${prefix}${name}"; log "applied prefix: $name" ;;
-  esac
-fi
-
-[ -z "$name" ] && name="agent"
+# Transform + sanitize + prefix + empty-floor — the same pipeline the
+# settle-recheck swap uses, so boot and settle can never disagree on the same
+# input (the floor included: pipeline output is never empty).
+name=$(printf '%s' "$name" | _normalize_name)
 
 # Sanitize current_branch the same way for consistent comparison.
-current_branch_sanitized=$(printf '%s' "$current_branch" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
-
-# Sanitize the session's current name too, so we can tell whether the Claude
-# session is ALREADY named correctly and skip a redundant /rename (the slow
-# path runs on every start — including `--resume`, which carries the name
-# forward — because the registry is keyed by the now-new PID).
-session_name_sanitized=$(printf '%s' "$session_name" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
+current_branch_sanitized=$(printf '%s' "$current_branch" | _sanitize)
 
 # --- Role context (injected at SessionStart via additionalContext) ---
 # Different agent types get tailored startup instructions. The role is derived
@@ -221,7 +382,7 @@ mismatch_warning=""
 # Sanitize the intended (config-pinned) base too, so comparisons match.
 intended_base=""
 if [ -n "${WORKFLOW_AGENT_DEFAULT_BRANCH:-}" ]; then
-  intended_base=$(printf '%s' "$WORKFLOW_AGENT_DEFAULT_BRANCH" | tr -c 'A-Za-z0-9_-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')
+  intended_base=$(printf '%s' "$WORKFLOW_AGENT_DEFAULT_BRANCH" | _sanitize)
 fi
 
 if [ -n "$intended_base" ]; then
@@ -292,10 +453,31 @@ $msg"
   fi
 }
 
+# DX-jn-cc-006: schedule the delayed settle re-check (the verb near the top).
+# Runs on EVERY sessionstart — fast and slow path, tmux or headless (the
+# registry correction matters without tmux too; WORKFLOW_AGENT_SKIP_RENAME
+# suppresses only the keystroke inside the verb). The resumed session's real
+# name lands ~2s after this hook fires; the verb re-registers if a user-set
+# name won, or types the /rename fallback (fresh startups only).
+schedule_settle() {
+  [ "$source" = "sessionstart" ] || return 0
+  local settle_secs hook_self
+  settle_secs="${WORKFLOW_AGENT_SETTLE_SECONDS:-4}"
+  hook_self="$script_dir/$(basename "${BASH_SOURCE[0]}")"
+  nohup env REGISTER_AGENT_PID="$claude_pid" REGISTER_AGENT_BOOT_NAME="$name" \
+    REGISTER_AGENT_TRANSCRIPT="${transcript_path:-}" \
+    REGISTER_AGENT_SESSION_SOURCE="${session_source:-}" \
+    TMUX_PANE="${TMUX_PANE:-}" \
+    bash -c "sleep $(printf %q "$settle_secs"); exec bash $(printf %q "$hook_self") settle-recheck" \
+    </dev/null >/dev/null 2>&1 &
+  log "scheduled settle-recheck (+${settle_secs}s)"
+}
+
 # Fast path: registry already correct.
 if [ -f "$target" ] && [ "$(cat "$target" 2>/dev/null)" = "$self_token" ]; then
   log "exit: registry already correct ($target)"
   emit_session_context "$mismatch_warning"
+  schedule_settle
   exit 0
 fi
 
@@ -317,50 +499,29 @@ if fleet_tmux_ok 2>/dev/null; then
   # tmux pane title (right granularity for split panes).
   tmux select-pane -t "$TMUX_PANE" -T "$name" 2>/dev/null || true
 
-  # tmux window rename — only for the window-OWNING roles (cc/feature) and only when it
-  # would change something. review + test agents are layered into a SHARED window (many
-  # panes in one), so renaming it from their pane clobbers the co-tenants' label — skip
-  # it; the per-pane title above still identifies each. Same rule as agent-rename.sh.
-  # Honor a ~/.claude/agents/<name>.role override, else the _fleet.sh name classifier.
-  tmux_role=""
-  [ -f "$HOME/.claude/agents/$name.role" ] && tmux_role="$(tr -dc 'A-Za-z0-9_-' < "$HOME/.claude/agents/$name.role")"
-  [ -z "$tmux_role" ] && tmux_role="$(resolve_role "$name")"
-  case "$tmux_role" in
-    coordinator|feature)
-      if window_id=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}' 2>/dev/null); then
-        current_window_name=$(tmux display-message -t "$window_id" -p '#{window_name}' 2>/dev/null)
-        if [ "$current_window_name" != "$name" ]; then
-          tmux set-window-option -t "$window_id" automatic-rename off 2>/dev/null || true
-          tmux rename-window -t "$window_id" "$name" 2>/dev/null || true
-        fi
-      fi
-      ;;
-    *) log "window rename skipped (role=$tmux_role — shares a window)" ;;
-  esac
-
-  # Type /rename into the prompt on the initial-startup path — but ONLY when the
-  # session isn't already named correctly (avoids a no-op /rename re-firing on
-  # every start/resume) and WORKFLOW_AGENT_SKIP_RENAME isn't "1".
-  #
-  # PREFER launching with `claude --name "<name>"` (and WORKFLOW_AGENT_SKIP_RENAME=1):
-  # that sets the name with no keystroke, so this fallback skips (name already matches).
-  # This blind, delayed send is a LAST RESORT — on a high-context start the
-  # compact/clear/continue modal can swallow the keystroke and select compact instead of
-  # renaming. Launchers (agent-fanout restart, the external start script) pass --name to
-  # avoid it; this remains only for launches that don't. (DX-jn-8-024)
-  if [ "$source" = "sessionstart" ] && [ "${WORKFLOW_AGENT_SKIP_RENAME:-}" != "1" ] && [ "$session_name_sanitized" != "$name" ]; then
-    nohup bash -c "
-      sleep 2
-      tmux send-keys -t '$TMUX_PANE' -l '/rename $name'
-      tmux send-keys -t '$TMUX_PANE' Enter
-    " </dev/null >/dev/null 2>&1 &
-    log "scheduled /rename via send-keys"
+  # tmux window names are owned by fleet-layout.sh (DX-jn-cc-001). Renaming from here
+  # meant every agent stamped its OWN name onto a window it might share, last-writer-wins,
+  # re-firing on every restart. name-windows instead derives each window's label from ALL
+  # of its resident agents, so every agent computes the same answer and co-tenants can't
+  # clobber each other.
+  layout_sh="$(cd "$(dirname "$0")/../scripts" 2>/dev/null && pwd)/fleet-layout.sh"
+  if [ -x "$layout_sh" ]; then
+    "$layout_sh" name-windows >/dev/null 2>&1 || log "fleet-layout name-windows failed (non-fatal)"
   else
-    log "skip /rename (source=$source skip=${WORKFLOW_AGENT_SKIP_RENAME:-} session='$session_name_sanitized' name='$name')"
+    log "fleet-layout.sh not found at $layout_sh — window naming skipped"
   fi
+
+  # The /rename keystroke moved into the settle-recheck verb (DX-jn-cc-006): it
+  # now fires only after the session name has settled, and only on fresh
+  # startups — a resume buffers keystrokes until AFTER initialization, so a
+  # blind send here could type over a late-arriving user name. The DX-jn-8-024
+  # guidance stands: PREFER launching with `claude --name "<name>"` (and
+  # WORKFLOW_AGENT_SKIP_RENAME=1), which makes the fallback a no-op.
+  :
 else
-  log "tmux unavailable — skipped pane/window title + /rename (headless registration)"
+  log "tmux unavailable — skipped pane/window title (headless registration)"
 fi
 
+schedule_settle
 emit_session_context "$mismatch_warning"
 exit 0

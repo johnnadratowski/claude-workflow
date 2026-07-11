@@ -1,0 +1,1243 @@
+#!/bin/bash
+# Self-contained tests for fleet-layout.sh.  Run: bash .claude/scripts/fleet-layout.test.sh
+#
+# Hermetic on two axes:
+#   1. a throwaway $HOME  — never touches the real registry / agent sidecars
+#   2. a throwaway tmux SERVER on its own socket — never touches the live fleet
+#
+# (2) is the sanctioned exception to fleet-layout's "never spawn a second tmux server"
+# invariant. It is safe ONLY because every tmux call below carries -L "$SOCKET", including
+# the EXIT trap. A bare `tmux kill-server` in a teardown would reset every pane id on the
+# DEFAULT socket and staleness-bomb the live fleet's registry (agent-send.sh:107-109 would
+# prune live agents). assert_scratch_socket() enforces that before anything destructive.
+#
+# Locks in the findings from the DX-jn-cc-001 plan + diff reviews:
+#   - a companion that `cd`s into a SUBDIR still matches (boundary-aware prefix)
+#   - a SIBLING worktree whose path shares a string prefix must NOT match, and neither does a
+#     prefix-sharing directory that NO agent owns (longest-match alone wouldn't catch that)
+#   - another agent's claude pane is never a companion
+#   - a stale .cwd sidecar (no live registry entry) claims nothing
+#   - the @fleet-layout-skip opt-out marker is honored
+#   - window naming: single / same-role / mixed-role / no-agents
+#   - --dry-run mutates nothing;  name-windows is idempotent
+#   - a failed join ABORTS instead of leaving a half-built window (invariant 6)
+#   - attribution is snapshotted before any pane moves (mid-build rescan drops companions)
+#   - `wide` really assembles: geometry, no pane destroyed, idempotent
+#   - a duplicate window name cannot make `wide` break out a second `features` window
+#   - kill verbs are ALLOWLISTED (DX-jn-cc-010): kill-pane only inside _down_kill_pane
+#     (the `down` verb's single kill helper), one kill-window (placeholder drop), one
+#     kill-session (_teardown_ext via _rw), no kill-server, no pid signal but kill -0
+#   - boot builds each new window into the cell (DX-jn-cc-012): claude full-height left,
+#     monocle top-right, shell bottom-right; a failed split/keystroke degrades loudly
+#     without losing the claude launch
+
+set -uo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT="$here/fleet-layout.sh"
+[ -f "$SCRIPT" ] || { echo "FATAL: fleet-layout.sh not found at $SCRIPT"; exit 1; }
+
+command -v tmux >/dev/null 2>&1 || { echo "fleet-layout.test.sh: tmux not installed — skipping"; exit 0; }
+
+SOCKET="fleetlayouttest.$$"
+pass=0; fail=0
+
+# ok() runs under `set -o pipefail`, and `grep -q` exits on its first match — which SIGPIPEs
+# the producer, so `<cmd> | grep -q <present-pattern>` reports 141 even on success. Use ok()
+# only for NEGATIVE greps (`! … | grep -q`), where the producer always runs to completion.
+# To assert a pattern IS present, use eq() against the matched line.
+ok(){ if eval "$2" >/dev/null 2>&1; then echo "  PASS: $1"; pass=$((pass+1)); else echo "  FAIL: $1"; fail=$((fail+1)); fi; }
+eq(){ # eq <desc> <expected> <actual>
+  if [ "$2" = "$3" ]; then echo "  PASS: $1"; pass=$((pass+1));
+  else echo "  FAIL: $1"; echo "        expected: [$2]"; echo "        actual:   [$3]"; fail=$((fail+1)); fi
+}
+
+# ---------------------------------------------------------------- socket guard
+# Every tmux call in this file goes through t(). Nothing else may call tmux.
+t(){ command tmux -L "$SOCKET" "$@"; }
+
+assert_scratch_socket(){
+  case "$SOCKET" in
+    ''|default) echo "REFUSING: destructive tmux verb on the default socket"; exit 1 ;;
+  esac
+  case "$SOCKET" in
+    fleetlayouttest.*) : ;;
+    *) echo "REFUSING: socket '$SOCKET' is not a recognized scratch socket"; exit 1 ;;
+  esac
+}
+
+cleanup(){
+  assert_scratch_socket
+  t kill-server 2>/dev/null
+  rm -f "/tmp/tmux-$(id -u)/$SOCKET"        # kill-server leaves the socket file behind
+  [ -n "${T:-}" ] && rm -rf "$T"
+  [ -n "${FAKEHOME:-}" ] && rm -rf "$FAKEHOME"
+}
+trap cleanup EXIT INT TERM   # EXIT alone leaks the scratch server + tmpdirs on Ctrl-C
+
+# ---------------------------------------------------------------- fixture
+# Worktrees are deliberately named so that `goals` is a literal string prefix of
+# `goals-2` — the exact trap that makes naive prefix matching misattribute panes.
+# Physical paths. macOS symlinks /var -> /private/var, and tmux reports pane_current_path
+# resolved; a logical $T would match no pane and silently empty every fixture variable.
+T="$(cd "$(mktemp -d)" && pwd -P)"
+FAKEHOME="$(cd "$(mktemp -d)" && pwd -P)"
+# `goals-extra` shares a string prefix with `goals` and is owned by NO agent. It is what
+# isolates the boundary-aware prefix rule: `goals-2` alone cannot, because longest-match
+# would hand that pane to x-2 even under a (wrong) bare-prefix comparison.
+mkdir -p "$T/goals/server" "$T/goals-2" "$T/goals-3" "$T/goals-4" "$T/goals-extra" "$T/pr" "$T/test"
+mkdir -p "$FAKEHOME/.claude/running-agents" "$FAKEHOME/.claude/agents"
+
+assert_scratch_socket
+# w1: claude(x-1) + companion in a SUBDIR + a skip-marked companion at the root
+# -x/-y give the detached server a real size, so join-pane has room and _precheck_room passes.
+t new-session  -d -x 200 -y 50 -s main -n w1 -c "$T/goals" 'sleep 600'
+t split-window -d -t main:w1   -c "$T/goals/server"  'sleep 600'
+t split-window -d -t main:w1   -c "$T/goals"         'sleep 600'
+t split-window -d -t main:w1   -c "$T/goals-extra"   'sleep 600'
+# w2: claude(x-2) + companion  (sibling worktree — string-prefix trap)
+t new-window   -d -t main -n w2 -c "$T/goals-2"      'sleep 600'
+t split-window -d -t main:w2   -c "$T/goals-2"       'sleep 600'
+# w3: two claude panes, MIXED roles (review + test) — a legacy pane shape (grandfathered names; the post-DX-jn-cc-005 fleet is cc + feature)
+t new-window   -d -t main -n w3 -c "$T/pr"           'sleep 600'
+t split-window -d -t main:w3   -c "$T/test"          'sleep 600'
+# w4/w5: feature agents 3 and 4. Four features is what makes `wide` a real 2x2, and what makes
+# `dual` produce TWO windows that derive the same name and must be disambiguated.
+t new-window   -d -t main -n w4 -c "$T/goals-3"      'sleep 600'
+t split-window -d -t main:w4   -c "$T/goals-3"       'sleep 600'
+t new-window   -d -t main -n w5 -c "$T/goals-4"      'sleep 600'
+t split-window -d -t main:w5   -c "$T/goals-4"       'sleep 600'
+
+read_panes(){ t list-panes -a -F '#{window_name} #{pane_id} #{pane_current_path}'; }
+pane_at(){ read_panes | awk -v w="$1" -v p="$2" '$1==w && $3==p {print $2; exit}'; }
+
+P_A="$(pane_at w1 "$T/goals")"            # claude(x-1)  — first pane created in w1
+P_B="$(pane_at w1 "$T/goals/server")"     # companion in a subdir
+P_C="$(read_panes | awk -v w=w1 -v p="$T/goals" '$1==w && $3==p {print $2}' | tail -1)"  # skip-marked
+P_H="$(pane_at w1 "$T/goals-extra")"      # prefix-sharing dir owned by NO agent
+P_D="$(pane_at w2 "$T/goals-2")"          # claude(x-2)
+P_E="$(read_panes | awk -v w=w2 -v p="$T/goals-2" '$1==w && $3==p {print $2}' | tail -1)"
+P_F="$(pane_at w3 "$T/pr")"               # claude(x-pr)
+P_G="$(pane_at w3 "$T/test")"             # claude(x-test-1)
+P_I="$(pane_at w4 "$T/goals-3")"          # claude(x-3)
+P_J="$(read_panes | awk -v w=w4 -v p="$T/goals-3" '$1==w && $3==p {print $2}' | tail -1)"
+P_K="$(pane_at w5 "$T/goals-4")"          # claude(x-4)
+P_L="$(read_panes | awk -v w=w5 -v p="$T/goals-4" '$1==w && $3==p {print $2}' | tail -1)"
+
+# Guard the fixture itself. An empty pane id would make the assertions below compare "" to ""
+# and pass without exercising anything — the failure mode this fixture already had once.
+for v in P_A P_B P_C P_D P_E P_F P_G P_H P_I P_J P_K P_L; do
+  eval "val=\$$v"
+  [ -n "$val" ] || { echo "FATAL: fixture pane $v is empty — the harness is broken, not the script"; exit 1; }
+done
+[ "$P_A" != "$P_C" ] || { echo "FATAL: fixture pane P_A and P_C are the same pane"; exit 1; }
+
+t set-option -p -t "$P_C" @fleet-layout-skip 1
+
+# Registry: <name>.<pid> containing the pane id.  $$ is a real live pid, so fleet_alive passes.
+reg(){ printf '%s\n' "$2" > "$FAKEHOME/.claude/running-agents/$1.$$"; printf '%s\n' "$3" > "$FAKEHOME/.claude/agents/$1.cwd"; }
+reg x-1      "$P_A" "$T/goals"
+reg x-2      "$P_D" "$T/goals-2"
+reg x-pr     "$P_F" "$T/pr"
+reg x-test-1 "$P_G" "$T/test"
+reg x-3      "$P_I" "$T/goals-3"
+reg x-4      "$P_K" "$T/goals-4"
+# Stale sidecar: a dead agent whose .cwd still points at a live worktree. Must claim nothing.
+printf '%s\n' "$T/goals" > "$FAKEHOME/.claude/agents/x-dead.cwd"
+
+# Run the script's library half with our fake HOME + scratch socket.
+# TMUX_PANE must be non-empty or the dispatcher's fleet_tmux_ok gate exits 0 before doing
+# anything — every `run` test then passes its "exits 0" check while asserting against a
+# layout that never ran (27 silent failures when the suite is invoked headless).
+export TMUX_PANE="${TMUX_PANE:-%fl-test}"
+lib(){ HOME="$FAKEHOME" FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
+run(){ HOME="$FAKEHOME" FLEET_TMUX_SOCKET="$SOCKET" bash "$SCRIPT" "$@"; }
+
+echo "fleet-layout.sh — socket=$SOCKET"
+
+echo; echo "live_agents"
+eq "finds exactly the 6 registered live agents" \
+   "x-1 x-2 x-3 x-4 x-pr x-test-1" \
+   "$(lib 'live_agents' | cut -f1 | sort | tr '\n' ' ' | sed 's/ $//')"
+ok "the stale x-dead sidecar is not a live agent" \
+   "! lib 'live_agents' | cut -f1 | grep -qx x-dead"
+
+echo; echo "attribute_panes"
+eq "x-1's claude pane is its registry token" "$P_A" "$(lib 'attribute_panes' | awk -F'\t' '$1=="x-1"{print $2}')"
+eq "x-1's companion is the SUBDIR pane only (boundary prefix; skip-marked pane excluded)" \
+   "$P_B" "$(lib 'attribute_panes' | awk -F'\t' '$1=="x-1"{print $3}')"
+ok "the sibling worktree's panes never attach to x-1 (longest-match)" \
+   "! lib 'attribute_panes' | awk -F'\t' '\$1==\"x-1\"{print \$3}' | grep -q '$P_D\|$P_E'"
+# Isolates the boundary rule: no agent owns goals-extra, so longest-match cannot rescue this.
+# A bare `case \$ppath in \$a_cwd*` would hand this pane to x-1.
+ok "an unowned dir sharing x-1's string prefix is NOT a companion (boundary-aware prefix)" \
+   "! lib 'attribute_panes' | cut -f3 | grep -q '$P_H'"
+eq "x-2 claims its own companion" "$P_E" "$(lib 'attribute_panes' | awk -F'\t' '$1=="x-2"{print $3}')"
+ok "another agent's claude pane is never a companion" \
+   "! lib 'attribute_panes' | cut -f3 | grep -q '$P_G'"
+eq "x-pr has a claude pane and no companions" "$P_F|" "$(lib 'attribute_panes' | awk -F'\t' '$1=="x-pr"{print $2"|"$3}')"
+
+echo; echo "window_name_from_names"
+eq "one agent -> its own name"            "x-1"         "$(lib 'window_name_from_names x-1')"
+eq "two features -> the plural role"      "features"    "$(lib 'window_name_from_names x-1 x-2')"
+eq "review + test -> sorted, hyphenated"  "review-test" "$(lib 'window_name_from_names x-pr x-test-1')"
+eq "no agents -> empty (window untouched)" ""           "$(lib 'window_name_from_names')"
+
+echo; echo "name-windows"
+before="$(t list-windows -t main -F '#{window_name}' | tr '\n' ',')"
+run name-windows --dry-run >/dev/null 2>&1
+eq "--dry-run mutates nothing" "$before" "$(t list-windows -t main -F '#{window_name}' | tr '\n' ',')"
+
+run name-windows >/dev/null 2>&1
+# Anchored to the AGENTS' panes, not window indices: name-windows also reorders the session
+# (cc, features, review/test, others), so an index no longer identifies a fixture window.
+wname(){ t list-panes -a -F '#{pane_id} #{window_name}' | awk -v q="$1" '$1==q{print $2; exit}'; }
+eq "the window with one claude pane is named for its agent" "x-1"         "$(wname "$P_A")"
+eq "x-2's window is named for it"                           "x-2"         "$(wname "$P_D")"
+eq "the review + test co-tenant window is named by role"    "review-test" "$(wname "$P_F")"
+eq "…and both co-tenants agree on it"                       "review-test" "$(wname "$P_G")"
+
+after1="$(t list-windows -t main -F '#{window_name}' | tr '\n' ',')"
+run name-windows >/dev/null 2>&1
+eq "name-windows is idempotent" "$after1" "$(t list-windows -t main -F '#{window_name}' | tr '\n' ',')"
+
+echo; echo "layout geometry (dry-run command stream)"
+# x-1 and x-2 are the two live feature agents, ordered f1, f2 by fleet_agent_id.
+eq "wide seeds the grid by breaking f1's claude pane into 'features'" \
+   "tmux break-pane -d -s $P_A -n features" \
+   "$(run wide --dry-run 2>/dev/null | grep 'break-pane')"
+# grep patterns must be boundary-anchored: "-s %1" is a substring of "-s %11".
+eq "wide places f2 to the RIGHT of f1 (side-by-side cells)" \
+   "tmux join-pane -h -s $P_D -t $P_A" \
+   "$(run wide --dry-run 2>/dev/null | grep -E -- "-s ${P_D}( |\$)")"
+eq "dual STACKS f2 below f1 (one column of rows, not side-by-side)" \
+   "tmux join-pane -v -s $P_D -t $P_A" \
+   "$(run dual --dry-run 2>/dev/null | grep -E -- "-s ${P_D}( |\$)")"
+eq "a cell puts its companion to the right of the claude pane" \
+   "tmux join-pane -h -s $P_B -t $P_A" \
+   "$(run wide --dry-run 2>/dev/null | grep -E -- "-s ${P_B}( |\$)")"
+eq "dual seeds features-1 from f1's claude pane" \
+   "tmux break-pane -d -s $P_A -n features-1" \
+   "$(run dual --dry-run 2>/dev/null | grep -E -- "break-pane -d -s ${P_A}( |\$)")"
+eq "dual seeds features-2 from f3's claude pane" \
+   "tmux break-pane -d -s $P_I -n features-2" \
+   "$(run dual --dry-run 2>/dev/null | grep -E -- "break-pane -d -s ${P_I}( |\$)")"
+
+echo; echo "abort on a failed join (invariant: never partially apply)"
+# Stub _rw so join-pane fails. A build that ignores the return code emits a SECOND join and
+# reports success — that is the bug this locks down. DRY_RUN=1 makes _precheck_room pass, so
+# a nonzero rc can only come from the join, never from the size guard.
+FAILJOIN='DRY_RUN=1; _rw(){ case "$1" in join-pane) echo "JOIN $*"; return 1;; *) echo "OTHER $*"; return 0;; esac; }'
+eq "build_cell returns nonzero on a failed join"      "1" "$(lib "$FAILJOIN; build_cell %90 %91 %92 >/dev/null" 2>/dev/null; echo $?)"
+eq "build_cell stops after the FIRST join, not two"   "1" "$(lib "$FAILJOIN; build_cell %90 %91 %92" 2>/dev/null | grep -c '^JOIN')"
+eq "_gather_grid propagates the abort"                "1" "$(lib "$FAILJOIN; _snapshot_attr; _gather_grid features x-1 x-2 >/dev/null" 2>/dev/null; echo $?)"
+eq "_gather_grid aborted at the join, not the precheck" "1" "$(lib "$FAILJOIN; _snapshot_attr; _gather_grid features x-1 x-2" 2>/dev/null | grep -c '^JOIN')"
+eq "_gather_pair propagates the abort"                "1" "$(lib "$FAILJOIN; _snapshot_attr; _gather_pair features-1 x-1 x-2 >/dev/null" 2>/dev/null; echo $?)"
+eq "build_cell succeeds when every join succeeds"     "0" "$(lib 'DRY_RUN=1; _rw(){ return 0; }; build_cell %90 %91 %92' >/dev/null 2>&1; echo $?)"
+
+echo; echo "attribution is snapshotted before any pane moves"
+# Re-deriving mid-build would drop a cell's companions: once a claude pane joins the seed's
+# session, its companions are still in their original one and fail the same-session check.
+eq "_attr serves the snapshot when FL_ATTR is set"    "SNAP" "$(lib 'FL_ATTR=SNAP; _attr')"
+eq "_attr falls back to a live scan when unset"       "x-1"  "$(lib '_attr' | cut -f1 | head -1)"
+eq "layout_wide snapshots before it moves anything" "1" \
+   "$(grep -A3 '^layout_wide' "$SCRIPT" | grep -c '_snapshot_attr')"
+
+echo; echo "cell balance is cell-relative, not window-relative"
+# `resize-pane -x N%` is a percentage of the WINDOW. In an N-cell grid it overshoots the cell:
+# it clamps the companion column to 1 col AND steals columns from the neighbouring cell.
+ok "the script never resizes by percentage" \
+   "! grep -qE 'resize-pane[^|]*-x [0-9]+%' '$SCRIPT'"
+# cell = 50 + 49 + 1 border = 100 cols; 60% of the CELL = 60. (60% of a 200-col window = 120.)
+eq "_balance_cell computes 60% of the CELL (claude+comp+border), in columns" \
+   "60" \
+   "$(lib '_pane_width(){ case "$1" in %90) echo 50;; %91) echo 49;; esac; }
+           tmux(){ [ "$1" = resize-pane ] && echo "$5"; }
+           _balance_cell %90 %91')"
+eq "_balance_cell leaves a cell too narrow to split alone" \
+   "" \
+   "$(lib '_pane_width(){ case "$1" in %90) echo 12;; %91) echo 12;; esac; }
+           tmux(){ [ "$1" = resize-pane ] && echo "$5"; }
+           _balance_cell %90 %91')"
+
+echo; echo "safety (kill-verb allowlist on comment-stripped source — DX-jn-cc-010)"
+# Counting method (calibrated): executable invocations on COMMENT-STRIPPED source. A
+# dry-run printf is executable source — the old raw kill-session count of 4 hid exactly
+# that (2 comments + a hand-rolled dry-run printf + the call); _teardown_ext's kill now
+# routes through the verb-generic _rw, so the expected count is 1 and the check provably
+# passes on correct code AND fails on any new kill-session.
+nocom(){ grep -vE '^[[:space:]]*#' "$SCRIPT"; }
+eq "kill-server never appears"                      "0" "$(nocom | grep -c 'kill-server')"
+eq "the only kill-window is the placeholder drop"   "1" "$(nocom | grep -c 'kill-window')"
+eq "the only kill-session is _teardown_ext's (via _rw)" "1" "$(nocom | grep -c 'kill-session')"
+# kill-pane is confined to ONE helper: the whole-file count must equal the count inside
+# _down_kill_pane's body. A kill-pane leaking anywhere else breaks the equality; the
+# >=1 row keeps the equality from passing vacuously (0 == 0) if the helper is renamed.
+kp_file="$(nocom | grep -c 'kill-pane')"
+kp_body="$(awk '/^_down_kill_pane\(\)/,/^}/' "$SCRIPT" | grep -vE '^[[:space:]]*#' | grep -c 'kill-pane')"
+ok "_down_kill_pane exists and holds a kill-pane (so the equality below can fail)" "[ '$kp_body' -ge 1 ]"
+eq "every kill-pane in the file lives inside _down_kill_pane" "$kp_file" "$kp_body"
+# Caller allowlist: confining the STRING to one helper doesn't stop a layout verb from
+# CALLING it — only down-path functions may.
+ok "only down-path functions call _down_kill_pane" \
+   "[ -z \"\$(awk '/^[A-Za-z_][A-Za-z0-9_]*\(\)/{fn=\$1} /_down_kill_pane/ && !/^[[:space:]]*#/{print fn}' '$SCRIPT' | sed 's/().*//' | sort -u | grep -vE '^(_down_|down_fleet)')\" ]"
+# down never signals pids: the only `kill -` in the file is the kill -0 liveness probe.
+eq "no pid signal other than kill -0" "0" "$(nocom | grep -E 'kill +-' | grep -vc 'kill -0' | tail -1)"
+# _teardown_ext must never destroy a session that still hosts an agent.
+eq "_teardown_ext refuses while a live agent's pane is in the external session" "refused" \
+   "$(lib 'FL_HOME_SESSION=notmain; FL_EXT_SESSION=main
+           _close_iterm_window(){ echo "CLOSED"; }
+           tmux(){ case "$1" in kill-session) echo "KILLED";; show-options) echo "";; *) command tmux -L '"$SOCKET"' "$@";; esac; }
+           out=$(_teardown_ext 2>&1); case "$out" in *"still hosts agent pane"*) echo refused;; *) echo "$out";; esac')"
+# A registry with corrupted / padded / empty / garbage token files. _registry_tokens must
+# normalize them, because a token differing from tmux's `%N` by one byte defeats every
+# comparison in the guard and leaves a live agent unprotected.
+RH="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$RH/.claude/running-agents"
+printf '%%3\r\n'   > "$RH/.claude/running-agents/a.1"     # CRLF
+printf '  %%7  \n'  > "$RH/.claude/running-agents/b.2"     # padded
+printf ''           > "$RH/.claude/running-agents/c.3"     # empty
+printf 'garbage\n'  > "$RH/.claude/running-agents/d.4"     # not a pane id
+printf '%%5\n%%6\n' > "$RH/.claude/running-agents/e.5"     # multi-line: BOTH tokens protected
+printf '%%8 %%9\n'  > "$RH/.claude/running-agents/f.6"     # two tokens on ONE line: split, not merged
+rlib(){ HOME="$RH" FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
+eq "_registry_tokens normalizes CRLF/padding, splits lines AND words, drops empty + garbage" "%3 %7 %5 %6 %8 %9" \
+   "$(rlib '_registry_tokens' | tr '\n' ' ' | sed 's/ $//')"
+# Glob metacharacters in a corrupted line are DATA, not patterns: the unquoted word-split
+# would pathname-expand '%*' against the invoking CWD, emitting a FILENAME (which can pass
+# the %N shape check) as a token. Found by the reviewer subagent's first dry-run (DX-jn-cc-005).
+printf '%%*\n' > "$RH/.claude/running-agents/g.7"
+GLOBDIR="$(mktemp -d)"; : > "$GLOBDIR/%3-decoy"
+eq "_registry_tokens never glob-expands a corrupted line against the CWD" "" \
+   "$(cd "$GLOBDIR" && rlib '_registry_tokens' | grep -- '-decoy')"
+rm -f "$RH/.claude/running-agents/g.7"; rm -rf "$GLOBDIR"
+
+# The kill decision must come from the SESSION'S OWN pane list, not solely registry->display-message.
+# Each of these killed a live agent before (found by adversarial review).
+KILLSTUB='FL_HOME_SESSION=main; FL_EXT_SESSION=x; _session_exists(){ return 0; }; _close_iterm_window(){ :; }'
+eq "_teardown_ext refuses when list-panes -a omits the agent's pane (correlated partial reply)" "refused" \
+   "$(rlib "$KILLSTUB
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; 'display-message -p -t') echo ''; return 0;; esac
+              case \"\$1\" in list-panes) echo '%1';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *KILLED*) echo FAIL_OPEN;; *) echo refused;; esac")"
+# NOTE: the refusal here fires via the DIRECT pane-list check (%3 is in list-panes), not the
+# corroboration equality it is named for — correct as a regression test for the original kill
+# (display-message was then the sole oracle); the equality branch itself is pinned two tests down.
+eq "_teardown_ext refuses when display-message reports a WRONG non-empty session" "refused" \
+   "$(rlib "$KILLSTUB
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; 'display-message -p -t') echo 'othersess'; return 0;; esac
+              case \"\$1\" in list-panes) echo '%3';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *KILLED*) echo FAIL_OPEN;; *) echo refused;; esac")"
+eq "_teardown_ext refuses when the registry directory is missing" "refused" \
+   "$(HOME=/tmp/fl-no-such-home-$$ FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'
+      $KILLSTUB
+      tmux(){ case \"\$1\" in list-panes) echo '%3';; kill-session) echo KILLED;; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *KILLED*) echo FAIL_OPEN;; *) echo refused;; esac")"
+# Shell option state is a guard input too: inherited noglob (exported SHELLOPTS) blinds
+# BOTH registry readdir globs — the registry reads as empty and the kill proceeds past a
+# registered agent. Without the entry guard this scenario KILLS (found by reviewer R4).
+eq "_teardown_ext refuses under inherited noglob (registry globs go blind)" "refused" \
+   "$(rlib "$KILLSTUB
+      set -f
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; esac
+              case \"\$1\" in list-panes) echo '%1';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *noglob*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo \"\$out\";; esac")"
+# The corroboration EQUALITY branch on its own: token NOT in the session's pane list, but
+# display-message resolves it and claims it IS in ext. Deleting the branch must redden this.
+eq "_teardown_ext refuses when corroboration places an off-list pane in ext" "refused" \
+   "$(rlib "$KILLSTUB
+      _registry_tokens(){ echo '%3'; }
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; 'display-message -p -t') echo 'x'; return 0;; esac
+              case \"\$1\" in list-panes) echo '%1';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *'still hosts agent pane'*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo \"\$out\";; esac")"
+# The dead-agent path must not trust a LONE negative from display-message: rc!=0 while the
+# pane is still visible server-wide is tmux contradicting itself. (Genuine death is absent
+# from -a too — the dead-agent control below stays green.)
+eq "_teardown_ext refuses when display-message errors but the pane exists server-wide" "refused" \
+   "$(rlib "$KILLSTUB
+      _registry_tokens(){ echo '%3'; }
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; 'display-message -p -t') return 1;; esac
+              case \"\$1 \$2\" in 'list-panes -a') printf '%s\n' '%1' '%3'; return 0;; esac
+              case \"\$1\" in list-panes) echo '%1';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *'exists server-wide'*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo \"\$out\";; esac")"
+# An EMPTY list-panes -a must never corroborate death: ext's own list already enumerated
+# non-empty and -a is a superset of -s, so a blank -a is a contradiction by construction.
+# (The dead-agent control below stays green — its -a reply is non-empty.)
+eq "_teardown_ext refuses when display-message errors and list-panes -a is empty" "refused" \
+   "$(rlib "$KILLSTUB
+      _registry_tokens(){ echo '%3'; }
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; 'display-message -p -t') return 1;; esac
+              case \"\$1 \$2\" in 'list-panes -a') return 0;; esac
+              case \"\$1\" in list-panes) echo '%1';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *'cannot enumerate the server'*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo \"\$out\";; esac")"
+# A WHITESPACE-ONLY session name is 'no session' wearing padding — it must hit the
+# no-session refusal, not read as 'agent is elsewhere'.
+eq "_teardown_ext refuses when a pane reports a whitespace-only session" "refused" \
+   "$(rlib "$KILLSTUB
+      _registry_tokens(){ echo '%3'; }
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; 'display-message -p -t') echo ' '; return 0;; esac
+              case \"\$1\" in list-panes) echo '%1';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *'reports no session'*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo \"\$out\";; esac")"
+# An UNREADABLE registry entry is UNKNOWN content (it may name a pane in this session) and must
+# refuse — reproduced kill: tr failed silently, the token vanished, the agent went unprotected.
+# Readable-but-garbage stays dropped (see the _registry_tokens normalization test above).
+URH="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$URH/.claude/running-agents"
+printf '%%3\n' > "$URH/.claude/running-agents/u.1"; chmod 000 "$URH/.claude/running-agents/u.1"
+eq "_teardown_ext refuses when a registry file is unreadable" "refused" \
+   "$(HOME="$URH" FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'
+      $KILLSTUB
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; esac
+              case \"\$1\" in list-panes) echo '%3';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *'not a readable file'*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo \"\$out\";; esac")"
+chmod 600 "$URH/.claude/running-agents/u.1"
+DRH="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$DRH/.claude/running-agents/notafile.9"
+eq "_teardown_ext refuses when a registry entry is dir-shaped" "refused" \
+   "$(HOME="$DRH" FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'
+      $KILLSTUB
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; esac
+              case \"\$1\" in list-panes) echo '%3';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *'not a readable file'*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo \"\$out\";; esac")"
+
+# CONTROL. Without this, a guard that refuses unconditionally would pass every test above.
+EH="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$EH/.claude/running-agents"
+eq "_teardown_ext DOES tear down a session with no agents in it (the guard isn't vacuous)" "killed" \
+   "$(HOME="$EH" FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'
+      $KILLSTUB
+      tmux(){ case \"\$1 \$2 \$3\" in 'display-message -p #{pid}') return 0;; esac
+              case \"\$1\" in list-panes) echo '%99';; kill-session) echo KILLED;; show-options) echo '';; *) return 0;; esac; }
+      out=\$(_teardown_ext 2>&1); case \"\$out\" in *KILLED*) echo killed;; *) echo \"over-refused: \$out\";; esac")"
+
+# Config footgun: WORKFLOW_FLEET_EXT_SESSION=main would make `single` tear down the home
+# session and every agent in it.
+eq "_teardown_ext refuses when the external session IS the home session" "refused" \
+   "$(lib 'FL_HOME_SESSION=main; FL_EXT_SESSION=main
+           _session_exists(){ return 0; }; _close_iterm_window(){ :; }
+           _registry_tokens(){ echo "%999"; }
+           tmux(){ case "$1" in list-panes) echo "%1";; kill-session) echo KILLED;; *) return 0;; esac; }
+           out=$(_teardown_ext 2>&1); case "$out" in *"it is the home session"*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo "$out";; esac')"
+
+# The guard must not depend on tmux liveness. `live_agents` filters through fleet_alive ->
+# `tmux list-panes -a`; a transient hiccup there silently drops an agent, which for a destroy
+# guard is a FAIL-OPEN (reproduced under CPU load by an adversarial review). Tokens are read
+# from disk instead.
+eq "_teardown_ext refuses even when tmux liveness goes blind (registry read from disk)" "refused" \
+   "$(lib 'FL_HOME_SESSION=main; FL_EXT_SESSION=x
+           _session_exists(){ return 0; }
+           _close_iterm_window(){ :; }
+           live_agents(){ echo ""; }
+           _registry_tokens(){ echo "%3"; }
+           tmux(){ case "$1 $2 $3" in "display-message -p #{pid}") return 0;;
+                                     "display-message -p -t") echo "x";; esac
+                   case "$1" in list-panes) echo "%3";; kill-session) echo KILLED;; show-options) echo "";; *) return 0;; esac; }
+           out=$(_teardown_ext 2>&1); case "$out" in *"still hosts agent pane"*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo "$out";; esac')"
+
+# The verification review's residual: a PARTIAL list-panes reply that omits the agent's pane.
+# The pane exists server-wide but its session cannot be resolved -> tmux is inconsistent -> refuse.
+# The pane is NOT in the ext session's own list, so the direct check misses it. display-message
+# then RESOLVES the pane (exit 0) but reports no session — tmux contradicting itself. Refuse.
+# Exit status, not emptiness, is the oracle for "does this pane exist": tmux errors on unknown.
+eq "_teardown_ext refuses when a pane resolves but reports no session" "refused" \
+   "$(lib 'FL_HOME_SESSION=main; FL_EXT_SESSION=x
+           _session_exists(){ return 0; }
+           _close_iterm_window(){ :; }
+           _registry_tokens(){ echo "%3"; }
+           tmux(){ case "$1 $2 $3" in "display-message -p #{pid}") return 0;;
+                                     "display-message -p -t") echo ""; return 0;; esac
+                   case "$1" in list-panes) echo "%1";; kill-session) echo KILLED;; show-options) echo "";; *) return 0;; esac; }
+           out=$(_teardown_ext 2>&1); case "$out" in *"reports no session"*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo "$out";; esac')"
+
+# …but a pane tmux says does NOT exist (non-zero exit) is a dead agent, and must not block teardown.
+eq "_teardown_ext allows teardown when a registry pane no longer exists (dead agent)" "killed" \
+   "$(lib 'FL_HOME_SESSION=main; FL_EXT_SESSION=x
+           _session_exists(){ return 0; }
+           _close_iterm_window(){ :; }
+           _registry_tokens(){ echo "%3"; }
+           tmux(){ case "$1 $2 $3" in "display-message -p #{pid}") return 0;;
+                                     "display-message -p -t") return 1;; esac
+                   case "$1" in list-panes) echo "%1";; kill-session) echo KILLED;; show-options) echo "";; *) return 0;; esac; }
+           out=$(_teardown_ext 2>&1); case "$out" in *KILLED*) echo killed;; *) echo "over-refused: $out";; esac')"
+
+# tmux that will not even answer a trivial query -> its later answers mean nothing -> refuse.
+eq "_teardown_ext refuses when tmux answers nothing at all" "refused" \
+   "$(lib 'FL_HOME_SESSION=main; FL_EXT_SESSION=x
+           _session_exists(){ return 0; }
+           _close_iterm_window(){ :; }
+           _registry_tokens(){ echo ""; }
+           tmux(){ case "$1" in kill-session) echo KILLED;; *) return 1;; esac; }
+           out=$(_teardown_ext 2>&1); case "$out" in *"not answering"*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo "$out";; esac')"
+
+# The tty parse: iTerm returning a winid with NO tty must not pass the non-empty guard.
+eq "_spawn_ext_client rejects a winid with no tty" "rejected" \
+   "$(lib 'res="22361"
+           winid="${res%% *}"; wintty="${res##* }"
+           case "$res" in *" "*) : ;; *) wintty="" ;; esac
+           case "$wintty" in /dev/*) : ;; *) wintty="" ;; esac
+           [ -n "$winid" ] && [ -n "$wintty" ] && echo accepted || echo rejected')"
+eq "_spawn_ext_client accepts a real winid + tty" "accepted" \
+   "$(lib 'res="22361 /dev/ttys016"
+           winid="${res%% *}"; wintty="${res##* }"
+           case "$res" in *" "*) : ;; *) wintty="" ;; esac
+           case "$wintty" in /dev/*) : ;; *) wintty="" ;; esac
+           [ -n "$winid" ] && [ -n "$wintty" ] && echo accepted || echo rejected')"
+
+# An empty pane enumeration must never read as "no agents here".
+eq "_teardown_ext fails CLOSED when it cannot enumerate the session" "refused" \
+   "$(lib 'FL_HOME_SESSION=main; FL_EXT_SESSION=zzz
+           _session_exists(){ return 0; }
+           _close_iterm_window(){ :; }
+           tmux(){ case "$1" in list-panes) echo "";; kill-session) echo KILLED;; *) return 0;; esac; }
+           out=$(_teardown_ext 2>&1); case "$out" in *"cannot enumerate"*) echo refused;; *KILLED*) echo FAIL_OPEN;; *) echo "$out";; esac')"
+# NOT `! producer | grep -q KILLED` — that passes when the producer emits NOTHING (a crash).
+# Capture, assert non-empty, then assert the absence.
+td_out="$(lib 'FL_HOME_SESSION=notmain; FL_EXT_SESSION=main
+           _close_iterm_window(){ echo CLOSED; }
+           tmux(){ case "$1" in kill-session) echo KILLED;; show-options) echo "";; *) command tmux -L '"$SOCKET"' "$@";; esac; }
+           _teardown_ext 2>&1')"
+ok "_teardown_ext actually ran (non-empty output, so the check below can fail)" "[ -n \"\$td_out\" ]"
+eq "_teardown_ext emits no kill-session when an agent is present" "0" \
+   "$(printf '%s\n' "$td_out" | grep -c KILLED)"
+# Same trap: capture first, prove the dry-run produced commands, then assert none are destructive.
+dry_out="$(run wide --dry-run 2>/dev/null)"
+ok "wide --dry-run actually emits commands (so the check below can fail)" "[ -n \"\$dry_out\" ]"
+eq "wide --dry-run emits no destructive verb" "0" \
+   "$(printf '%s\n' "$dry_out" | grep -cE 'kill-|respawn')"
+ok "wide --dry-run leaves the window set unchanged" \
+   "[ \"\$(t list-windows -t main -F '#{window_name}' | tr '\n' ',')\" = '$after1' ]"
+
+# --------------------------------------------------------------------------------
+# Everything below MUTATES the fixture — keep it last.
+# This is the only place `wide` is executed for real. It retires two risks at once: that the
+# 12-pane join order was only ever reasoned about, and that idempotency was only proven for
+# name-windows.
+echo; echo "wide, executed for real"
+run wide >/dev/null 2>&1
+eq "wide exits 0" "0" "$?"
+
+feat_win="$(t list-panes -a -F '#{pane_id} #{window_id}' | awk -v p="$P_A" '$1==p{print $2}')"
+eq "the features window holds exactly all four agents' cells" \
+   "$(printf '%s\n' "$P_A" "$P_B" "$P_D" "$P_E" "$P_I" "$P_J" "$P_K" "$P_L" | sort | tr '\n' ' ')" \
+   "$(t list-panes -t "$feat_win" -F '#{pane_id}' | sort | tr '\n' ' ')"
+eq "wide is a 2x2: f3 is BELOW f1, f4 BELOW f2" "yes" \
+   "$(t list-panes -t "$feat_win" -F '#{pane_id} #{pane_top}' | awk -v a="$P_A" -v c="$P_I" -v b="$P_D" -v d="$P_K" '
+      $1==a{x=$2} $1==c{y=$2} $1==b{z=$2} $1==d{w=$2} END{print (y>x && w>z) ? "yes" : "no"}')"
+eq "f1's claude pane is left of its companion" "yes" \
+   "$(t list-panes -t "$feat_win" -F '#{pane_id} #{pane_left}' | awk -v a="$P_A" -v b="$P_B" '$1==a{x=$2} $1==b{y=$2} END{print (x<y)?"yes":"no"}')"
+eq "f2's cell is to the right of f1's" "yes" \
+   "$(t list-panes -t "$feat_win" -F '#{pane_id} #{pane_left}' | awk -v b="$P_B" -v d="$P_D" '$1==b{x=$2} $1==d{y=$2} END{print (x<y)?"yes":"no"}')"
+eq "no pane was destroyed — all 12 fixture panes still live" "12" \
+   "$(t list-panes -a -F '#{pane_id}' | wc -l | tr -d ' ')"
+eq "the window is named for its residents" "features" \
+   "$(t display-message -p -t "$feat_win" '#{window_name}')"
+
+# EXACT, not a range. `balance_cells` runs last and heals a bad build_cell resize, so a loose
+# range check here passes even when build_cell is broken — the structural grep above is what
+# guards that. What this must pin is _balance_cell's own arithmetic on real panes.
+#
+# (The old "the two cells did not steal columns from each other" assertion lived here. It was
+# VACUOUS: a forced 40-column overshoot still passed it, because the cell boundary is the
+# top-level split and _balance_cell only moves the claude/companion divider inside a cell.
+# Deleted rather than left as decoration.)
+pw(){ t list-panes -t "$feat_win" -F '#{pane_id} #{pane_width}' | awk -v p="$1" '$1==p{print $2}'; }
+claude_w="$(pw "$P_A")"; comp_w="$(pw "$P_B")"; cell_w=$(( claude_w + comp_w + 1 ))
+# Tolerance 1: tmux splits integer columns, so 60% of an odd cell rounds. Exact equality here
+# is flaky under load, which is worse than a loose check. The exact arithmetic is pinned by the
+# stubbed `_balance_cell computes 60% of the CELL` unit test above, where nothing rounds.
+eq "f1's claude pane is 60% of its cell, +/-1 col (cell=${cell_w}, claude=${claude_w})" "yes" \
+   "$(awk -v c="$claude_w" -v t="$(( cell_w * 60 / 100 ))" 'BEGIN{d=c-t; if(d<0)d=-d; print (d<=1)?"yes":"no (want "t")"}')"
+ok "f1's companion column is usable, not clamped to 1 col (got ${comp_w})" "[ '$comp_w' -ge 15 ]"
+# Guards the JOIN STRUCTURE, not the balance: cell widths come from the 2x2 split, and
+# _balance_cell only moves the divider inside a cell. A 200-col window splits 100/99 (+border),
+# so the four cells must agree within 1. A wrong join order (three columns, say) breaks this.
+eq "the 2x2 join order yields four evenly-sized cells (within 1 col)" "yes" \
+   "$(for pair in "$P_A $P_B" "$P_D $P_E" "$P_I $P_J" "$P_K $P_L"; do
+        set -- $pair; echo $(( $(pw "$1") + $(pw "$2") + 1 ))
+      done | sort -n | awk 'NR==1{min=$1} {max=$1} END{print (max-min<=1)?"yes":"no ("min".."max")"}')"
+
+echo; echo "canonical window order: cc, features, review/test, others"
+eq "_window_rank: coordinator first"        "0"   "$(lib '_window_rank 0 x-cc' 2>/dev/null || lib '_role_of(){ echo coordinator; }; _window_rank 0 zz')"
+eq "_window_rank: feature by agent number"  "101" "$(lib '_window_rank 0 x-1')"
+eq "_window_rank: features-2 sorts after features-1" "103" "$(lib '_window_rank 0 x-3 x-4')"
+eq "_window_rank: review/test after features" "200" "$(lib '_window_rank 0 x-pr x-test-1')"
+eq "_window_rank: agent-free windows last, keeping their index" "307" "$(lib '_window_rank 7')"
+# A failed park must still renumber. Otherwise windows are stranded at 900+, index 900 stays
+# occupied, and EVERY later run re-fails — on every SessionStart, forever. (Found by review.)
+ORDSTUB='_session_exists(){ return 0; }
+         _pane_rows(){ printf "%%1\tmain\t@2\t/tmp\n%%3\tmain\t@1\t/tmp\n"; }
+         live_agents(){ printf "zz-cc\t%%1\t/tmp\tcoordinator\nzz-1\t%%3\t/tmp\tfeature\n"; }
+         tmux(){ case "$1" in list-windows) printf "@1\n@2\n";; *) return 0;; esac; }'
+eq "_order_windows renumbers even when a park fails (nothing stranded at 900+)" "RENUMBERED" \
+   "$(lib "$ORDSTUB
+           _rw(){ case \"\$1\" in move-window) return 1;; esac; return 0; }
+           _renumber(){ echo RENUMBERED; }
+           _order_windows main 2>/dev/null" | head -1)"
+eq "_order_windows reports the failure to its caller" "1" \
+   "$(lib "$ORDSTUB
+           _rw(){ case \"\$1\" in move-window) return 1;; esac; return 0; }
+           _renumber(){ :; }
+           _order_windows main >/dev/null 2>&1; echo \$?")"
+eq "_order_windows parks in rank order (cc before the feature agent)" "@2 @1" \
+   "$(lib "$ORDSTUB
+           _rw(){ [ \"\$1\" = move-window ] && printf '%s ' \"\$4\"; return 0; }
+           _renumber(){ :; }
+           _order_windows main 2>/dev/null" | sed 's/ $//')"
+
+ok "ordering is idempotent — a second name-windows emits nothing" \
+   "[ -z \"\$(run name-windows --dry-run 2>/dev/null)\" ]"
+
+echo; echo "windows renumber instead of leaving holes"
+eq "no gaps in the home session's window indices" "yes" \
+   "$(t list-windows -t main -F '#{window_index}' | awk 'NR!=$1{bad=1} END{print bad?"no":"yes"}')"
+
+echo; echo "wide moves the grid into a DEDICATED session once one is attached"
+eq "with no client on 'wide', the grid stays in main (never crushed into an 80x24 session)" \
+   "main" "$(t list-windows -a -F '#{window_id} #{session_name}' | awk -v w="$feat_win" '$1==w{print $2}')"
+ok "a grouped session would have shared the window; a dedicated one does not" \
+   "! t has-session -t =wide 2>/dev/null"
+
+echo; echo "wide is idempotent, even against a duplicate window name"
+# tmux allows two windows to share a name. If the target were resolved by NAME, the idempotency
+# check could compare the wrong window, break out a second `features`, and do it again on every
+# re-run — unbounded and never convergent. Resolving from the seed pane fixes it. Mutating
+# _assemble_prelude back to a name lookup turns the assertion below red.
+t new-window -d -t main -n features -c "$T/pr" 'sleep 600'
+decoy_win="$(t list-windows -t main -F '#{window_id} #{window_name}' | awk -v r="$feat_win" '$2=="features" && $1!=r{print $1; exit}')"
+[ -n "$decoy_win" ] || { echo "FATAL: decoy window not created"; exit 1; }
+# Move the decoy to the LOWEST index so a name lookup would find IT first, not the real one.
+# Without this the assertion passes on window ordering rather than on the seed-pane mechanism.
+t move-window -s "$decoy_win" -t main:0 2>/dev/null
+eq "the decoy sorts BEFORE the real features window" "$decoy_win" \
+   "$(t list-windows -a -F '#{window_id} #{window_name}' | awk '$2=="features"{print $1; exit}')"
+eq "a decoy 'features' window exists" "2" \
+   "$(t list-windows -t main -F '#{window_name}' | grep -cx features)"
+# Behavioral, not string-exact: global options, a cosmetic re-balance, and the pending
+# move-window to the external session (which this scratch server can never have a client for)
+# are all fine to re-emit. RE-ASSEMBLING THE GRID is not. Reverting _assemble_prelude to a name
+# lookup makes this non-zero.
+eq "re-running wide does NOT re-assemble the grid (already assembled)" "0" \
+   "$(run wide --dry-run 2>/dev/null | grep -cE 'join-pane|break-pane')"
+run wide >/dev/null 2>&1
+eq "a real re-run does not break out a third features window" "2" \
+   "$(t list-windows -t main -F '#{window_name}' | grep -cx features)"
+eq "and the cells are still intact" \
+   "$(printf '%s\n' "$P_A" "$P_B" "$P_D" "$P_E" "$P_I" "$P_J" "$P_K" "$P_L" | sort | tr '\n' ' ')" \
+   "$(t list-panes -t "$feat_win" -F '#{pane_id}' | sort | tr '\n' ' ')"
+
+# The decoy `features` window and the w1 remnant (skip-marked + unowned panes) are agent-free,
+# so the script correctly leaves them alone. They would pollute name-greps below, so anchor every
+# assertion from here on to the AGENTS' panes, and retire the decoy.
+t kill-window -t "$decoy_win" 2>/dev/null
+win_of(){ t list-panes -a -F '#{pane_id} #{window_name}' | awk -v q="$1" '$1==q{print $2; exit}'; }
+
+echo; echo "dual: two windows that derive the same name get disambiguated"
+run dual >/dev/null 2>&1
+eq "dual exits 0" "0" "$?"
+eq "the two feature windows are features-1 and features-2 (not both 'features')" "features-1 features-2" \
+   "$(for p in $P_A $P_D $P_I $P_K; do win_of "$p"; done | sort -u | tr '\n' ' ' | sed 's/ $//')"
+eq "features-1 holds f1 + f2" "features-1 features-1" "$(win_of "$P_A") $(win_of "$P_D")"
+eq "features-2 holds f3 + f4" "features-2 features-2" "$(win_of "$P_I") $(win_of "$P_K")"
+eq "dual STACKS the pair: f2 below f1" "yes" \
+   "$(t list-panes -a -F '#{pane_id} #{pane_top}' | awk -v a="$P_A" -v b="$P_D" '$1==a{x=$2} $1==b{y=$2} END{print (y>x)?"yes":"no"}')"
+eq "still 12 panes; nothing destroyed" "12" "$(t list-panes -a -F '#{pane_id}' | wc -l | tr -d ' ')"
+
+echo; echo "single: every feature agent comes home to its own window"
+run single >/dev/null 2>&1
+eq "single exits 0" "0" "$?"
+eq "each feature agent is alone in a window named for it" "x-1 x-2 x-3 x-4" \
+   "$(for p in $P_A $P_D $P_I $P_K; do win_of "$p"; done | sort | tr '\n' ' ' | sed 's/ $//')"
+eq "no feature agent is left in a features* window" "0" \
+   "$(for p in $P_A $P_D $P_I $P_K; do win_of "$p"; done | grep -c '^features' || true)"
+eq "still 12 panes; nothing destroyed" "12" "$(t list-panes -a -F '#{pane_id}' | wc -l | tr -d ' ')"
+eq "the review/test co-tenant window is untouched by single" "1" \
+   "$(t list-windows -a -F '#{window_name}' | grep -cx review-test)"
+
+# --------------------------------------------------------------------------------
+# boot (DX-jn-cc-007). Own home + own tmux session (bootsess) so the layout fixtures
+# above stay untouched. Every absence-shaped assertion is POSITIVELY PAIRED (exit 0 +
+# the expected report line): pre-implementation, `boot` hits the unknown-verb dispatch
+# (usage, exit 2), and an unpaired "no window created" would pass vacuously against it.
+echo; echo "boot: manifest parsing + validation (loud-fail, never empty-fleet exit 0)"
+
+t new-session -d -x 200 -y 50 -s bootsess -n seed -c "$T" 'sleep 600'
+mkdir -p "$T/boot-1" "$T/boot-2" "$T/boot-3" "$T/boot-4"
+
+# A provably dead pid: a subshell that has already been reaped.
+( : ) & DEADPID=$!; wait "$DEADPID" 2>/dev/null
+
+# Per-case boot homes. bmk <home> writes the standard .claude skeleton.
+bmk(){ mkdir -p "$1/.claude/running-agents" "$1/.claude/agents" "$1/.config" "$1/.claude/projects"; }
+# manifest <home> <entries-json…> — wraps entries in the worktrees envelope.
+manifest(){ local h="$1"; shift; printf '{ "worktrees": [ %s ] }\n' "$*" > "$h/.config/goals-worktrees.json"; }
+brun(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=bootsess FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="${BPANE:-$TMUX_PANE}" bash "$SCRIPT" "$@"; }
+blib(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=bootsess FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
+bwins(){ t list-windows -t bootsess -F '#{window_name}' | sort | tr '\n' ' ' | sed 's/ $//'; }
+
+# Corrupt JSON → loud non-zero, never an empty-fleet success.
+CJH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$CJH"
+printf '{ not json' > "$CJH/.config/goals-worktrees.json"
+cj_out="$(brun "$CJH" boot 2>&1)"; cj_rc=$?
+eq "corrupt manifest JSON → non-zero exit"          "1" "$([ "$cj_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…with an explicit manifest error, not silence"  "1" "$(printf '%s\n' "$cj_out" | grep -ci 'manifest')"
+# Missing file → same loud failure (a fleet machine always has one).
+MFH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$MFH"
+mf_out="$(brun "$MFH" boot 2>&1)"; mf_rc=$?
+eq "missing manifest file → non-zero exit"          "1" "$([ "$mf_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…names the manifest in the error"               "1" "$(printf '%s\n' "$mf_out" | grep -ci 'manifest')"
+# Unreadable file → loud failure.
+UBH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$UBH"
+manifest "$UBH" '{"path": "'"$T/boot-1"'", "lane": 1, "agent": "b-1"}'
+chmod 000 "$UBH/.config/goals-worktrees.json"
+ub_rc=0; brun "$UBH" boot >/dev/null 2>&1 || ub_rc=$?
+eq "unreadable manifest → non-zero exit"            "1" "$([ "$ub_rc" -ne 0 ] && echo 1 || echo 0)"
+chmod 600 "$UBH/.config/goals-worktrees.json"
+# python3 gone (stubbed to the command-not-found rc) → loud failure, not empty fleet.
+py_rc=0; blib "$CJH" 'python3(){ return 127; }; _boot_manifest_agents' >/dev/null 2>&1 || py_rc=$?
+eq "python3 unavailable → _boot_manifest_agents fails non-zero" "1" "$([ "$py_rc" -ne 0 ] && echo 1 || echo 0)"
+
+echo; echo "boot: garbage entries never reach the destructive glob"
+GBH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$GBH"
+# evXil.<dead> matches the rm glob a naive 'ev*il.*' sweep would expand — it must survive.
+printf 'cwd:%s\n' "$T/boot-1" > "$GBH/.claude/running-agents/evXil.$DEADPID"
+manifest "$GBH" '{"path": "'"$T/boot-1"'", "lane": 1, "agent": "ev*il"}'
+gb_before="$(bwins)"
+gb_rc=0; gb_out="$(brun "$GBH" boot 2>&1)" || gb_rc=$?
+eq "glob-metachar agent name → non-zero exit"       "1" "$([ "$gb_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…and names the offending agent"                 "1" "$(printf '%s\n' "$gb_out" | grep -c 'ev\*il')"
+ok "…the decoy registry entry survived (no rm ran)" "[ -f '$GBH/.claude/running-agents/evXil.$DEADPID' ]"
+eq "…and no window was created"                     "$gb_before" "$(bwins)"
+RPH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$RPH"
+manifest "$RPH" '{"path": "relative/dir", "lane": 1, "agent": "b-1"}'
+rp_rc=0; brun "$RPH" boot >/dev/null 2>&1 || rp_rc=$?
+eq "relative path entry → non-zero exit"            "1" "$([ "$rp_rc" -ne 0 ] && echo 1 || echo 0)"
+
+echo; echo "boot: the cold-boot path (skip live / sweep dead / create / launch / report)"
+BH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$BH"
+REC="$BH/launch.rec"
+# b-1: dead registry entry + a prior-session projects dir  → swept, booted with --continue
+# b-2: LIVE registration (cwd token: pid-only liveness)    → skipped, never pruned
+# b-3: no registry entry, no projects dir                  → booted fresh (plain claude)
+# b-held: active:false                                     → held, no window
+# b-cc: registry token = OUR $TMUX_PANE → fleet_find_self  → skipped (self)
+# b-gone: path does not exist                              → warned, others still boot
+# (plus one plain worktree entry with no agent field       → ignored entirely)
+printf 'cwd:%s\n' "$T/boot-1" > "$BH/.claude/running-agents/b-1.$DEADPID"
+printf '%s\n' "$T/boot-1"     > "$BH/.claude/agents/b-1.cwd"
+printf 'cwd:%s\n' "$T/boot-2" > "$BH/.claude/running-agents/b-2.$$"
+printf '%s\n' "$T/boot-2"     > "$BH/.claude/agents/b-2.cwd"
+printf '%s\n' "$TMUX_PANE"    > "$BH/.claude/running-agents/b-cc.$$"
+printf '%s\n' "$T/boot-4"     > "$BH/.claude/agents/b-cc.cwd"
+mkdir -p "$BH/.claude/projects/$(printf '%s' "$T/boot-1" | tr -c 'A-Za-z0-9' '-')"
+: > "$BH/.claude/projects/$(printf '%s' "$T/boot-1" | tr -c 'A-Za-z0-9' '-')/s.jsonl"
+manifest "$BH" \
+  '{"path": "'"$T/boot-2"'", "lane": 2, "agent": "b-2"},' \
+  '{"path": "'"$T/boot-1"'", "lane": 1, "agent": "b-1"},' \
+  '{"path": "'"$T/boot-3"'", "lane": 3, "agent": "b-3"},' \
+  '{"path": "'"$T"'/held",   "lane": 5, "agent": "b-held", "active": false},' \
+  '{"path": "'"$T/boot-4"'", "lane": 4, "agent": "b-cc"},' \
+  '{"path": "'"$T"'/no-such-dir", "lane": 6, "agent": "b-gone"},' \
+  '{"path": "'"$T"'/plain",  "lane": 7}'
+boot_out="$(FLEET_BOOT_LAUNCH_RECORDER="$REC" brun "$BH" boot 2>&1)"; boot_rc=$?
+eq "boot exits 0"                                   "0" "$boot_rc"
+eq "b-2 reported live"            "1" "$(printf '%s\n' "$boot_out" | grep -Ec 'b-2 +live')"
+eq "b-1 reported booted --continue" "1" "$(printf '%s\n' "$boot_out" | grep -Ec 'b-1 +booted \(claude --continue\)')"
+eq "b-3 reported booted fresh"    "1" "$(printf '%s\n' "$boot_out" | grep -Ec 'b-3 +booted \(claude\)')"
+eq "b-held reported held"         "1" "$(printf '%s\n' "$boot_out" | grep -Ec 'b-held +held')"
+eq "b-cc reported skipped (self)" "1" "$(printf '%s\n' "$boot_out" | grep -Ec 'b-cc +skipped \(self\)')"
+eq "b-gone reported missing-path" "1" "$(printf '%s\n' "$boot_out" | grep -Ec 'b-gone +missing-path')"
+ok "b-1's dead registry entry was swept"            "[ ! -f '$BH/.claude/running-agents/b-1.$DEADPID' ]"
+ok "b-2's LIVE registry entry was NOT pruned"       "[ -f '$BH/.claude/running-agents/b-2.$$' ]"
+eq "windows created for b-1 and b-3 only (b-2 live, b-cc self, b-held held)" \
+   "b-1 b-3 seed" "$(bwins)"
+eq "b-1's window opened at its manifest cwd" "$T/boot-1" \
+   "$(t list-panes -s -t bootsess -F '#{window_name} #{pane_current_path}' | awk '$1=="b-1"{print $2; exit}')"
+eq "the recorder saw launches + monocle keystrokes, per-agent, in canonical (agent-number) order" \
+   "b-1:claude --continue,b-1:monocle,b-3:claude,b-3:monocle" \
+   "$(awk -F'\t' '{printf "%s:%s,", $1, $2}' "$REC" | sed 's/,$//')"
+eq "the report reminds that resume prompts are human-answered" "1" \
+   "$(printf '%s\n' "$boot_out" | grep -ci 'resume prompt')"
+
+# Cell geometry (DX-jn-cc-012): each booted window is the wide cell — claude full-height
+# on the left (~60%, wider than the right column), right pair stacked (same left edge,
+# equal width, one top one bottom), every pane at the worktree. One canonical shape
+# string so the whole structure is a single strong assertion.
+cellshape(){
+  t list-panes -t "bootsess:$1" -F '#{pane_left} #{pane_top} #{pane_width} #{pane_height} #{window_height} #{pane_current_path}' \
+  | awk -v p="$2" '
+      { n++; if ($6 != p) badpath++
+        if ($1 == 0) { l++; cw=$3; if ($4 == $5) fullh++ }
+        else { r++; if (rl=="") rl=$1; else if ($1 != rl) rleq=1
+               if (rw=="") rw=$3; else if ($3 != rw) rweq=1
+               if ($2 == 0) rtop++; else rbot++ }
+      }
+      END { printf "n=%d badpath=%d left=%d fullh=%d right=%d rtop=%d rbot=%d rsplit=%d cwider=%d",
+              n, badpath+0, l+0, fullh+0, r+0, rtop+0, rbot+0, (rleq+0)+(rweq+0), (cw+0 > rw+0) ? 1 : 0 }'
+}
+CELL_OK="n=3 badpath=0 left=1 fullh=1 right=2 rtop=1 rbot=1 rsplit=0 cwider=1"
+eq "b-1's window is the cell: claude full-height left, stacked right pair, all at the worktree" \
+   "$CELL_OK" "$(cellshape b-1 "$T/boot-1")"
+eq "b-3's window is the cell too" \
+   "$CELL_OK" "$(cellshape b-3 "$T/boot-3")"
+
+echo; echo "boot: idempotent re-run + the window-exists guard"
+rerun_out="$(FLEET_BOOT_LAUNCH_RECORDER="$REC" brun "$BH" boot 2>&1)"; rerun_rc=$?
+eq "re-run exits 0" "0" "$rerun_rc"
+eq "re-run creates no second window"                "b-1 b-3 seed" "$(bwins)"
+eq "re-run reports the existing windows as window-exists (never re-keys a pane it didn't create)" \
+   "2" "$(printf '%s\n' "$rerun_out" | grep -Ec '(b-1|b-3) +window-exists')"
+eq "re-run recorded no new launch" "4" "$(wc -l < "$REC" | tr -d ' ')"
+eq "re-run added no pane to b-1's cell (still exactly 3)" \
+   "3" "$(t list-panes -t bootsess:b-1 -F '#{pane_id}' | wc -l | tr -d ' ')"
+
+echo; echo "boot: liveness asymmetry (skip = pid+pane, sweep = pid-only)"
+LAH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$LAH"
+# Live pid + a pane token that does not exist on this server: not "live" (window gets
+# rebuilt) but NOT swept either — sweeping a live pid is the riskier error.
+printf '%%999\n' > "$LAH/.claude/running-agents/b-1.$$"
+printf '%s\n' "$T/boot-1" > "$LAH/.claude/agents/b-1.cwd"
+manifest "$LAH" '{"path": "'"$T/boot-1"'", "lane": 1, "agent": "b-1"}'
+la_out="$(FLEET_BOOT_LAUNCH_RECORDER="$LAH/rec" brun "$LAH" boot 2>&1)"; la_rc=$?
+eq "live-pid/dead-pane: boot exits 0"               "0" "$la_rc"
+eq "…agent not treated as live (window-exists from the earlier run's window)" \
+   "1" "$(printf '%s\n' "$la_out" | grep -Ec 'b-1 +(booted|window-exists)')"
+ok "…its live-pid registry entry was NOT swept"     "[ -f '$LAH/.claude/running-agents/b-1.$$' ]"
+
+echo; echo "boot: --dry-run mutates nothing"
+DBH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$DBH"
+printf 'cwd:%s\n' "$T/boot-4" > "$DBH/.claude/running-agents/b-4.$DEADPID"
+manifest "$DBH" '{"path": "'"$T/boot-4"'", "lane": 4, "agent": "b-4"}'
+dwins_before="$(bwins)"
+dry_boot="$(brun "$DBH" boot --dry-run 2>&1)"; dry_rc=$?
+eq "dry-run exits 0"                                "0" "$dry_rc"
+eq "dry-run prints the new-window command"          "1" "$(printf '%s\n' "$dry_boot" | grep -c 'new-window.*-n b-4')"
+eq "dry-run prints the send-keys launch"            "1" "$(printf '%s\n' "$dry_boot" | grep -c 'send-keys.*claude')"
+eq "dry-run prints the two cell splits (DX-jn-cc-012)" "2" "$(printf '%s\n' "$dry_boot" | grep -c 'split-window')"
+eq "dry-run prints the monocle keystroke"           "1" "$(printf '%s\n' "$dry_boot" | grep -c 'send-keys.*monocle')"
+ok "dry-run actually emitted commands (so the check below can fail)" "[ -n \"\$dry_boot\" ]"
+eq "dry-run emits no destructive verb"              "0" "$(printf '%s\n' "$dry_boot" | grep -cE 'kill-|respawn')"
+eq "dry-run created no window"                      "$dwins_before" "$(bwins)"
+ok "dry-run did not sweep the dead registry entry"  "[ -f '$DBH/.claude/running-agents/b-4.$DEADPID' ]"
+
+echo; echo "boot: _boot_claude_cmd (lib mode)"
+eq "prior sessions → claude --continue" "claude --continue" "$(blib "$BH" "_boot_claude_cmd '$T/boot-1'")"
+eq "no projects dir → plain claude"     "claude"            "$(blib "$BH" "_boot_claude_cmd '$T/boot-3'")"
+MUNGE_DIR="$T/boot.x_1"; mkdir -p "$MUNGE_DIR"
+mkdir -p "$BH/.claude/projects/$(printf '%s' "$MUNGE_DIR" | tr -c 'A-Za-z0-9' '-')"
+: > "$BH/.claude/projects/$(printf '%s' "$MUNGE_DIR" | tr -c 'A-Za-z0-9' '-')/s.jsonl"
+eq "nonalnum path munges per register-agent's rule (nonalnum→'-', not just '/')" \
+   "claude --continue" "$(blib "$BH" "_boot_claude_cmd '$MUNGE_DIR'")"
+
+echo; echo "boot: cell degradation — a failed split/keystroke never loses the claude launch (DX-jn-cc-012)"
+mkdir -p "$T/boot-dg"
+DGH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$DGH"
+# h-split fails (tmux() re-defined post-source, the established stub pattern; every other
+# verb still reaches the scratch server): full boot_fleet — the launch must survive, the
+# degradation must be REPORTED, and the run's exit must be tainted (loud-failure model).
+manifest "$DGH" '{"path": "'"$T/boot-dg"'", "lane": 1, "agent": "b-dg"}'
+dg_rc=0
+dg_out="$(blib "$DGH" "
+  tmux(){ if [ \"\$1\" = split-window ]; then return 1; fi; command tmux -L \"\$FLEET_TMUX_SOCKET\" \"\$@\"; }
+  export FLEET_BOOT_LAUNCH_RECORDER='$DGH/rec'
+  boot_fleet" 2>&1)" || dg_rc=$?
+eq "h-split failure taints boot's exit (non-zero)"  "1" "$([ "$dg_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…but the claude launch still happened and was reported" \
+   "1" "$(printf '%s\n' "$dg_out" | grep -Ec 'b-dg +booted \(claude\)')"
+eq "…and the degradation is reported, not silent"   "1" "$(printf '%s\n' "$dg_out" | grep -c 'cell DEGRADED')"
+eq "…the claude window exists with its single pane intact" \
+   "1" "$(t list-panes -t bootsess:b-dg -F '#{pane_id}' | wc -l | tr -d ' ')"
+eq "…the launch was recorded, and NO monocle keystroke was" \
+   "b-dg:claude" "$(awk -F'\t' '{printf "%s:%s,", $1, $2}' "$DGH/rec" | sed 's/,$//')"
+
+# v-split fails (h-split runs for real): the single right pane is left AT THE PROMPT —
+# no monocle keystroke (a bare shell is the safe degraded state). Absence of the
+# keystroke is positively paired with the DEGRADED report line.
+DVP="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n b-dv -c "$T/boot-dg" 'sleep 600')"
+dv_rc=0
+dv_out="$(blib "$DGH" "
+  tmux(){ if [ \"\$1\" = split-window ]; then case \" \$* \" in *' -v '*) return 1 ;; esac; fi; command tmux -L \"\$FLEET_TMUX_SOCKET\" \"\$@\"; }
+  export FLEET_BOOT_LAUNCH_RECORDER='$DGH/rec-dv'
+  _boot_cell b-dv '$DVP' '$T/boot-dg'" 2>&1)" || dv_rc=$?
+eq "v-split failure returns 1"                      "1" "$dv_rc"
+eq "…and reports the right pane left at the prompt" "1" "$(printf '%s\n' "$dv_out" | grep -c 'cell DEGRADED (v-split')"
+eq "…h-split pane survives (window has exactly 2 panes)" \
+   "2" "$(t list-panes -t bootsess:b-dv -F '#{pane_id}' | wc -l | tr -d ' ')"
+ok "…no monocle keystroke was recorded"             "[ ! -s '$DGH/rec-dv' ]"
+
+# The monocle keystroke itself fails (real splits, recorder UNSET so the real keying
+# path runs): guarded + reported + return 1 — never an accidental return status.
+DKP="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n b-dk -c "$T/boot-dg" 'sleep 600')"
+dk_rc=0
+dk_out="$(blib "$DGH" "
+  tmux(){ if [ \"\$1\" = send-keys ]; then return 1; fi; command tmux -L \"\$FLEET_TMUX_SOCKET\" \"\$@\"; }
+  _boot_cell b-dk '$DKP' '$T/boot-dg'" 2>&1)" || dk_rc=$?
+eq "monocle keystroke failure returns 1"            "1" "$dk_rc"
+eq "…and is reported, not an accidental status"     "1" "$(printf '%s\n' "$dk_out" | grep -c 'cell DEGRADED (monocle')"
+eq "…both splits survive (window has exactly 3 panes)" \
+   "3" "$(t list-panes -t bootsess:b-dk -F '#{pane_id}' | wc -l | tr -d ' ')"
+
+echo; echo "boot: refocuses the invoking window at the end (DX-jn-cc-013)"
+SEEDP="$(t list-panes -t bootsess:seed -F '#{pane_id}' | head -1)"
+SEEDW="$(t display-message -p -t "$SEEDP" '#{window_id}')"
+t select-window -t bootsess:b-3
+rf_rc=0; BPANE="$SEEDP" brun "$BH" boot >/dev/null 2>&1 || rf_rc=$?
+eq "idempotent re-run (zero launches) exits 0"      "0" "$rf_rc"
+eq "…and hands the selection back to the invoking pane's window" \
+   "$SEEDW" "$(t list-windows -t bootsess -F '#{window_id} #{window_active}' | awk '$2==1{print $1}')"
+# Cosmetic degradation: an unresolvable invoking pane must never taint the run.
+rfx_rc=0; BPANE='%9999' brun "$BH" boot >/dev/null 2>&1 || rfx_rc=$?
+eq "unresolvable invoking pane degrades silently (exit 0)" "0" "$rfx_rc"
+rf_wins_before="$(bwins)"
+rfd="$(BPANE="$SEEDP" brun "$DBH" boot --dry-run 2>&1)"
+eq "dry-run prints the select-window"               "1" "$(printf '%s\n' "$rfd" | grep -c 'select-window')"
+eq "…and still created no window"                   "$rf_wins_before" "$(bwins)"
+
+# --------------------------------------------------------------------------------
+# down (DX-jn-cc-010). Inverse of boot: kill fleet-agent panes, path-keyed, guarded.
+# Own session (downsess) + per-case homes. Panes are killed FOR REAL on the scratch
+# server — before/after `t list-panes` is the oracle. FLEET_DOWN_SETTLE=0 keeps the
+# settle poll from sleeping. Every absence-shaped assertion is positively paired.
+echo; echo "down: the clean path (kill + verify / transient name / self / not-running)"
+
+t new-session -d -x 200 -y 50 -s downsess -n dseed -c "$T" 'sleep 600' 2>/dev/null \
+  || t new-window -d -t downsess -n dseed -c "$T" 'sleep 600' 2>/dev/null || true
+for d in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 other other2; do mkdir -p "$T/dn-$d"; done
+
+dwin(){ t new-window   -d -P -F '#{pane_id}' -t downsess -n "$1" -c "$2" 'sleep 600'; }
+dsplit(){ t split-window -d -P -F '#{pane_id}' -t "downsess:$1" -c "$2" 'sleep 600'; }
+alive(){ t list-panes -a -F '#{pane_id}' | grep -qx "$1"; }
+drun(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=downsess FLEET_TMUX_SOCKET="$SOCKET" FLEET_DOWN_SETTLE=0 TMUX_PANE="${DPANE:-$TMUX_PANE}" bash "$SCRIPT" "$@"; }
+dlib(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=downsess FLEET_TMUX_SOCKET="$SOCKET" FLEET_DOWN_SETTLE=0 TMUX_PANE="${DPANE:-$TMUX_PANE}" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
+dreg(){ printf '%s\n' "$3" > "$1/.claude/running-agents/$2.$$"; printf '%s\n' "$4" > "$1/.claude/agents/$2.cwd"; }
+
+# The clean run: d-1 (claude + companion, plus a skip-marked survivor and a co-tenant at a
+# DIFFERENT cwd in the same window), dt-2 (live under a TRANSIENT registration name — the
+# raison d'être), d-self (registration token == our TMUX_PANE), d-nr (nothing anywhere).
+DKH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$DKH"
+K_C1="$(dwin dka "$T/dn-1")"; K_M1="$(dsplit dka "$T/dn-1")"
+K_S1="$(dsplit dka "$T/dn-1")"; K_O1="$(dsplit dka "$T/dn-other")"
+t set-option -p -t "$K_S1" @fleet-layout-skip 1
+K_C2="$(dwin dkb "$T/dn-2")"
+K_CS="$(dwin dkc "$T/dn-3")"
+for v in K_C1 K_M1 K_S1 K_O1 K_C2 K_CS; do eval "val=\$$v"; [ -n "$val" ] || { echo "FATAL: down fixture pane $v empty"; exit 1; }; done
+dreg "$DKH" d-1                 "$K_C1" "$T/dn-1"
+dreg "$DKH" goals-onchain-2-69  "$K_C2" "$T/dn-2"
+dreg "$DKH" d-self              "$K_CS" "$T/dn-3"
+# a DEAD registration at a targeted path: the pid-only sweep must remove it
+printf 'cwd:%s\n' "$T/dn-1" > "$DKH/.claude/running-agents/d-1-old.$DEADPID"
+printf '%s\n' "$T/dn-1"     > "$DKH/.claude/agents/d-1-old.cwd"
+manifest "$DKH" \
+  '{"path": "'"$T/dn-1"'", "lane": 1, "agent": "d-1"},' \
+  '{"path": "'"$T/dn-2"'", "lane": 2, "agent": "dt-2"},' \
+  '{"path": "'"$T/dn-3"'", "lane": 3, "agent": "d-self"},' \
+  '{"path": "'"$T/dn-4"'", "lane": 4, "agent": "d-nr"}'
+dk_out="$(DPANE="$K_CS" drun "$DKH" down 2>&1)"; dk_rc=$?
+eq "clean down exits 0"                             "0" "$dk_rc"
+eq "d-1 reported downed (2 panes)"  "1" "$(printf '%s\n' "$dk_out" | grep -Ec 'd-1 +downed \(2 panes')"
+eq "dt-2 downed under its TRANSIENT registration name" "1" "$(printf '%s\n' "$dk_out" | grep -Ec 'dt-2 +downed \(1 pane')"
+eq "d-self reported skipped (self) without tainting the rc" "1" "$(printf '%s\n' "$dk_out" | grep -Ec 'd-self +skipped \(self\)')"
+eq "d-nr reported not running"      "1" "$(printf '%s\n' "$dk_out" | grep -Ec 'd-nr +not running')"
+ok "d-1's claude pane is dead"      "! alive '$K_C1'"
+ok "d-1's companion is dead"        "! alive '$K_M1'"
+ok "the transient-name claude pane is dead" "! alive '$K_C2'"
+ok "the skip-marked pane SURVIVED"  "alive '$K_S1'"
+ok "the co-tenant pane at a different cwd SURVIVED" "alive '$K_O1'"
+ok "…and its window survived"       "t list-windows -t downsess -F '#{window_name}' | grep -qx dka"
+ok "self's pane SURVIVED"           "alive '$K_CS'"
+ok "the dead registration at a targeted path was swept"    "[ ! -f '$DKH/.claude/running-agents/d-1-old.$DEADPID' ]"
+ok "the live-pid (dead-pane) registration was NOT swept"   "[ -f '$DKH/.claude/running-agents/d-1.$$' ]"
+rerun_dk="$(DPANE="$K_CS" drun "$DKH" down 2>&1)"; rerun_dk_rc=$?
+eq "re-run is idempotent: exit 0 (skip-marked survivor is sanctioned, not UNACCOUNTED)" "0" "$rerun_dk_rc"
+eq "re-run reports d-1 not running" "1" "$(printf '%s\n' "$rerun_dk" | grep -Ec 'd-1 +not running')"
+
+echo; echo "down: idle gate (busy marker, --force, unreadable dir fails toward BUSY)"
+KBH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$KBH"; mkdir -p "$KBH/.claude/agent-busy"
+B_C="$(dwin dkd "$T/dn-6")"
+dreg "$KBH" d-busy "$B_C" "$T/dn-6"
+touch "$KBH/.claude/agent-busy/d-busy"
+manifest "$KBH" '{"path": "'"$T/dn-6"'", "lane": 6, "agent": "d-busy"}'
+by_out="$(drun "$KBH" down 2>&1)"; by_rc=$?
+eq "busy agent → non-zero exit"     "1" "$([ "$by_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…reported BUSY"                 "1" "$(printf '%s\n' "$by_out" | grep -c 'BUSY')"
+ok "…its pane survived"             "alive '$B_C'"
+fy_out="$(drun "$KBH" down --force 2>&1)"; fy_rc=$?
+eq "--force kills the busy agent (exit 0)" "0" "$fy_rc"
+ok "…its pane is dead"              "! alive '$B_C'"
+# stale marker = idle
+B_C2="$(dwin dke "$T/dn-7")"
+dreg "$KBH" d-stale "$B_C2" "$T/dn-7"
+touch -t 202001010000 "$KBH/.claude/agent-busy/d-stale" 2>/dev/null || touch "$KBH/.claude/agent-busy/d-stale"
+manifest "$KBH" '{"path": "'"$T/dn-7"'", "lane": 7, "agent": "d-stale"}'
+touch -t 202001010000 "$KBH/.claude/agent-busy/d-stale" 2>/dev/null
+st_rc=0; drun "$KBH" down >/dev/null 2>&1 || st_rc=$?
+eq "stale marker reads idle → killed, exit 0" "0" "$st_rc"
+ok "…stale-marked agent's pane is dead" "! alive '$B_C2'"
+# unreadable busy dir = UNKNOWN = BUSY (fail closed)
+B_C3="$(dwin dkf "$T/dn-8")"
+dreg "$KBH" d-ub "$B_C3" "$T/dn-8"
+manifest "$KBH" '{"path": "'"$T/dn-8"'", "lane": 8, "agent": "d-ub"}'
+chmod 000 "$KBH/.claude/agent-busy"
+ub2_out="$(drun "$KBH" down 2>&1)"; ub2_rc=$?
+chmod 700 "$KBH/.claude/agent-busy"
+eq "unreadable busy dir → treated BUSY (non-zero)" "1" "$([ "$ub2_rc" -ne 0 ] && echo 1 || echo 0)"
+ok "…and the pane survived (fail closed)"          "alive '$B_C3'"
+
+echo; echo "down: guard-input matrix (each input stubbed to its failure value → refuse, zero kills)"
+# a reusable live witness pane: any guard refusal must leave it alive
+W_P="$(dwin dkw "$T/dn-10")"
+mkgood(){ local h; h="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$h"
+          dreg "$h" d-ok "$W_P" "$T/dn-10"
+          manifest "$h" '{"path": "'"$T/dn-10"'", "lane": 10, "agent": "d-ok"}'
+          printf '%s' "$h"; }
+gm(){ # gm <desc> <home> [args…] — expect non-zero AND the witness pane alive
+  local desc="$1" h="$2"; shift 2
+  local rc=0; drun "$h" down "$@" >/dev/null 2>&1 || rc=$?
+  eq "$desc → non-zero exit" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+  ok "…zero kills (witness pane alive)" "alive '$W_P'"
+}
+gm "corrupt manifest"    "$CJH"
+gm "missing manifest"    "$MFH"
+chmod 000 "$UBH/.config/goals-worktrees.json"
+gm "unreadable manifest" "$UBH"
+chmod 600 "$UBH/.config/goals-worktrees.json"
+gm "glob-metachar agent name" "$GBH"
+gm "relative path entry"      "$RPH"
+# zero agent entries: parses fine, enumerates nothing — the vacuous-exit-0 trap
+ZAH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$ZAH"
+manifest "$ZAH" '{"path": "'"$T/plain"'", "lane": 9}'
+za_out="$(drun "$ZAH" down 2>&1)"; za_rc=$?
+eq "manifest with NO agent entries → non-zero (never a vacuous 'fleet is down')" "1" "$([ "$za_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…names the empty enumeration" "1" "$(printf '%s\n' "$za_out" | grep -ci 'no agent entries')"
+# registry dir missing
+NRH="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$NRH/.config" "$NRH/.claude/agents"
+manifest "$NRH" '{"path": "'"$T/dn-10"'", "lane": 10, "agent": "d-ok"}'
+gm "registry directory missing" "$NRH"
+# unreadable registry entry
+URH2="$(mkgood)"
+printf '%%1\n' > "$URH2/.claude/running-agents/u.42"; chmod 000 "$URH2/.claude/running-agents/u.42"
+gm "unreadable registry entry" "$URH2"
+chmod 600 "$URH2/.claude/running-agents/u.42"
+# sidecar failure values: a LIVE registration we cannot place → refuse the WHOLE run
+SC_P="$(dwin dkx "$T/dn-9")"
+for sc in missing empty unreadable unresolvable; do
+  SH="$(mkgood)"
+  printf '%s\n' "$SC_P" > "$SH/.claude/running-agents/d-sc.$$"
+  case "$sc" in
+    missing)      : ;;
+    empty)        : > "$SH/.claude/agents/d-sc.cwd" ;;
+    unreadable)   printf '%s\n' "$T/dn-9" > "$SH/.claude/agents/d-sc.cwd"; chmod 000 "$SH/.claude/agents/d-sc.cwd" ;;
+    unresolvable) printf '%s\n' "$T/never-created-dir" > "$SH/.claude/agents/d-sc.cwd" ;;
+  esac
+  gm "live registration with $sc sidecar" "$SH"
+done
+# noglob, blind tmux, empty pane list, unresolvable self — stubbed at lib level
+GH2="$(mkgood)"
+ng_rc=0; dlib "$GH2" 'set -f; down_fleet' >/dev/null 2>&1 || ng_rc=$?
+eq "inherited noglob → non-zero" "1" "$([ "$ng_rc" -ne 0 ] && echo 1 || echo 0)"
+dm_rc=0; dlib "$GH2" 'tmux(){ case "$1" in display-message) return 1;; *) command tmux -L "'"$SOCKET"'" "$@";; esac; }; down_fleet' >/dev/null 2>&1 || dm_rc=$?
+eq "tmux not answering → non-zero" "1" "$([ "$dm_rc" -ne 0 ] && echo 1 || echo 0)"
+ep_rc=0; dlib "$GH2" 'tmux(){ case "$1" in list-panes) return 0;; *) command tmux -L "'"$SOCKET"'" "$@";; esac; }; down_fleet' >/dev/null 2>&1 || ep_rc=$?
+eq "empty server pane list → non-zero" "1" "$([ "$ep_rc" -ne 0 ] && echo 1 || echo 0)"
+su_rc=0; dlib "$GH2" 'git(){ return 1; }; TMUX_PANE=%nomatch; down_fleet' >/dev/null 2>&1 || su_rc=$?
+eq "self unresolvable (no token match, no toplevel) → non-zero" "1" "$([ "$su_rc" -ne 0 ] && echo 1 || echo 0)"
+ok "…all lib-level refusals killed nothing (witness alive)" "alive '$W_P'"
+# --force belongs to down alone — on any other verb it is a usage error, never
+# silently ignored (rev-a/rev-b fix-round prescription)
+ff_rc=0; drun "$GH2" wide --force >/dev/null 2>&1 || ff_rc=$?
+eq "--force on a layout verb → usage error (exit 2)" "2" "$ff_rc"
+# outside tmux: down must NOT take the layout verbs' soft exit 0
+ot_out="$(env -u TMUX -u TMUX_PANE HOME="$GH2" WORKFLOW_FLEET_HOME_SESSION=downsess FLEET_TMUX_SOCKET="$SOCKET" FLEET_DOWN_SETTLE=0 bash "$SCRIPT" down 2>&1)"; ot_rc=$?
+eq "outside tmux → non-zero (no silent 'nothing to do')" "1" "$([ "$ot_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…and says why (tmux), not usage noise" "1" "$(printf '%s\n' "$ot_out" | grep -ci 'tmux')"
+# wrong-path token: registry and tmux contradict each other → that agent refused, others downed
+WPH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$WPH"
+WP_BAD="$(dwin dky "$T/dn-other2")"   # pane lives at dn-other2…
+WP_OK="$(dwin dkz "$T/dn-12")"
+printf '%s\n' "$WP_BAD" > "$WPH/.claude/running-agents/d-wp.$$"
+printf '%s\n' "$T/dn-11" > "$WPH/.claude/agents/d-wp.cwd"   # …but claims dn-11
+dreg "$WPH" d-ok2 "$WP_OK" "$T/dn-12"
+manifest "$WPH" \
+  '{"path": "'"$T/dn-11"'", "lane": 11, "agent": "d-wp"},' \
+  '{"path": "'"$T/dn-12"'", "lane": 12, "agent": "d-ok2"}'
+wp_out="$(drun "$WPH" down 2>&1)"; wp_rc=$?
+eq "wrong-path token → non-zero"     "1" "$([ "$wp_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…that agent REFUSED"             "1" "$(printf '%s\n' "$wp_out" | grep -c 'REFUSED')"
+ok "…its pane untouched"             "alive '$WP_BAD'"
+eq "…but the OTHER agent still downed (partial-failure semantics)" "1" "$(printf '%s\n' "$wp_out" | grep -Ec 'd-ok2 +downed')"
+ok "…and its pane is dead"           "! alive '$WP_OK'"
+
+echo; echo "down: 'downed' is earned by observation, never by kill-pane's exit status"
+KVH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$KVH"
+KV_P="$(dwin dkv "$T/dn-13")"
+dreg "$KVH" d-kv "$KV_P" "$T/dn-13"
+manifest "$KVH" '{"path": "'"$T/dn-13"'", "lane": 13, "agent": "d-kv"}'
+mk_out="$(dlib "$KVH" 'tmux(){ case "$1" in kill-pane) return 0;; *) command tmux -L "'"$SOCKET"'" "$@";; esac; }; down_fleet' 2>&1)"; mk_rc=$?
+eq "masked kill-pane (rc 0, pane survives) → FAILED"  "1" "$(printf '%s\n' "$mk_out" | grep -c 'FAILED')"
+eq "…never reported downed"                            "0" "$(printf '%s\n' "$mk_out" | grep -Ec 'd-kv +downed')"
+eq "…and exits non-zero"                               "1" "$([ "$mk_rc" -ne 0 ] && echo 1 || echo 0)"
+ok "…the pane it failed to kill is alive"              "alive '$KV_P'"
+# the mid-run race: the masked kill ALSO sets the skip marker — verification must admit
+# NO exemption ('observed dead, skip-marked or not'); this row alone reddens an
+# exemption-honoring verification.
+rc_out="$(dlib "$KVH" 'tmux(){ case "$1" in kill-pane) command tmux -L "'"$SOCKET"'" set-option -p -t "$3" @fleet-layout-skip 1; return 0;; *) command tmux -L "'"$SOCKET"'" "$@";; esac; }; down_fleet' 2>&1)"; rc_rc=$?
+eq "marker set MID-RUN by the masked kill → still FAILED (no verification exemption)" "1" "$(printf '%s\n' "$rc_out" | grep -c 'FAILED')"
+eq "…never downed"                                     "0" "$(printf '%s\n' "$rc_out" | grep -Ec 'd-kv +downed')"
+eq "…non-zero"                                         "1" "$([ "$rc_rc" -ne 0 ] && echo 1 || echo 0)"
+t set-option -p -t "$KV_P" -u @fleet-layout-skip 2>/dev/null
+# a GENUINELY erroring kill-pane (rc!=0) must produce a per-entry report line, not just
+# tmux stderr + a bare non-zero exit (rev-a/rev-b diff-round nit)
+ek_out="$(dlib "$KVH" 'tmux(){ case "$1" in kill-pane) return 1;; *) command tmux -L "'"$SOCKET"'" "$@";; esac; }; down_fleet' 2>&1)"; ek_rc=$?
+eq "erroring kill-pane → per-entry FAILED report" "1" "$(printf '%s\n' "$ek_out" | grep -c 'FAILED (kill errored')"
+eq "…never downed"                                "0" "$(printf '%s\n' "$ek_out" | grep -Ec 'd-kv +downed')"
+eq "…non-zero"                                    "1" "$([ "$ek_rc" -ne 0 ] && echo 1 || echo 0)"
+# _down_verify_dead unit rows: the observation itself, each input stubbed
+eq "_down_verify_dead: alive pane → not dead"          "1" "$(dlib "$KVH" "_down_verify_dead '$KV_P' >/dev/null 2>&1; echo \$?")"
+eq "_down_verify_dead: absent pane, non-empty list → dead" "0" "$(dlib "$KVH" "_down_verify_dead '%9999' >/dev/null 2>&1; echo \$?")"
+eq "_down_verify_dead: EMPTY list-panes is a contradiction → not dead (anti-vacuity)" "1" \
+   "$(dlib "$KVH" 'tmux(){ case "$1" in list-panes) return 0;; *) command tmux -L "'"$SOCKET"'" "$@";; esac; }; _down_verify_dead %9999 >/dev/null 2>&1; echo $?')"
+
+echo; echo "down: skip-marked claude pane is a PRE-kill decision; the marker read fails CLOSED"
+KSH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$KSH"
+KS_P="$(dwin dks "$T/dn-14")"
+t set-option -p -t "$KS_P" @fleet-layout-skip 1
+dreg "$KSH" d-skip "$KS_P" "$T/dn-14"
+manifest "$KSH" '{"path": "'"$T/dn-14"'", "lane": 14, "agent": "d-skip"}'
+sk_out="$(drun "$KSH" down 2>&1)"; sk_rc=$?
+eq "skip-marked claude → skipped, non-zero (fleet not fully down)" "1" "$([ "$sk_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…reported as the marker skip"   "1" "$(printf '%s\n' "$sk_out" | grep -c 'skip-marked')"
+ok "…pane survived"                 "alive '$KS_P'"
+sf_rc=0; drun "$KSH" down --force >/dev/null 2>&1 || sf_rc=$?
+eq "--force does NOT override the marker (BUSY gate only)" "1" "$([ "$sf_rc" -ne 0 ] && echo 1 || echo 0)"
+ok "…pane still alive under --force" "alive '$KS_P'"
+# belt-and-suspenders: pre-kill filter dropped AND an exemption branch added — the double
+# regression. Inert on correct code (the filter skips before any kill).
+bl_out="$(dlib "$KSH" 'tmux(){ case "$1" in kill-pane) return 0;; *) command tmux -L "'"$SOCKET"'" "$@";; esac; }; down_fleet' 2>&1)"; bl_rc=$?
+eq "marked pane + masked kill → still the marker skip, never downed" "0" "$(printf '%s\n' "$bl_out" | grep -Ec 'd-skip +downed')"
+ok "…pane alive"                    "alive '$KS_P'"
+eq "…non-zero"                      "1" "$([ "$bl_rc" -ne 0 ] && echo 1 || echo 0)"
+# marker read failure ≠ marker unset: a flaked query must refuse, not kill
+mr_out="$(dlib "$KSH" 'tmux(){ case "$1" in show-options) return 1;; *) command tmux -L "'"$SOCKET"'" "$@";; esac; }; down_fleet' 2>&1)"; mr_rc=$?
+eq "failed marker query → REFUSED (cannot read skip marker)" "1" "$(printf '%s\n' "$mr_out" | grep -c 'cannot read skip marker')"
+eq "…non-zero"                      "1" "$([ "$mr_rc" -ne 0 ] && echo 1 || echo 0)"
+ok "…the (genuinely marked) pane survived" "alive '$KS_P'"
+# _skip_state unit rows (the ONE tri-state primitive both callers share)
+eq "_skip_state: marked pane"    "marked"   "$(dlib "$KSH" "_skip_state '$KS_P'")"
+eq "_skip_state: unmarked pane"  "unmarked" "$(dlib "$KSH" "_skip_state '$W_P'")"
+eq "_skip_state: failed query"   "unknown"  "$(dlib "$KSH" 'tmux(){ return 1; }; _skip_state %1')"
+
+echo; echo "down: headless registration, UNACCOUNTED probe, dry-run"
+KHH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$KHH"
+printf 'cwd:%s\n' "$T/dn-15" > "$KHH/.claude/running-agents/d-hl.$$"
+printf '%s\n' "$T/dn-15"     > "$KHH/.claude/agents/d-hl.cwd"
+manifest "$KHH" '{"path": "'"$T/dn-15"'", "lane": 15, "agent": "d-hl"}'
+hl_out="$(drun "$KHH" down 2>&1)"; hl_rc=$?
+eq "headless (cwd:) registration → reported, not killed, non-zero" "1" "$([ "$hl_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…reported headless"             "1" "$(printf '%s\n' "$hl_out" | grep -c 'headless')"
+# UNACCOUNTED: an unmarked pane at a target path with NO live registration
+KUH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$KUH"
+KU_P="$(dwin dku "$T/dn-5")"
+manifest "$KUH" '{"path": "'"$T/dn-5"'", "lane": 5, "agent": "d-ua"}'
+ua_out="$(drun "$KUH" down 2>&1)"; ua_rc=$?
+eq "unregistered pane at a target path → UNACCOUNTED, non-zero" "1" "$([ "$ua_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…reported UNACCOUNTED"          "1" "$(printf '%s\n' "$ua_out" | grep -c 'UNACCOUNTED')"
+ok "…and never killed (outside the sanctioned kill set)" "alive '$KU_P'"
+# dry-run: prints the kills, mutates nothing, observation neutralized (exit 0, no FAILED)
+KDH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$KDH"
+KD_P="$(dwin dkq "$T/dn-16")"
+dreg "$KDH" d-dry "$KD_P" "$T/dn-16"
+manifest "$KDH" '{"path": "'"$T/dn-16"'", "lane": 16, "agent": "d-dry"}'
+reg_before="$(ls "$KDH/.claude/running-agents" | sort | tr '\n' ' ')"
+dd_out="$(drun "$KDH" down --dry-run 2>&1)"; dd_rc=$?
+eq "dry-run exits 0"                "0" "$dd_rc"
+ok "dry-run actually emitted commands (so the checks below can fail)" "[ -n \"\$dd_out\" ]"
+eq "dry-run prints the kill-pane it would run" "1" "$(printf '%s\n' "$dd_out" | grep -c "kill-pane -t $KD_P")"
+eq "dry-run reports zero FAILED (observation neutralized)" "0" "$(printf '%s\n' "$dd_out" | grep -c 'FAILED')"
+ok "dry-run killed nothing"         "alive '$KD_P'"
+eq "dry-run left the registry byte-identical" "$reg_before" "$(ls "$KDH/.claude/running-agents" | sort | tr '\n' ' ')"
+
+echo; echo "down: the invoking-worktree skip + the missing-worktree state"
+# entry path == the invoker's toplevel with NO token match anywhere at that path: the
+# safe direction is skip, but the summary must not read as fully down (rc=1, distinct
+# report). A second entry whose worktree does not exist reports its own distinct state.
+IVH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$IVH"; mkdir -p "$T/dn-20"
+manifest "$IVH" \
+  '{"path": "'"$T/dn-20"'", "lane": 20, "agent": "d-inv"},' \
+  '{"path": "'"$T"'/no-dir-xyz", "lane": 21, "agent": "d-gone"}'
+iv_out="$(dlib "$IVH" 'git(){ echo "'"$T/dn-20"'"; }; down_fleet' 2>&1)"; iv_rc=$?
+eq "entry path == invoker toplevel (no token match) → non-zero" "1" "$([ "$iv_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…reported as the invoking-worktree skip" "1" "$(printf '%s\n' "$iv_out" | grep -c 'invoking pane is in this worktree')"
+eq "…the missing worktree reports its own state" "1" "$(printf '%s\n' "$iv_out" | grep -Ec 'd-gone +not running \(worktree missing\)')"
+
+echo; echo "down: self-hardening (token-keyed primary + the terminal kill-helper backstop)"
+# Transient-named SELF: the registration name matches nothing in the manifest and the
+# toplevel is misdirected (the harness cwd's repo, not the entry path) — only the TOKEN
+# equality can identify self. --force must not change that.
+TSH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$TSH"; mkdir -p "$T/dn-19"
+TS_P="$(dwin dkt "$T/dn-19")"
+printf '%s\n' "$TS_P" > "$TSH/.claude/running-agents/goals-onchain-x-yz.$$"
+printf '%s\n' "$T/dn-19" > "$TSH/.claude/agents/goals-onchain-x-yz.cwd"
+manifest "$TSH" '{"path": "'"$T/dn-19"'", "lane": 19, "agent": "d-tself"}'
+ts_out="$(DPANE="$TS_P" drun "$TSH" down --force 2>&1)"; ts_rc=$?
+eq "transient-named self + misdirected toplevel + --force → skipped (self), exit 0" "0" "$ts_rc"
+eq "…reported skipped (self)" "1" "$(printf '%s\n' "$ts_out" | grep -Ec 'd-tself +skipped \(self\)')"
+ok "…self's pane survived"    "alive '$TS_P'"
+# The backstop's OWNING test: self's pane enters the kill set as another agent's
+# COMPANION (parked at the target worktree, unmarked) — upstream self-exclusion cannot
+# see it there; only _down_kill_pane's terminal refusal saves it. Deleting the backstop
+# reddens exactly this row.
+BSH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$BSH"; mkdir -p "$T/dn-18"
+BS_C="$(dwin dkbs "$T/dn-18")"          # the target agent's claude pane
+BS_ME="$(dsplit dkbs "$T/dn-18")"       # OUR pane, parked in the target's worktree
+dreg "$BSH" d-bs "$BS_C" "$T/dn-18"
+manifest "$BSH" '{"path": "'"$T/dn-18"'", "lane": 18, "agent": "d-bs"}'
+bs_out="$(DPANE="$BS_ME" drun "$BSH" down 2>&1)"; bs_rc=$?
+ok "the target's claude pane is dead"                 "! alive '$BS_C'"
+ok "OUR pane (attributed as its companion) SURVIVED — the terminal backstop" "alive '$BS_ME'"
+eq "…and the run is non-zero (a refused companion kill is not clean)" "1" "$([ "$bs_rc" -ne 0 ] && echo 1 || echo 0)"
+
+echo; echo "down: shared-cwd ambiguity — the exempt pane survives, order-independent"
+KAH2="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$KAH2"
+A_P1="$(dwin dkg "$T/dn-17")"; A_P2="$(dsplit dkg "$T/dn-17")"; A_PC="$(dsplit dkg "$T/dn-17")"
+printf '%s\n' "$A_P1" > "$KAH2/.claude/running-agents/d-sha.$$"
+printf '%s\n' "$T/dn-17" > "$KAH2/.claude/agents/d-sha.cwd"
+printf '%s\n' "$A_P2" > "$KAH2/.claude/running-agents/d-shb.$$"
+printf '%s\n' "$T/dn-17" > "$KAH2/.claude/agents/d-shb.cwd"
+manifest "$KAH2" '{"path": "'"$T/dn-17"'", "lane": 17, "agent": "d-sh"}'
+sh_out="$(drun "$KAH2" down 2>&1)"; sh_rc=$?
+eq "both same-cwd claude panes downed, exit 0" "0" "$sh_rc"
+ok "first claude pane dead"         "! alive '$A_P1'"
+ok "second claude pane dead"        "! alive '$A_P2'"
+ok "the ambiguity-exempt pane SURVIVED (attributed to neither, sanctioned by the probe)" "alive '$A_PC'"
+
+echo; echo "boot hardening (DX-jn-cc-010): cwd corroboration closes the double-launch"
+mkdir -p "$T/boot-h1" "$T/boot-h2" "$T/boot-h3"
+# a LIVE registration under a TRANSIENT name at the entry path → live, no window, no launch
+BHH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$BHH"
+H_P1="$(dwin bh1 "$T/boot-h1")"
+printf '%s\n' "$H_P1" > "$BHH/.claude/running-agents/goals-onchain-9-ab.$$"
+printf '%s\n' "$T/boot-h1" > "$BHH/.claude/agents/goals-onchain-9-ab.cwd"
+manifest "$BHH" '{"path": "'"$T/boot-h1"'", "lane": 1, "agent": "bh-1"}'
+: > "$BHH/rec"
+hb_out="$(FLEET_BOOT_LAUNCH_RECORDER="$BHH/rec" brun "$BHH" boot 2>&1)"; hb_rc=$?
+eq "transient-name live registration at the entry path → reported live-by-path" \
+   "1" "$(printf '%s\n' "$hb_out" | grep -Ec 'bh-1 +live \(as goals-onchain-9-ab')"
+eq "…boot launched nothing (the 2026-07-10 double-launch hazard)" "0" "$(wc -l < "$BHH/rec" | tr -d ' ')"
+ok "…and created no bh-1 window" "! t list-windows -t bootsess -F '#{window_name}' | grep -qx bh-1"
+# a bare pane at the entry path with NO registration → occupied, no launch
+BOH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$BOH"
+H_P2="$(dwin bh2 "$T/boot-h2")"
+manifest "$BOH" '{"path": "'"$T/boot-h2"'", "lane": 2, "agent": "bh-2"}'
+: > "$BOH/rec"
+ho_out="$(FLEET_BOOT_LAUNCH_RECORDER="$BOH/rec" brun "$BOH" boot 2>&1)"; ho_rc=$?
+eq "bare pane at the entry path → reported occupied" "1" "$(printf '%s\n' "$ho_out" | grep -Ec 'bh-2 +occupied')"
+eq "…boot launched nothing"      "0" "$(wc -l < "$BOH/rec" | tr -d ' ')"
+# occupancy anti-vacuity: an empty list-panes -a while inside tmux is a contradiction —
+# boot must refuse that launch, not read blindness as "unoccupied"
+BAH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$BAH"
+manifest "$BAH" '{"path": "'"$T/boot-h3"'", "lane": 3, "agent": "bh-3"}'
+: > "$BAH/rec"
+av_rc=0; HOME="$BAH" WORKFLOW_FLEET_HOME_SESSION=bootsess FLEET_TMUX_SOCKET="$SOCKET" FLEET_BOOT_LAUNCH_RECORDER="$BAH/rec" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'
+  tmux(){ case \"\$1 \$2\" in 'list-panes -a') return 0;; esac; command tmux -L '$SOCKET' \"\$@\"; }
+  boot_fleet" >/dev/null 2>&1 || av_rc=$?
+eq "blind pane list during occupancy → boot refuses that launch (non-zero)" "1" "$([ "$av_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "…and recorded no launch" "0" "$(wc -l < "$BAH/rec" | tr -d ' ')"
+
+echo
+echo "  $pass passed, $fail failed"
+[ "$fail" -eq 0 ]
