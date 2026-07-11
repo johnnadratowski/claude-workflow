@@ -91,7 +91,15 @@ if [ -z "${WORKFLOW_TODO_AGENT:-}" ]; then
     # shellcheck disable=SC1090
     . "$_f"
     _self="$(fleet_find_self "$HOME/.claude/running-agents" 2>/dev/null || true)"
-    [ -n "$_self" ] && fleet_agent_id "$_self"
+    # The `|| true` is LOAD-BEARING, not decoration. This is the subshell's LAST command, so its
+    # status becomes the subshell's — and an unregistered self (a HUMAN's pane, a headless run, CI)
+    # makes the test false, so the subshell exits 1, so the assignment fails, so a caller running
+    # `set -e` DIES SILENTLY while sourcing this file. The documented fallback on the next line
+    # (`: "${WORKFLOW_TODO_AGENT:=…}"`) is never reached, because the abort happens first.
+    # `scripts/docs-dev.sh` is exactly such a caller: `pnpm docs:dev` exited 1 with NO output for
+    # any human, while working for every agent. A helper's return status is a contract — pin the
+    # success path deliberately.
+    { [ -n "$_self" ] && fleet_agent_id "$_self"; } || true
   )"
 fi
 : "${WORKFLOW_TODO_AGENT:=0}"
