@@ -1328,6 +1328,29 @@ self_out="$(FLEET_DOWN_SETTLE=1 BPANE="$selfp" brun "$DFH" down d-self 2>&1)"; s
 eq "down <self>: refuses non-zero (never a silent skip)" "1" "$([ "$self_rc" -ne 0 ] && echo 1 || echo 0)"
 eq "down <self>: says so explicitly" "1" "$(echo "$self_out" | grep -qi 'self' && echo 1 || echo 0)"
 eq "down <self>: own pane survives" "1" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$selfp")"
+
+# MIXED valid + unknown: the unknown name TAINTS the run, but must NOT spare the agent that DID
+# match. Refusing everything here would make the run's own message a lie and send the operator
+# hunting the wrong agent. (Caught in diff review: the first cut refused all and killed nothing.)
+pb2="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n d-b2 -c "$DFH/wb")"
+printf '%s' "$pb2" > "$DFH/.claude/running-agents/d-b.$$"; printf '%s' "$DFH/wb" > "$DFH/.claude/agents/d-b.cwd"
+mix_out="$(FLEET_DOWN_SETTLE=3 brun "$DFH" down d-b nope-agent 2>&1)"; mix_rc=$?
+eq "down <valid> <unknown>: the VALID agent is still downed" "0" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$pb2")"
+eq "down <valid> <unknown>: …and the run still exits non-zero (the unknown taints)" "1" "$([ "$mix_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "down <valid> <unknown>: …naming the unknown, not a blanket refusal" "1" "$(echo "$mix_out" | grep -qi 'nope-agent' && echo 1 || echo 0)"
+
+# --force overrides the BUSY gate and NOTHING else: an unknown name still taints under --force.
+fu_out="$(FLEET_DOWN_SETTLE=1 brun "$DFH" down --force still-not-here 2>&1)"; fu_rc=$?
+eq "down --force <unknown>: --force does NOT bulldoze the unknown-name refusal" "1" "$([ "$fu_rc" -ne 0 ] && echo 1 || echo 0)"
+
+# filter + CORRUPT manifest: the whole-file parse/validate guards run BEFORE the filter, so a
+# corrupt manifest refuses even when only one agent was requested.
+cp "$DFH/$MANIFEST_REL" "$DFH/manifest.bak"
+printf '{ not json' > "$DFH/$MANIFEST_REL"
+cm_rc=0; FLEET_DOWN_SETTLE=1 brun "$DFH" down d-a >/dev/null 2>&1 || cm_rc=$?
+eq "down <agent> + CORRUPT manifest: refuses (the filter never weakens the parse guard)" "1" "$([ "$cm_rc" -ne 0 ] && echo 1 || echo 0)"
+cp "$DFH/manifest.bak" "$DFH/$MANIFEST_REL"
+
 t kill-session -t bootsess 2>/dev/null || true
 
 # --- P2b: boot outside tmux refuses LOUDLY (rc 2 — the specific code down uses) -----------------
@@ -1382,11 +1405,32 @@ p_anchor="$(t list-panes -t realsess:anchor -F '#{pane_id}' | head -1)"
 # (e) PRECEDENCE: a STALE value in the COMMITTED config must lose to the machine-local .local.
 #     (This is why the writers target .local — a committed session name is one machine's accident,
 #      and every other engineer would inherit it.)
+#
+#     ASSERT THE RESOLVED VALUE, not an exit code: `name-windows` exits 0 whether it ordered
+#     anything or not (_order_windows returns 0 on a session that doesn't exist), and a
+#     pre-existing window keeps existing regardless — so rc/window-existence rows are BORN-GREEN
+#     and stay green in the exact broken state (stale committed value winning) this row exists to
+#     reject. The only honest assertion is what the config layer actually resolves to.
 printf 'WORKFLOW_FLEET_HOME_SESSION="stale-main"\n' > "$PMAIN/.claude/workflow.config"
 bash "$WLS" set "$PMAIN" WORKFLOW_FLEET_HOME_SESSION realsess >/dev/null 2>&1
-pw1="$(cd "$PMAIN" && HOME="$PH" FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="$p_anchor" bash "$PMAIN/.claude/scripts/fleet-layout.sh" name-windows 2>&1; echo "rc=$?")"
-eq ".local beats a STALE committed session value (name-windows targets the real session)" "rc=0" "$(printf '%s' "$pw1" | tail -1)"
-eq "…and the ordering actually ran in the real session (window still there)" "1" "$(t list-windows -t realsess -F '#{window_name}' | grep -cx 'anchor')"
+res_main="$(cd "$PMAIN" && HOME="$PH" bash -c 'source .claude/scripts/_config.sh 2>/dev/null; printf "%s" "${WORKFLOW_FLEET_HOME_SESSION:-UNSET}"')"
+eq ".local BEATS a stale committed session value (the resolved identity is the .local one)" "realsess" "$res_main"
+# …and the resolved identity is the one name-windows ACTS on. ORDERING is the only discriminator:
+# window *renaming* reads `list-panes -a` (server-wide), so it works no matter which session the
+# config names — but _order_windows takes the session as an argument and silently returns 0 when
+# it doesn't exist. So: put two agents in the session in ANTI-canonical order (feature before the
+# coordinator) and assert name-windows reorders them. Under a stale session identity the order
+# would stand untouched, and this row reddens.
+mkdir -p "$PMAIN/wf" "$PMAIN/wc"
+w_f="$(t new-window -d -P -F '#{pane_id}' -t realsess -n wrong-f -c "$PMAIN/wf")"
+w_c="$(t new-window -d -P -F '#{pane_id}' -t realsess -n wrong-c -c "$PMAIN/wc")"
+printf '%s' "$w_f" > "$PH/.claude/running-agents/feature-1.$$"; printf '%s' "$PMAIN/wf" > "$PH/.claude/agents/feature-1.cwd"
+printf '%s' "$w_c" > "$PH/.claude/running-agents/cc.$$";        printf '%s' "$PMAIN/wc" > "$PH/.claude/agents/cc.cwd"
+eq "…(setup) the fleet windows start in ANTI-canonical order" "wrong-f,wrong-c" \
+   "$(t list-windows -t realsess -F '#{window_name}' | grep -E '^wrong-' | paste -sd, -)"
+( cd "$PMAIN" && HOME="$PH" FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="$p_anchor" bash "$PMAIN/.claude/scripts/fleet-layout.sh" name-windows >/dev/null 2>&1 )
+eq "…and name-windows ORDERED the resolved session (coordinator first — dies silently on a stale one)" "cc,feature-1" \
+   "$(t list-windows -t realsess -F '#{window_name}' | grep -E '^(cc|feature-1)$' | paste -sd, -)"
 
 # (f) PROPAGATION across the worktree boundary — the row rev-a demanded, and the one §7(e) cannot
 #     do: a worktree's checkout holds only TRACKED files, .local is gitignored, and _config.sh

@@ -78,7 +78,14 @@ WL=.claude/scripts/workflow-local.sh
 # `name-windows`, which runs in ITS OWN worktree — without this they all fall back to the default
 # and silently order nothing. Write it BEFORE provisioning worktrees below: /add-worktree seeds
 # this file into each one.
-[ -n "${TMUX:-}" ] && "$WL" set "$ROOT" WORKFLOW_FLEET_HOME_SESSION "$(tmux display-message -p '#{session_name}')"
+if [ -n "${TMUX:-}" ]; then
+  "$WL" set "$ROOT" WORKFLOW_FLEET_HOME_SESSION "$(tmux display-message -p '#{session_name}')"
+else
+  echo "NOT in tmux — WORKFLOW_FLEET_HOME_SESSION was NOT written. Every agent worktree seeded from"
+  echo "this .local will fall back to the default session, and name-windows will silently order"
+  echo "nothing. Re-run /base-setup from inside tmux, or set it yourself before adding worktrees:"
+  echo "  .claude/scripts/workflow-local.sh set \"$ROOT\" WORKFLOW_FLEET_HOME_SESSION <session>"
+fi
 ```
 
 Pass **expanded** paths (`$ROOT`, not a deferred `$HOME/...` string): the writer refuses `$` in a

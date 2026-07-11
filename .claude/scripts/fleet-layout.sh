@@ -1367,8 +1367,14 @@ down_fleet() {
 "
     done
     rows="$(printf '%s' "$kept" | sed '/^$/d')"
-    [ -n "$rows" ] && [ "$bad" = 0 ] || {
-      echo "fleet-layout down: no requested agent could be targeted — refusing." >&2
+    # An unknown name TAINTS the run (bad=1, set above) but must NOT spare the agents that DID
+    # match: `down a bogus` downs `a` and still exits non-zero. Refusing everything here would
+    # make the run's own error message a lie ("nothing killed for it" — while also killing nothing
+    # for the valid names) and would send the operator hunting the wrong agent. Only a filter that
+    # matched NOTHING refuses outright — the empty-enumeration guard, which must never read as
+    # "that agent is down".
+    [ -n "$rows" ] || {
+      echo "fleet-layout down: no requested agent is in the manifest — refusing (nothing was killed)." >&2
       return 1; }
   fi
   [ -d "$HOME/.claude/running-agents" ] || {

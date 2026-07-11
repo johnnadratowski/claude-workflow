@@ -23,10 +23,19 @@ set -uo pipefail
 
 LOCAL_REL=".claude/workflow.config.local"
 
-# Keys that are PER-CLONE, not per-engineer: they must NOT propagate from the main clone into a
-# worktree, or every worktree silently inherits one clone's value (e.g. a per-lane docs port).
-# A new per-clone knob MUST be added here — this list is the schema `seed` honors.
-PER_CLONE_KEYS="WORKFLOW_DOCS_URL"
+# Keys that are PER-WORKTREE, not per-engineer: they must NOT propagate from the main clone into a
+# worktree, or every worktree silently inherits one clone's value. A new per-worktree knob MUST be
+# added here — this list is the schema `seed` honors.
+#
+#   WORKFLOW_DOCS_URL    — the local docs server's port, offset per worktree.
+#   WORKFLOW_TODO_AGENT  — the id segment the /todo skill mints into new TODO ids. Copying ONE
+#                          agent's segment into every worktree makes every agent mint ids under the
+#                          same segment — re-arming the exact id collision the segment exists to
+#                          prevent, silently.
+#
+# (Contrast WORKFLOW_TODO_NS / WORKFLOW_BASE_BRANCH / WORKFLOW_MAIN_PATH: per-ENGINEER — identical
+# in all of that engineer's worktrees, so they must propagate.)
+PER_CLONE_KEYS="WORKFLOW_DOCS_URL WORKFLOW_TODO_AGENT"
 
 _die() { echo "workflow-local: $*" >&2; exit 1; }
 
@@ -81,7 +90,16 @@ cmd_set() {
 
   # VERIFY the write landed — a caller that ignores a silent no-op here would go on to seed a
   # .local that lacks the key into every agent worktree.
-  grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=\"?${value}\"?[[:space:]]*$" "$target" \
+  #
+  # FIXED-STRING, WHOLE-LINE (-qxF), never a regex: the value is user data and legitimately
+  # contains regex metacharacters — `_validate_value` deliberately permits `/ ( ) * + ? .` and
+  # spaces, because paths (`/Users/me/Google Drive (work)/proj`) and shell commands
+  # (WORKFLOW_CELL_COMMAND is documented as one: `tail -f *.log`) are the normal case. Interpolated
+  # into an ERE they stop matching the line we just wrote, so the check reports failure on a
+  # PERFECTLY GOOD write — and the callers' "a non-zero aborts the phase" pin would turn that into
+  # an aborted onboarding with .local already mutated. We control the written form exactly
+  # (KEY="VALUE"), so match it literally.
+  grep -qxF -- "$key=\"$value\"" "$target" \
     || _die "set: wrote $target but $key did not land — refusing to report success"
   echo "workflow-local: $key set in $target"
 }
@@ -89,6 +107,10 @@ cmd_set() {
 cmd_seed() {
   local main="${1:-}" wt="${2:-}" src dst tmp filter
   [ -n "$main" ] && [ -n "$wt" ] || _die "usage: seed <main-clone> <worktree>"
+  # A bogus <main-clone> must REFUSE, not fall into the legitimate "source has no .local → nothing
+  # to do, rc 0" branch below: that branch is indistinguishable from success, so a caller passing a
+  # wrong path would ship a worktree with no .local and believe it was seeded.
+  [ -d "$main" ] || _die "seed: main clone '$main' is not a directory"
   [ -d "$wt" ] || _die "seed: worktree '$wt' is not a directory"
   src="$main/$LOCAL_REL"
   dst="$wt/$LOCAL_REL"

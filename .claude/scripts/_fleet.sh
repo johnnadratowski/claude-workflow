@@ -42,14 +42,19 @@ fleet_find_self() {
 }
 
 # fleet_busy <name> — a fresh busy marker (~/.claude/agent-busy/<name>, touched within
-# 5 min) means the agent is mid-turn. THE canonical predicate (DX-jn-cc-010).
-# agent-fanout.sh / agent-send.sh / inbox-watcher.sh / statusline-fleet.sh still carry
-# inline copies: they are byte-identical to their upstream claude-workflow mirrors, and
-# forking them here would make every /update-workflow pull a divergence hazard — the
-# consolidation is upstream-first follow-up work. NOTE the failure direction: an
-# unreadable marker dir or a failed find reads as IDLE — right for status display,
-# fail-OPEN for a kill gate. fleet-layout.sh's _down_busy wraps this with fail-closed
-# unknown handling; use that (not this) to gate anything destructive.
+# 5 min) means the agent is mid-turn. THE canonical predicate (DX-jn-cc-010/014).
+#
+# agent-fanout.sh, agent-send.sh, inbox-watcher.sh and statusline-fleet.sh all DELEGATE here
+# (DX-jn-cc-011). Each keeps an inline copy only as a FALLBACK for a clone with no _fleet.sh, and
+# each guards with `if command -v fleet_busy` — never `&& fleet_busy || inline`, in which the
+# inline copy would run on every not-busy answer and the compound would be `fleet_busy OR inline`
+# (two live predicates, biased toward "busy" — the direction that strands nudges). An undefined
+# function would instead fail OPEN (busy reads as idle → duplicate nudges), which is why the
+# fallback exists at all.
+#
+# NOTE the failure direction: an unreadable marker dir or a failed find reads as IDLE — right for
+# status display, fail-OPEN for a kill gate. fleet-layout.sh's _down_busy wraps this with
+# fail-closed unknown handling; use that (not this) to gate anything destructive.
 fleet_busy() {
   local m="$HOME/.claude/agent-busy/$1"
   [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]

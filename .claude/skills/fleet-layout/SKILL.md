@@ -20,10 +20,11 @@ That is the whole reason this is safe.
 |---|---|---|
 | `wide` | all feature agents, ONE window, 2×2 of cells | external session, ultra-wide monitor |
 | `dual` | 2 agents per window × 2 windows (`features-1`, `features-2`), stacked | external session, ordinary 2nd monitor |
-| `single` | one window per agent | `main` session, laptop |
+| `single` | one window per agent | the home session, laptop |
 
-Each feature agent occupies a **cell**: its claude pane on the left, its companions (monocle,
-shell, docs server) stacked to the right, split 60/40. The coordinator, the review/test window,
+Each feature agent occupies a **cell**: its claude pane on the left, its companions stacked to the
+right, split 60/40. The top-right companion runs `WORKFLOW_CELL_COMMAND` when the project sets one
+(**empty by default** — then it is simply a shell). The coordinator, the review/test window,
 and any unrelated window are never touched.
 
 **Canonical window order, in every mode:** the coordinator first, then the feature agents in
@@ -208,7 +209,7 @@ from `main`. Pane ids survive the move, so delivery, liveness, and the registry 
 |---|---|---|
 | `WORKFLOW_WORKTREES_MANIFEST` | `~/.config/<main-clone-basename>-worktrees.json` | the fleet manifest `boot`/`down` enumerate (resolved by `fleet_manifest_path`) |
 | `WORKFLOW_CELL_COMMAND` | *(empty)* | command the cell's top-right companion pane runs. Empty ⇒ nothing is keyed and it stays a shell. Set it per project (e.g. `monocle`) |
-| `WORKFLOW_FLEET_HOME_SESSION` | `main`, else the invoking session | the session the agents' windows live in. **Persist it in `.claude/workflow.config.local`** (written by `base-initialize`/`base-setup`, seeded into each worktree by `add-worktree`) — it is machine-local, never committed |
+| `WORKFLOW_FLEET_HOME_SESSION` | `main` if such a session exists, else the invoking client's session | the session the agents' windows live in. **Persist it in `.claude/workflow.config.local`** (written by `base-initialize`/`base-setup`, seeded into each worktree by `add-worktree`) — it is machine-local, never committed |
 | `WORKFLOW_FLEET_EXT_SESSION` | `wide` | the external-monitor session |
 
 Tests: `bash .claude/scripts/fleet-layout.test.sh` (hermetic `$HOME` + scratch tmux socket).

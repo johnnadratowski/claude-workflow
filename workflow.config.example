@@ -116,6 +116,21 @@ WORKFLOW_SUBAGENT_REVIEW_MODEL="sonnet"
 # Fleet layout (/fleet-layout: boot, down, single/dual/wide)
 # =====================================================================
 
+# ---- PER-WORKTREE knobs -------------------------------------------------------
+# These belong in the gitignored .claude/workflow.config.local of EACH worktree, and
+# `/add-worktree`'s seed deliberately does NOT copy them from the main clone (they are
+# listed in PER_CLONE_KEYS in .claude/scripts/workflow-local.sh — add any new one there,
+# or every worktree silently inherits one worktree's value):
+#
+#   WORKFLOW_DOCS_URL      base URL of this worktree's local docs server (ports are usually
+#                          offset per worktree, so one value cannot serve them all).
+#   WORKFLOW_TODO_AGENT    the id segment /todo mints into new TODO ids. Copying one agent's
+#                          segment everywhere makes every agent mint under it — re-arming the
+#                          very collision the segment prevents.
+#
+# (By contrast WORKFLOW_TODO_NS / WORKFLOW_BASE_BRANCH / WORKFLOW_MAIN_PATH are PER-ENGINEER:
+# identical across all of that engineer's worktrees, so the seed DOES carry them.)
+
 # Where the machine-local worktrees manifest lives — the file `boot` and `down`
 # enumerate the fleet from (entries carrying an `agent` field). Unset: derived from
 # the MAIN clone's directory name, so every worktree of the clone agrees:
@@ -150,11 +165,12 @@ WORKFLOW_SUBAGENT_REVIEW_MODEL="sonnet"
 # WORKFLOW_TODO_LANE="0"
 
 # Per-engineer TODO-ID namespace <NS> (AREA-<NS>-<lane>NNN). This is the
-# cross-clone collision guard: a second engineer mints on their own machine with
+# cross-ENGINEER collision guard: a second engineer mints on their own machine with
 # no shared lock, so without a distinct namespace their SEC-0001 would collide
-# with yours and a TODO could be lost on merge. SET THIS PER CLONE — in the
+# with yours and a TODO could be lost on merge. SET IT PER ENGINEER — in the
 # gitignored .claude/workflow.config.local, NOT here (this file is committed and
-# shared). If unset, _config.sh derives it from the local-part of
+# shared). It is the same for all YOUR worktrees, so /add-worktree's seed carries
+# it into each one (unlike the per-worktree knobs listed above). If unset, _config.sh derives it from the local-part of
 # `git config user.email` (lowercased, alnum-only — collision-safe but long, so
 # a short knob is preferred); failing that, "0". Recommended form:
 #   echo 'WORKFLOW_TODO_NS="jn"' >> .claude/workflow.config.local
