@@ -1269,16 +1269,27 @@ EOF
 #     double-launch hazard — would miss the pane and launch a SECOND claude into the
 #     worktree; down's UNACCOUNTED probe would report "not running" for a live pane.
 # Re-read ONE pane's cwd, briefly, for the transient not-yet-populated case (see _panes_at_path).
-# Echoes the path and returns 0 when it settles; echoes nothing and returns 1 when it does not
-# (genuinely unreadable — the caller must treat that as UNKNOWN, not as "absent").
+#   rc 0 + path  — settled.
+#   rc 1         — the pane is GONE (display-message fails for a pane that no longer exists). That
+#                  is ABSENCE, not blindness: it vanished between the snapshot and now, so callers
+#                  treat it as an honest miss rather than refusing. Distinguishing the two is free
+#                  (the exit status says which), and conflating them would re-introduce spurious
+#                  refusals — the very thing this helper exists to remove.
+#   rc 2         — the pane EXISTS but still reports no location after retrying: genuinely blind,
+#                  and callers must treat it as UNKNOWN.
 _pane_path_settled() {
   local pid="$1" i=0 p
   while [ "$i" -lt 10 ]; do
     p="$(tmux display-message -p -t "$pid" '#{pane_current_path}' 2>/dev/null)"
     [ -n "$p" ] && { printf '%s' "$p"; return 0; }
+    # Empty. Is the pane GONE, or merely not yet placeable? display-message's exit status cannot
+    # answer that — it exits 0 with empty output for a pane that does not exist (verified on tmux
+    # 3.x), so the status is not the oracle it looks like. Ask the pane LIST instead: id present =>
+    # the pane exists and we simply cannot place it yet (retry, then blind); id absent => it is gone.
+    tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" || return 1
     i=$((i+1)); sleep 0.05
   done
-  return 1
+  return 2
 }
 
 _panes_at_path() {
@@ -1297,7 +1308,11 @@ _panes_at_path() {
     # pane before declaring blindness: transient => it resolves; genuinely unreadable => it doesn't.
     if [ -z "$ppath" ]; then
       ppath="$(_pane_path_settled "$pid")"
-      [ -n "$ppath" ] || return 2
+      case $? in
+        0) : ;;                 # settled
+        1) continue ;;          # the pane vanished between snapshot and re-read — honest miss
+        *) return 2 ;;          # exists but unplaceable — UNKNOWN, fail closed
+      esac
     fi
     ppath="$(_abs "$ppath")"
     # A path we CAN read but cannot canonicalize (the pane's cwd was deleted) is not blindness: we
@@ -1557,8 +1572,10 @@ EOF
         _down_report "$agent" "REFUSED (token $tk resolves to no pane, as $n)"; bad=1; continue
       fi
       tpath="${tline#*"$TAB"}"
-      [ -n "$tpath" ] || tpath="$(_pane_path_settled "$tk")"
-      tpath="$(_abs "$tpath")"
+      [ -n "$tpath" ] || tpath="$(_pane_path_settled "$tk")"   # rc 1/2 both leave tpath empty ->
+      tpath="$(_abs "$tpath")"                                  # the refusal below, which is right:
+                                                                # a vanished or unplaceable pane is
+                                                                # never a pane we may kill.
       case "$tpath" in
         "$apath"|"$apath"/*) : ;;
         *) _down_report "$agent" "REFUSED (token $tk resolves to '${tpath:-an unreadable location}', not this worktree, as $n)"; bad=1; continue ;;
@@ -1637,10 +1654,18 @@ EOF
       fi
     done
     if [ "$entry_fail" = 0 ]; then
+      # This is the probe that earns the success claim: it looks for panes still ALIVE at the
+      # worktree after the kills. rc 2 = we could not see. A blind probe must NEVER fall through to
+      # "downed" + exit 0 — `remove-worktree` gates deleting the worktree on exactly that exit code,
+      # so reading blindness as "nothing survived" would delete a worktree out from under a live
+      # pane, which is the failure the down-first discipline exists to prevent. The pre-kill probe
+      # above already fails closed on rc 2; this one has to as well.
       hits="$(_down_probe_unsanctioned "$vpath")"; prc=$?
       if [ "$prc" = 0 ]; then
         first="$(printf '%s\n' "$hits" | head -1)"
         _down_report "$vagent" "UNACCOUNTED (pane ${first%%"$TAB"*} survived at this worktree)"; bad=1; entry_fail=1
+      elif [ "$prc" = 2 ]; then
+        _down_report "$vagent" "REFUSED (cannot enumerate panes to confirm nothing survived — NOT claiming this agent is down)"; bad=1; entry_fail=1
       fi
     fi
     if [ "$entry_fail" = 0 ]; then

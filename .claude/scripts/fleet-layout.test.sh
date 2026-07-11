@@ -1520,7 +1520,14 @@ nb_out="$(HOME="$NBH" WORKFLOW_WORKTREES_MANIFEST="$NBH/$MANIFEST_REL" WORKFLOW_
 # The stub above only works if the script consults list-panes through the shell function; rather
 # than depend on that, assert the PREDICATE directly — it is the one every caller routes through.
 nb_rc=0; blib "$NBH" '
-  tmux(){ if [ "$1" = list-panes ]; then printf "%%99999\tsquatter\t\n"; else command tmux -L "$FLEET_TMUX_SOCKET" "$@"; fi; }
+  tmux(){
+    if [ "$1" = list-panes ]; then
+      case "$*" in
+        *pane_current_path*) printf "%%99999\tsquatter\t\n" ;;   # in the snapshot, with NO path
+        *)                   printf "%%99999\n" ;;                 # …but the pane DOES exist
+      esac
+    else command tmux -L "$FLEET_TMUX_SOCKET" "$@"; fi
+  }
   _panes_at_path "'"$NBH/w1"'" >/dev/null' || nb_rc=$?
 eq "_panes_at_path: a pane with an UNREADABLE cwd => rc 2 (UNKNOWN), never rc 1 ('none')" "2" "$nb_rc"
 # and the whole-list-empty case still returns 2 (unchanged)
@@ -1576,6 +1583,43 @@ gone_rc=0; drun "$BPH" down >/dev/null 2>&1 || gone_rc=$?
 eq "down: a token that resolves to NO pane is still refused (rc≠0)" "1" "$([ "$gone_rc" -ne 0 ] && echo 1 || echo 0)"
 eq "down: …and the bystander pane at that worktree is NOT killed" "1" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$keep_p")"
 t kill-session -t downsess 2>/dev/null || true
+
+# --- down's CLOSING probe must fail closed on UNKNOWN ------------------------------------------
+# The closing probe is what EARNS the success claim: after the kills, it looks for panes still alive
+# at the worktree. rc 2 means "we could not see". Falling through to `downed` + exit 0 on a blind
+# probe is a false success on a destructive verb — and `remove-worktree` gates DELETING the worktree
+# on exactly that exit code, so it would delete a worktree out from under a possibly-live pane. The
+# pre-kill probe already failed closed here; this one did not (the gap was dormant until the blind
+# -field fix made rc 2 reachable — widening a status's trigger makes every unhandled consumer live).
+echo
+echo "DX-jn-cc-014 — a BLIND closing probe never claims 'downed'"
+
+CPH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$CPH"; mkdir -p "$CPH/wz"
+manifest "$CPH" "$(printf '{"agent":"cp-1","active":true,"path":"%s"}' "$CPH/wz")"
+t new-session -d -s cpsess -n keep 2>/dev/null || true
+cp_pane="$(t new-window -d -P -F '#{pane_id}' -t cpsess -n cp-1 -c "$CPH/wz")"
+wait_path "$cp_pane" "$CPH/wz"
+printf '%s' "$cp_pane" > "$CPH/.claude/running-agents/cp-1.$$"; printf '%s' "$CPH/wz" > "$CPH/.claude/agents/cp-1.cwd"
+# Blind the CLOSING probe only: let everything run normally, then make _panes_at_path report UNKNOWN
+# once the kill has happened (the pane is gone by then, so this stub is what a blind probe looks like).
+cp_out="$(dlib "$CPH" '
+  _orig_panes_at_path(){ :; }
+  _down_probe_unsanctioned(){ return 2; }   # the probe cannot see
+  down_fleet' 2>&1)"; cp_rc=$?
+eq "blind closing probe: down does NOT report 'downed'" "0" "$(printf '%s' "$cp_out" | grep -c 'downed')"
+eq "blind closing probe: it REFUSES, naming the blindness" "1" "$(printf '%s' "$cp_out" | grep -qi 'cannot enumerate panes to confirm nothing survived' && echo 1 || echo 0)"
+eq "blind closing probe: exit is NON-ZERO (remove-worktree gates deletion on this)" "1" "$([ "$cp_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "blind closing probe: the success line is NOT printed" "0" "$(printf '%s' "$cp_out" | grep -c 'every non-self entry is downed-and-verified')"
+t kill-session -t cpsess 2>/dev/null || true
+
+# A pane that VANISHES between the snapshot and the re-read is ABSENT, not blind: _panes_at_path
+# must report an honest "none" (rc 1), not UNKNOWN — otherwise every pane that closes mid-run turns
+# into a spurious refusal, which is the class the re-read was introduced to remove.
+VPH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$VPH"; mkdir -p "$VPH/wv"
+vg_rc=0; blib "$VPH" '
+  tmux(){ if [ "$1" = list-panes ]; then printf "%%99998\tw\t\n"; else command tmux -L "$FLEET_TMUX_SOCKET" "$@"; fi; }
+  _panes_at_path "'"$VPH/wv"'" >/dev/null' || vg_rc=$?
+eq "_panes_at_path: a pane that VANISHED (display-message fails) is an honest 'none' (rc 1), not UNKNOWN" "1" "$vg_rc"
 
 echo
 echo "  $pass passed, $fail failed"
