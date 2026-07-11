@@ -28,7 +28,10 @@ fi
 is_alive() {  # pid token
   if command -v fleet_alive >/dev/null 2>&1; then fleet_alive "$1" "$2"; else kill -0 "$1" 2>/dev/null; fi
 }
-is_busy() { local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]; }
+is_busy() {  # canonical predicate when sourced, inline fallback otherwise (same shape as is_alive)
+  if command -v fleet_busy >/dev/null 2>&1; then fleet_busy "$1"
+  else local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]; fi
+}
 # Errored = a StopFailure marker exists (written by mark-error.sh, cleared on recovery).
 # Not time-windowed: a stuck/errored agent should keep showing until it recovers or dies.
 is_errored() { [ -f "$HOME/.claude/agent-error/$1" ]; }

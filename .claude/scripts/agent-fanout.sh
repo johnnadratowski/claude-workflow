@@ -35,7 +35,11 @@ BASE="${WORKFLOW_BASE_BRANCH:-main}"
 role_of() { fleet_resolve_role "$1"; }
 # Identity/liveness via the shared helper (tmux-optional); fall back inline if unsourced.
 self_name() { fleet_find_self "$reg" 2>/dev/null; }
-is_busy()  { local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]; }
+# Busy via the canonical predicate (fleet_busy, _fleet.sh); inline fallback only if unsourced.
+is_busy()  {
+  if command -v fleet_busy >/dev/null 2>&1; then fleet_busy "$1"
+  else local m="$HOME/.claude/agent-busy/$1"; [ -f "$m" ] && [ -n "$(find "$m" -mmin -5 2>/dev/null)" ]; fi
+}
 # Errored = a StopFailure marker (mark-error.sh; cleared on recovery). Not time-windowed —
 # a stuck/errored agent keeps showing ERR until it recovers or dies.
 is_errored() { [ -f "$HOME/.claude/agent-error/$1" ]; }

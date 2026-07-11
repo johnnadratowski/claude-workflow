@@ -158,8 +158,14 @@ else
   busy_marker="$HOME/.claude/agent-busy/$target"
   target_busy=0
   # A marker older than 5 min is treated as stale (a turn that crashed OR was interrupted without
-  # clearing) so we never suppress the nudge forever; a fresher marker means busy.
-  [ -f "$busy_marker" ] && [ -n "$(find "$busy_marker" -mmin -5 2>/dev/null)" ] && target_busy=1
+  # clearing) so we never suppress the nudge forever; a fresher marker means busy. Canonical
+  # predicate (fleet_busy, _fleet.sh) when sourced; the inline copy is the fallback for a clone
+  # without it — never an undefined function, which would fail OPEN into nudge duplication.
+  if command -v fleet_busy >/dev/null 2>&1; then
+    fleet_busy "$target" && target_busy=1
+  else
+    [ -f "$busy_marker" ] && [ -n "$(find "$busy_marker" -mmin -5 2>/dev/null)" ] && target_busy=1
+  fi
   # HOLD marker (DX-jn-8-031): target is blocked on a Monocle interactive verdict wait — a
   # single long tool call whose busy marker goes stale, so the 5-min rule above would let the
   # nudge through and the watcher would then re-nudge every 30s. A held+live target must NOT be

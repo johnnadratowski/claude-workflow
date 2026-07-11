@@ -35,6 +35,13 @@
 
 set -u
 
+# The canonical fleet predicates (fleet_busy, …) live in _fleet.sh. Guarded source: a clone
+# without it degrades to the inline copies below, never to an undefined function — which would
+# fail OPEN (busy reads as idle) and re-nudge a mid-turn agent into duplicate deliveries.
+fleet_helper="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/_fleet.sh"
+# shellcheck disable=SC1090
+[ -r "$fleet_helper" ] && . "$fleet_helper"
+
 # --- daemon control (single-instance via pidfile) ---------------------------
 # `start` spawns ONE detached copy running the poll loop and records its pid;
 # a second `start` while one is live is a no-op. `stop`/`status` don't need tmux.
@@ -105,7 +112,11 @@ while :; do
     # Skip busy recipients — their Stop-drain delivers at the end of the turn;
     # re-nudging a busy agent would just buffer and replay as a duplicate.
     bm="$HOME/.claude/agent-busy/$recipient"
-    [ -f "$bm" ] && [ -n "$(find "$bm" -mmin -5 2>/dev/null)" ] && continue
+    if command -v fleet_busy >/dev/null 2>&1; then
+      fleet_busy "$recipient" && continue
+    else
+      [ -f "$bm" ] && [ -n "$(find "$bm" -mmin -5 2>/dev/null)" ] && continue
+    fi
     # Skip HELD recipients (DX-jn-8-031) — parked on a Monocle interactive verdict wait, a
     # single long tool call whose busy marker goes stale (so the check above stops catching
     # it). NO staleness test: a human review can run for hours, and the hold is bounded by the
