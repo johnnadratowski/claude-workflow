@@ -1361,6 +1361,54 @@ ext_out="$(HOME="$SRH" WORKFLOW_WORKTREES_MANIFEST="$SRH/$MANIFEST_REL" WORKFLOW
 eq "boot: resolved session == ext session → refuses (rc 2)" "2" "$ext_rc"
 t kill-session -t notmain 2>/dev/null || true
 
+# --- P2c layer 1: the persisted session identity must reach the AGENTS -------------------------
+# name-windows runs from each agent's SessionStart, in ITS OWN worktree, as a separate process that
+# never executes boot's resolution. So the identity has to be PERSISTED (workflow.config.local) and
+# PROPAGATED (add-worktree seeds that file into the worktree). These two rows own that chain.
+echo
+echo "DX-jn-cc-014 — the persisted session identity reaches a separate process, in a worktree"
+
+WLS="$here/workflow-local.sh"
+PH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$PH"
+PMAIN="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$PMAIN/.claude/scripts"
+cp "$SCRIPT" "$here/_fleet.sh" "$here/_config.sh" "$WLS" "$PMAIN/.claude/scripts/"
+# COMMIT them: a linked worktree's checkout contains only TRACKED files. (That is the same fact the
+# .local hazard rests on — .local is gitignored, so it never arrives via git at all.)
+( cd "$PMAIN" && git init -q . && git add -A && git -c user.email=t@t -c user.name=t commit -q -m x ) 2>/dev/null
+
+t new-session -d -s realsess -n anchor -c "$PMAIN"
+p_anchor="$(t list-panes -t realsess:anchor -F '#{pane_id}' | head -1)"
+
+# (e) PRECEDENCE: a STALE value in the COMMITTED config must lose to the machine-local .local.
+#     (This is why the writers target .local — a committed session name is one machine's accident,
+#      and every other engineer would inherit it.)
+printf 'WORKFLOW_FLEET_HOME_SESSION="stale-main"\n' > "$PMAIN/.claude/workflow.config"
+bash "$WLS" set "$PMAIN" WORKFLOW_FLEET_HOME_SESSION realsess >/dev/null 2>&1
+pw1="$(cd "$PMAIN" && HOME="$PH" FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="$p_anchor" bash "$PMAIN/.claude/scripts/fleet-layout.sh" name-windows 2>&1; echo "rc=$?")"
+eq ".local beats a STALE committed session value (name-windows targets the real session)" "rc=0" "$(printf '%s' "$pw1" | tail -1)"
+eq "…and the ordering actually ran in the real session (window still there)" "1" "$(t list-windows -t realsess -F '#{window_name}' | grep -cx 'anchor')"
+
+# (f) PROPAGATION across the worktree boundary — the row rev-a demanded, and the one §7(e) cannot
+#     do: a worktree's checkout holds only TRACKED files, .local is gitignored, and _config.sh
+#     resolves its root to the WORKTREE. So the value only arrives if add-worktree's SEED ran.
+#     The row calls the REAL writer (workflow-local.sh seed) — a harness that hand-copied the file
+#     would test the reader and green on a broken writer.
+PWT="$PMAIN-wt"
+( cd "$PMAIN" && git worktree add -q -b wtb "$PWT" ) 2>/dev/null
+eq "a fresh worktree has NO .local (gitignored — this is the whole hazard)" "0" "$([ -f "$PWT/.claude/workflow.config.local" ] && echo 1 || echo 0)"
+bash "$WLS" seed "$PMAIN" "$PWT" >/dev/null 2>&1; seed_rc=$?
+eq "add-worktree's seed: exits 0" "0" "$seed_rc"
+eq "…and the worktree now carries the session identity" "1" "$(grep -c 'WORKFLOW_FLEET_HOME_SESSION="realsess"' "$PWT/.claude/workflow.config.local" 2>/dev/null || echo 0)"
+# The decisive assertion: name-windows, run as a SEPARATE PROCESS with cwd = the worktree (exactly
+# what register-agent.sh does on SessionStart), resolves the session from the SEEDED .local.
+# Without the seed it would read the default `main`, _order_windows would silently return 0, and
+# canonical ordering would never happen in any project whose session isn't named `main`.
+pw2="$(cd "$PWT" && HOME="$PH" FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="$p_anchor" bash "$PWT/.claude/scripts/fleet-layout.sh" name-windows 2>&1; echo "rc=$?")"
+eq "name-windows from the WORKTREE (separate process) resolves the seeded session" "rc=0" "$(printf '%s' "$pw2" | tail -1)"
+seen="$(cd "$PWT" && HOME="$PH" FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="$p_anchor" bash -c 'source .claude/scripts/_config.sh 2>/dev/null; printf "%s" "${WORKFLOW_FLEET_HOME_SESSION:-UNSET}"')"
+eq "…because the worktree's OWN config resolves it (not the default)" "realsess" "$seen"
+t kill-session -t realsess 2>/dev/null || true
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

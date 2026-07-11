@@ -40,7 +40,7 @@ claude
 9. Open a tmux pane (or window) for each, `cd` into it, and start `claude`
 10. Interview you about the project and fill in `docs/architecture.md`, `docs/best-practices.md`, `docs/security.md`, `docs/testing.md`
 
-After this you have: a fresh project repo, a tmux layout with one agent per worktree, and starting documentation. The doc-drift loop in `/todo` will grow `docs/best-practices.md` organically as you ship work.
+After this you have: a fresh project repo, a running fleet (one agent per worktree, each in its own tmux window with a full cell — brought up by `/fleet-layout boot` from the worktrees manifest, so you can `down` and `boot` it again any time, and add or remove agents later with `/add-worktree --agent` / `/remove-worktree`), and starting documentation. The doc-drift loop in `/todo` will grow `docs/best-practices.md` organically as you ship work.
 
 Before running `/base-initialize`, make sure you've completed the install steps below (especially the user-level `SessionStart` hook in step 4) so the spawned agents auto-register.
 
@@ -164,6 +164,11 @@ Until it's registered, merges fall back to a normal (possibly-conflicting) merge
 │   ├── agent-msg.sh             Backing script for /agent-msg (read+delete; or `drain` the mailbox).
 │   ├── inbox-watcher.sh         Opt-in poller that re-nudges parked agents.
 │   ├── agent-rename.sh          Backing script for /agent-rename.
+│   ├── fleet-layout.sh          Backing script for /fleet-layout: retopologize the
+│   │                             agents' tmux panes (single/dual/wide), (re)label + order
+│   │                             windows, `boot` the fleet from cold, `down` it cleanly.
+│   ├── workflow-local.sh        The single writer of .claude/workflow.config.local
+│   │                             (`set` a machine-local knob, `seed` it into a worktree).
 │   ├── setup-git-merge-drivers.sh  Registers the `merge.ours` driver per clone
 │   │                             (`git config merge.ours.driver true`) so the
 │   │                             `merge=ours` .gitattributes entries take effect.

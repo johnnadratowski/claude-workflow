@@ -62,18 +62,32 @@ If `origin/master` is unreachable (no network / no remote), fall back to local `
 
 ## Phase 3 — Write `workflow.config.local` (gitignored) + seed `settings.local.json`
 
-Append (or create) `.claude/workflow.config.local` with THIS engineer's machine-specific values. It's
-gitignored, so it never ships to anyone else and never touches the committed generic config:
+Write THIS engineer's machine-specific values into `.claude/workflow.config.local` — gitignored, so
+it never ships to anyone else and never touches the committed generic config. Use the **one writer**,
+`workflow-local.sh` (append-or-create, replaces rather than duplicates on a re-run, refuses values
+that would make the file unsourceable, writes atomically, and verifies the value landed):
 
 ```bash
-cat >> "$ROOT/.claude/workflow.config.local" <<EOF
-# --- written by /base-setup on $(date +%F) ---
-WORKFLOW_BASE_BRANCH="$BASE"
-WORKFLOW_MAIN_PATH="$ROOT"          # this clone anchors the transient merge worktrees
-# WORKFLOW_TODO_NS derives from your git email if unset; set it here to override.
-# WORKFLOW_AGENT_NAME_PREFIX="$PREFIX"   # uncomment if you chose a prefix
-EOF
+WL=.claude/scripts/workflow-local.sh
+"$WL" set "$ROOT" WORKFLOW_BASE_BRANCH "$BASE"
+"$WL" set "$ROOT" WORKFLOW_MAIN_PATH   "$ROOT"     # anchors the transient merge worktrees
+[ -n "$PREFIX" ] && "$WL" set "$ROOT" WORKFLOW_AGENT_NAME_PREFIX "$PREFIX"
+
+# The fleet's home tmux session — MACHINE-LOCAL (whatever your terminal named its session; a fresh
+# one is `0`, not `main`). /fleet-layout boot needs it, and so does every agent's SessionStart
+# `name-windows`, which runs in ITS OWN worktree — without this they all fall back to the default
+# and silently order nothing. Write it BEFORE provisioning worktrees below: /add-worktree seeds
+# this file into each one.
+[ -n "${TMUX:-}" ] && "$WL" set "$ROOT" WORKFLOW_FLEET_HOME_SESSION "$(tmux display-message -p '#{session_name}')"
 ```
+
+Pass **expanded** paths (`$ROOT`, not a deferred `$HOME/...` string): the writer refuses `$` in a
+value, because a sourced file that re-expands it later is how a config silently means two different
+things in two places. Existing `.local` files that already use the `$HOME/...` form keep working —
+`seed` copies lines verbatim.
+
+**A non-zero from any of these aborts the phase.** A `.local` missing a value is exactly what
+`/add-worktree` would then seed into every agent worktree.
 
 Seed the local permission/settings file from the committed example — **only if the engineer doesn't
 already have one** (never clobber their existing gitignored `settings.local.json`). The `ask`

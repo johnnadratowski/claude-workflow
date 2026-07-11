@@ -117,7 +117,7 @@ dedicated `<base>-cc` branch (`/add-worktree cc --branch <base>-cc --from origin
 | `cc-watcher-keepalive.sh` | SessionStart + Stop | **Coordinator only.** Keeps exactly one `inbox-watcher` daemon alive machine-wide (idempotent `inbox-watcher.sh start` — launch on startup, self-heal on every Stop). One cc per machine → one watcher. |
 
 ## Scripts (`scripts/`)
-`_config.sh` (config loader) · `agent-send.sh` · `agent-broadcast.sh` · `agent-fanout.sh` ·
+`_config.sh` (config loader) · `_fleet.sh` (the canonical fleet predicates: liveness, busy, role, self, and `fleet_manifest_path` — the ONE resolver of the worktrees-manifest path) · `fleet-layout.sh` (layouts + `name-windows` + `boot` + `down`) · `workflow-local.sh` (the single writer of the gitignored `workflow.config.local`: `set` a machine-local knob, `seed` it into a new worktree) · `agent-send.sh` · `agent-broadcast.sh` · `agent-fanout.sh` ·
 `agent-msg.sh` · `inbox-watcher.sh` (the coordinator-run re-nudge daemon: parked messages + retriable-errored agents; kept alive by `cc-watcher-keepalive.sh`) · `agent-rename.sh` ·
 `gen-todos.mjs` (TODO index generator/validator). The `agent-*` scripts are allow-listed in
 `settings.json.example` so fan-outs/inbox-drains don't prompt; `agent-fanout.sh restart` still

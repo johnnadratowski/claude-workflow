@@ -83,3 +83,39 @@ Legend:
 **Skill Version**: 1.1.0
 **Category**: Git Workflow / Dev Environment Setup
 _Version history: see [CHANGELOG.md](./CHANGELOG.md)._
+
+## The fleet manifest (machine-local)
+
+Fleet agents are enumerated from a machine-local JSON manifest — the file `/fleet-layout`'s `boot`
+and `down` read, `/add-worktree` registers into, and `/remove-worktree` deregisters from. Its path
+comes from `fleet_manifest_path` (`.claude/scripts/_fleet.sh`): `WORKFLOW_WORKTREES_MANIFEST` when
+set, else `~/.config/<main-clone-basename>-worktrees.json` (derived from the git *common* dir, so
+every worktree of a clone agrees on it).
+
+```json
+{
+  "worktrees": [
+    { "path": "/Users/me/code/myproject-feat-1", "branch": "feat-1", "agent": "myproject-feat-1", "active": true }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `path` | absolute worktree path — how `down` targets an agent (names can drift; paths don't) |
+| `agent` | the name the session registers under (includes `WORKFLOW_AGENT_NAME_PREFIX`). An entry without it is not a fleet agent |
+| `active` | `false` parks a lane: `boot` skips it. **`down` ignores this** — "stop all agents" means all |
+| `branch` | informational |
+
+**Every writer owns the whole document.** Re-read the file immediately before merging, write through
+`<manifest>.tmp.$$` + `mv -f`, and **carry through every field and top-level key you didn't write** —
+a rewrite that knows only today's fields silently drops tomorrow's (and a dropped `agent` field
+quietly un-fleets an agent, with no error).
+
+### Per-clone vs per-engineer config
+
+`.claude/workflow.config.local` is seeded from the main clone into each new worktree by
+`/add-worktree`. Keys that are **per-clone rather than per-engineer** must NOT propagate — today
+that's `WORKFLOW_DOCS_URL` (a per-lane port). They're listed in `PER_CLONE_KEYS` in
+`.claude/scripts/workflow-local.sh`; **a new per-clone knob must be added there**, or every worktree
+silently inherits one clone's value.

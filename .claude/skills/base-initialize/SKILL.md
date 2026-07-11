@@ -192,6 +192,29 @@ if [ "$TEST_COUNT" -ge 1 ]; then
 fi
 ```
 
+### Persist the fleet's home tmux session (MACHINE-LOCAL)
+
+`/fleet-layout boot` creates each agent's window in `WORKFLOW_FLEET_HOME_SESSION`, and — the part
+that's easy to miss — **each agent's SessionStart runs `name-windows` in its own worktree**, reading
+that worktree's own config. Without a persisted value, every one of them falls back to the default
+`main`; if your session isn't named `main` (a fresh tmux session is `0`), window ordering silently
+does nothing, forever.
+
+It is **machine-local** (it's whatever *this* terminal named its session), so it goes in the
+**gitignored** `.claude/workflow.config.local` — never the committed `workflow.config`, which every
+engineer shares. Write it **now**, before Phase 9 creates the worktrees, because `/add-worktree`
+seeds that file into each one:
+
+```bash
+SESSION="$(tmux display-message -p '#{session_name}')"
+.claude/scripts/workflow-local.sh set . WORKFLOW_FLEET_HOME_SESSION "$SESSION"   # append-or-create
+```
+
+**A non-zero here aborts the phase** — do not create worktrees from a `.local` that lacks the knob;
+that's precisely what would get seeded into every agent. (Use `workflow-local.sh`, not a hand-rolled
+`sed`: `.local` does not exist yet at this point, so the sed-on-a-commented-line idiom used above for
+the committed config would silently no-op.)
+
 This change isn't committed yet — it'll be picked up by the final commit in Phase 8 along with everything `define-project` produces. If the user creates zero test agents, `WORKFLOW_TESTING_AGENT` stays blank and `/todo continue` will ask the user for the target each time.
 
 ## Phase 6: Install the user-level SessionStart hook
@@ -325,7 +348,13 @@ This single commit captures everything `define-project` produced — docs, code 
 
 ## Phase 9: Create worktrees
 
-For each worktree name from Phase 5, invoke `/add-worktree <name>`:
+For each worktree name from Phase 5, invoke `/add-worktree <name> --agent`:
+
+The `--agent` flag registers each worktree in the machine-local worktrees manifest (and skips the
+interactive "is this a fleet agent?" ask), which is what makes Phase 10's `boot` able to find them.
+`/add-worktree` also seeds `.claude/workflow.config.local` into each new worktree — carrying the
+session knob you just wrote — so every agent reads the same identity its SessionStart depends on.
+
 
 - Path lands at `$(dirname $(pwd))/$(basename $(pwd))-<name>`
 - Branch `<name>` is created from the current base branch — which now points at the Phase 8 commit, so the worktree's initial state already contains all the docs + scaffold + generated skills from `define-project`
@@ -333,18 +362,29 @@ For each worktree name from Phase 5, invoke `/add-worktree <name>`:
 
 After all worktrees are created, summarize the layout.
 
-## Phase 10: Open tmux panes
-
-For each worktree:
+## Phase 10: Bring the fleet up
 
 ```bash
-tmux new-window -n "$NAME" -c "$WORKTREE_PATH"
-tmux send-keys -t "$NAME" "claude" Enter
+.claude/scripts/fleet-layout.sh boot
 ```
 
-Each new claude session auto-registers via the user-level `SessionStart` hook installed back in Phase 6. The agent name comes from its branch (i.e., the worktree name).
+One command replaces the hand-rolled `tmux new-window` + `send-keys` loop, and the whole
+crash-recovery discipline comes with it: `boot` enumerates the agents from the manifest Phase 9
+registered, creates a window per agent **in canonical order**, types the launch **only** into panes
+it just created (never into a pane whose state it doesn't know), and builds each window into a full
+**cell** — claude full-height on the left, companions stacked right. Fresh worktrees have no prior
+sessions, so it launches plain `claude` (not `--continue`), which is exactly right here. Your own
+window is never touched.
 
-Alternative if the user prefers splits over windows: ask them via `AskUserQuestion` "New windows or splits?" before this phase.
+`boot` **refuses (exit 2) outside tmux** and reports per-agent failures with a non-zero exit — a
+spin-up verb must never report success while launching zero agents. It is idempotent: re-run it
+after fixing whatever it reported.
+
+> **Resume prompts stay human.** Booted claudes may show a picker; `boot` never answers one.
+
+Set `WORKFLOW_CELL_COMMAND` in `.claude/workflow.config` if you want each cell's top-right pane to
+run a tool (a monitor, a log tail). Empty (the default) leaves it a plain shell — a command every
+machine may not have would just print `command not found` into every agent's pane.
 
 ## Phase 11: Report
 
@@ -366,7 +406,7 @@ Tell the user:
 - **User declines reset confirmation**: hard stop; no changes.
 - **`git init` or any sed fails**: stop and report — the user's repo state could be partial; tell them which file to inspect.
 - **`/add-worktree` fails for one or more worktrees**: continue with the rest; report which failed at the end. The user can re-run `/add-worktree` manually for the missed ones.
-- **`tmux new-window` fails**: skip that pane; report. The user can `cd <worktree>` and `claude` manually.
+- **`fleet-layout.sh boot` fails** (per-agent failure, or a refusal outside tmux): report exactly what it printed — it names each agent it could not bring up. It's idempotent, so re-run it after fixing the cause; nothing is double-launched. A failed `.local` **seed** during Phase 9 is a worktree failure, not a warning: report it and don't pretend the agent is configured.
 - **`/define-project` skip-ahead**: if the user calls out early in Phase 7 (e.g., "skip the rest, let's just get the worktrees up"), accept it. Proceed to Phase 8 (final commit) with whatever the orchestrator produced so far — the user can re-enter `/define-project` later and it detects existing state. Skipping `define-project` entirely is also fine; the worktrees will branch from the initial commit (Phase 4) instead.
 
 ## What this skill will NOT do

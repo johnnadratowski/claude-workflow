@@ -26,8 +26,32 @@ Create a new git worktree at `<parent-of-repo>/<repo-name>-<worktree-name>` and 
    - With `--branch`: `git worktree add <target> <branch>` — uses existing branch.
 5. **Copy env files** — for each path in `WORKFLOW_WORKTREE_COPY_FILES` (array; defaults to none), copy from the main clone to the new worktree if it exists. Useful for `.env`, `.envrc`, etc. that are gitignored.
 6. **Seed `.claude/settings.local.json`** — it's gitignored (per-engineer, not inherited via git), so a fresh worktree has none; copy the main clone's `.claude/settings.local.json` if present, else `.claude/settings.local.json.example`. The shared guardrails + machinery grants live in the committed `settings.json`, so the seed just carries personal allows and prevents prompt-flooding in the new worktree.
-7. **Run setup** — if `WORKFLOW_WORKTREE_SETUP_CMD` is set and `--no-setup` wasn't passed, run it in the new worktree (`cd <target> && eval "$WORKFLOW_WORKTREE_SETUP_CMD"`). Surface failures; don't abort the worktree creation.
-8. **Print summary** — path, branch, what was copied/run, the `cd` command to enter it.
+7. **Seed `.claude/workflow.config.local`** — same reason as step 6, and just as load-bearing: it's gitignored, so a fresh worktree has **none**, and `_config.sh` resolves its root to the **worktree** (`git rev-parse --show-toplevel`), not the main clone. A worktree without it reads no `WORKFLOW_BASE_BRANCH` (⇒ **solo mode**, the `base-*` skills disable themselves) and no `WORKFLOW_FLEET_HOME_SESSION` (⇒ each agent's SessionStart `name-windows` targets the default session and **silently orders nothing**). Run:
+
+   ```bash
+   MAIN="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"   # NOT $WORKFLOW_MAIN_PATH:
+   # that defaults to the CALLER's own toplevel (_config.sh), so an agent running this from a
+   # worktree that has no .local would resolve the source to that empty worktree and seed nothing.
+   .claude/scripts/workflow-local.sh seed "$MAIN" "$TARGET"
+   ```
+
+   **A non-zero here FAILS the worktree, loudly** — never a silent continue. Shipping a worktree with no `.local` is exactly the broken state the seed exists to prevent, and an operator who saw "worktree created" would believe propagation was handled. (The script copies every key except the documented **per-clone** ones — e.g. `WORKFLOW_DOCS_URL`, which is per-lane and must not propagate — and never overwrites an existing `.local`.)
+
+8. **Register it as a fleet agent** (unless `--no-agent`) — ask via `AskUserQuestion` whether this worktree is a fleet agent; `--agent[=<name>]` skips the ask (that's what `/base-initialize` passes). If yes, add an entry to the machine-local worktrees manifest — the path comes from `fleet_manifest_path` (`.claude/scripts/_fleet.sh`; `WORKFLOW_WORKTREES_MANIFEST`, else `~/.config/<main-clone-basename>-worktrees.json`):
+
+   ```json
+   { "path": "<target>", "branch": "<name>", "agent": "<prefixed-agent-name>", "active": true }
+   ```
+
+   The `agent` value carries `WORKFLOW_AGENT_NAME_PREFIX` — that's the name the session actually registers under. `/fleet-layout boot` enumerates this file, so the next `boot` spins the worktree up with a full cell.
+
+   **Write it atomically and preserve what you don't own**: re-read the manifest immediately before merging (a concurrent `add`/`remove` must not be clobbered), serialize to `<manifest>.tmp.$$`, then `mv -f`. Carry through **every field and top-level key you didn't write** — other tools store their own state in this file, and a rewrite that only knows today's fields silently drops tomorrow's.
+
+9. **Run setup** — if `WORKFLOW_WORKTREE_SETUP_CMD` is set and `--no-setup` wasn't passed, run it in the new worktree (`cd <target> && eval "$WORKFLOW_WORKTREE_SETUP_CMD"`). Surface failures; don't abort the worktree creation.
+10. **Print summary** — path, branch, what was copied/run, whether it was registered as a fleet agent, the `cd` command to enter it.
+
+> **Pre-existing worktrees don't get the seed** — it runs at creation only. To top one up:
+> `.claude/scripts/workflow-local.sh seed "$MAIN" /path/to/existing-worktree`.
 
 ## Configuration
 

@@ -18,9 +18,21 @@ description: Tear down a git worktree created by `/add-worktree`. Confirms befor
 2. **Verify it's a worktree** — `git worktree list --porcelain` includes the path.
 3. **Safety check** — refuse (unless `--force`) if the worktree has uncommitted changes OR commits not yet in the **local** base branch (`$WORKFLOW_BASE_BRANCH`). This repo is local-first — `origin/<base>` is frozen (advanced only by a human-gated `/base-push`), so "not on any remote" is the wrong test; local `<base>` is authoritative.
 4. **Detached-HEAD rescue** — if the worktree is DETACHED with unlanded commits and is being `--force`-removed, stamp a `wt-rescue-<name>-<shortsha>` branch at its HEAD SHA first so the commits stay reachable (unless `--no-rescue`). Gate the removal on the rescue ref actually existing.
-5. **Run `git worktree remove <path>`** (or `--force` if explicitly approved).
-6. **If `--delete-branch`** — delete the local branch only if it's fully merged into local `<base>` (or force).
-7. **Print summary** — what was removed, rescue ref (if any), whether the branch was deleted.
+5. **If it is a fleet agent: STOP IT FIRST, then deregister** — read the machine-local worktrees manifest (path from `fleet_manifest_path`, `.claude/scripts/_fleet.sh`) and look up the entry for this worktree. The read is **three-way and fails CLOSED**:
+
+   | Manifest state | Action |
+   |---|---|
+   | **absent** | proceed — nothing was ever registered |
+   | **present but unreadable / unparseable** | **REFUSE the removal, loudly.** An unknown is not a "no" — the worktree may host a live agent, and removing it out from under a running process is the failure this guard exists to prevent. `--force` does **not** bypass this (it only reaches `down`'s busy gate) |
+   | entry with an `agent` field | run `.claude/scripts/fleet-layout.sh down <agent>` **and stop on a non-zero** — busy / skip-marked / failed-kill / self / outside-tmux all refuse, and each one means the agent is still running. Surface `down`'s report verbatim. `--force` passes through to `down` (busy gate only) |
+
+   Only after a clean `down` (or a clean "no agent entry"): remove the entry from the manifest — same atomic write as `/add-worktree` (re-read, `<manifest>.tmp.$$`, `mv -f`, carry through every field and top-level key you don't own).
+
+   > `down` refuses outside tmux by design, so removing an **agent** worktree is a tmux-side operation even when the agent is long dead. There is no headless deregister-only path today; that's known future work, not an oversight.
+
+6. **Run `git worktree remove <path>`** (or `--force` if explicitly approved).
+7. **If `--delete-branch`** — delete the local branch only if it's fully merged into local `<base>` (or force).
+8. **Print summary** — what was removed, whether a fleet agent was stopped + deregistered, rescue ref (if any), whether the branch was deleted.
 
 ## Flags
 
