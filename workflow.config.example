@@ -113,6 +113,33 @@ WORKFLOW_SUBAGENT_REVIEW_MODEL="sonnet"
 # WORKFLOW_WORKTREE_SETUP_CMD="pnpm install --frozen-lockfile"
 
 # =====================================================================
+# Fleet layout (/fleet-layout: boot, down, single/dual/wide)
+# =====================================================================
+
+# Where the machine-local worktrees manifest lives — the file `boot` and `down`
+# enumerate the fleet from (entries carrying an `agent` field). Unset: derived from
+# the MAIN clone's directory name, so every worktree of the clone agrees:
+#   ~/code/myproject  ->  ~/.config/myproject-worktrees.json
+# WORKFLOW_WORKTREES_MANIFEST="$HOME/.config/myproject-worktrees.json"
+
+# Command the top-right companion pane of each agent's cell runs at boot. EMPTY by
+# default: `send-keys` succeeds at the tmux layer even when the receiving shell errors,
+# so a default command the machine lacks would print `command not found` in every agent's
+# pane AND be invisible to boot's report. Set it if every machine running this fleet has
+# the tool. Empty => the pane is just a shell.
+# WORKFLOW_CELL_COMMAND="mytool"
+
+# The tmux session the agents' windows live in. This is MACHINE-LOCAL (it is whatever
+# your terminal named its session — `0`, `main`, ...), so it belongs in the gitignored
+# .claude/workflow.config.local, NOT here. /base-initialize and /base-setup write it
+# there for you, and /add-worktree seeds that file into each new worktree — each agent's
+# SessionStart reads its OWN worktree's copy.
+# WORKFLOW_FLEET_HOME_SESSION="main"      # <- in workflow.config.local, not this file
+
+# The dedicated session the `wide`/`dual` layouts move feature windows into.
+# WORKFLOW_FLEET_EXT_SESSION="wide"
+
+# =====================================================================
 # TODO system (/todo, .claude/scripts/gen-todos.mjs)
 # =====================================================================
 

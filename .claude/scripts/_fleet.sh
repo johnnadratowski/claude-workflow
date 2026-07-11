@@ -96,3 +96,30 @@ fleet_agent_id() {
     *)           printf 'f%s'    "${num:-1}" ;;  # unreachable (role is exhaustive) — id-safe default
   esac
 }
+
+# fleet_manifest_path — echo the machine-local worktrees-manifest path (DX-jn-cc-014).
+# THE single resolver: fleet-layout's boot/down, statusline-role's lane fallback, and any
+# consuming project's config all route through here rather than hardcoding a path (one
+# identity, one pipeline).
+#
+# WORKFLOW_WORKTREES_MANIFEST (env, or workflow.config[.local]) wins. Otherwise the default
+# derives from the MAIN CLONE's basename via the shared git common dir — worktree-invariant
+# by construction, since a linked worktree's own toplevel basename differs per worktree and
+# would fork the default (myproject → ~/.config/myproject-worktrees.json, from every worktree).
+#
+# Return status is a CONTRACT: resolvable → 0 + the path on stdout; unresolvable (not a repo,
+# degenerate basename) → non-zero + NO output. Callers that mutate (boot/down) treat a failed
+# resolution as the same loud refusal as a missing manifest; display-only callers (statusline)
+# degrade silently. NOTE: in a bare repo the common dir has no worktree parent, so the
+# derivation names the bare dir's parent — harmless here (no fleet runs from a bare repo).
+fleet_manifest_path() {
+  if [ -n "${WORKFLOW_WORKTREES_MANIFEST:-}" ]; then
+    printf '%s' "$WORKFLOW_WORKTREES_MANIFEST"; return 0
+  fi
+  local common base
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  [ -n "$common" ] || return 1
+  base="$(basename "$(dirname "$common")")"
+  case "$base" in ''|'/'|'.') return 1 ;; esac
+  printf '%s' "$HOME/.config/${base}-worktrees.json"
+}

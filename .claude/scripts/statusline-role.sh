@@ -15,7 +15,7 @@
 # every statusline tick and must stay dependency-free (no _fleet.sh source). Role comes
 # from a ~/.claude/agents/<name>.role override, else the name pattern (matches
 # resolve_role in register-agent.sh / role_of in agent-fanout.sh). Lane comes from
-# ~/.config/goals-worktrees.json (worktree path → lane).
+# the worktrees manifest resolved by fleet_manifest_path (worktree path → lane).
 
 cat >/dev/null 2>&1 || true   # drain the StatusJSON ccstatusline pipes in (unused)
 
@@ -60,19 +60,42 @@ esac
 
 # Lane (best-effort; blank if unavailable). Two sources, in priority order:
 #   1. config-driven — WORKFLOW_TODO_LANE / WORKFLOW_LANE in .claude/workflow.config[.local]
-#   2. a path→lane worktrees registry (e.g. goals' ~/.config/goals-worktrees.json)
+#   2. a path→lane worktrees manifest, whose location comes from the ONE resolver
+#      (fleet_manifest_path in _fleet.sh — WORKFLOW_WORKTREES_MANIFEST, else derived from the
+#      main clone's basename). No hardcoded per-project filename.
 lane=""
 root="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ -n "$root" ] && [ -f "$root/.claude/workflow.config" ]; then
   # shellcheck disable=SC1090
   lane="$(. "$root/.claude/workflow.config" 2>/dev/null; . "$root/.claude/workflow.config.local" 2>/dev/null; printf '%s' "${WORKFLOW_TODO_LANE:-${WORKFLOW_LANE:-}}")"
 fi
-if [ -z "$lane" ] && [ -n "$root" ] && [ -r "$HOME/.config/goals-worktrees.json" ] && command -v python3 >/dev/null 2>&1; then
-  lane="$(python3 -c "import json
+# The manifest read runs in a subshell of its OWN, entered UNCONDITIONALLY — the config subshell
+# above is gated on workflow.config existing, and nesting this inside it would lose the lane in a
+# repo that has no workflow.config (the resolver's whole promise is that a fresh project needs no
+# config). The subshell sources the config (so a manifest path pinned there is visible — the
+# statusline process env carries no WORKFLOW_* knobs) and _fleet.sh, both guarded; anything
+# missing → blank lane. Display-only: fail-soft by design, never a broken statusline.
+if [ -z "$lane" ] && [ -n "$root" ] && command -v python3 >/dev/null 2>&1; then
+  lane="$(
+    # ENV WINS. The config files assign with `=`, so sourcing them would clobber an exported
+    # override — snapshot it first and re-apply after, exactly as _config.sh does.
+    _env_mf="${WORKFLOW_WORKTREES_MANIFEST:-}"
+    # shellcheck disable=SC1090,SC1091
+    { [ -f "$root/.claude/workflow.config" ] && . "$root/.claude/workflow.config"; } 2>/dev/null
+    # shellcheck disable=SC1090,SC1091
+    { [ -f "$root/.claude/workflow.config.local" ] && . "$root/.claude/workflow.config.local"; } 2>/dev/null
+    # shellcheck disable=SC1090,SC1091
+    { [ -r "$(dirname "$0")/_fleet.sh" ] && . "$(dirname "$0")/_fleet.sh"; } 2>/dev/null
+    [ -n "$_env_mf" ] && WORKFLOW_WORKTREES_MANIFEST="$_env_mf"
+    command -v fleet_manifest_path >/dev/null 2>&1 || exit 0
+    mf="$(fleet_manifest_path 2>/dev/null)" || exit 0
+    [ -r "$mf" ] || exit 0
+    python3 -c "import json
 try:
-    d=json.load(open('$HOME/.config/goals-worktrees.json'))
+    d=json.load(open('$mf'))
     print(next((w.get('lane','') for w in d.get('worktrees',[]) if w.get('path')=='$root'),''))
-except Exception: pass" 2>/dev/null)"
+except Exception: pass" 2>/dev/null
+  )"
 fi
 
 if [ -n "$lane" ]; then printf '%s·L%s' "$label" "$lane"; else printf '%s' "$label"; fi

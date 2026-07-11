@@ -76,53 +76,53 @@ cleanup(){
 trap cleanup EXIT INT TERM   # EXIT alone leaks the scratch server + tmpdirs on Ctrl-C
 
 # ---------------------------------------------------------------- fixture
-# Worktrees are deliberately named so that `goals` is a literal string prefix of
-# `goals-2` — the exact trap that makes naive prefix matching misattribute panes.
+# Worktrees are deliberately named so that `proj` is a literal string prefix of
+# `proj-2` — the exact trap that makes naive prefix matching misattribute panes.
 # Physical paths. macOS symlinks /var -> /private/var, and tmux reports pane_current_path
 # resolved; a logical $T would match no pane and silently empty every fixture variable.
 T="$(cd "$(mktemp -d)" && pwd -P)"
 FAKEHOME="$(cd "$(mktemp -d)" && pwd -P)"
-# `goals-extra` shares a string prefix with `goals` and is owned by NO agent. It is what
-# isolates the boundary-aware prefix rule: `goals-2` alone cannot, because longest-match
+# `proj-extra` shares a string prefix with `proj` and is owned by NO agent. It is what
+# isolates the boundary-aware prefix rule: `proj-2` alone cannot, because longest-match
 # would hand that pane to x-2 even under a (wrong) bare-prefix comparison.
-mkdir -p "$T/goals/server" "$T/goals-2" "$T/goals-3" "$T/goals-4" "$T/goals-extra" "$T/pr" "$T/test"
+mkdir -p "$T/proj/server" "$T/proj-2" "$T/proj-3" "$T/proj-4" "$T/proj-extra" "$T/pr" "$T/test"
 mkdir -p "$FAKEHOME/.claude/running-agents" "$FAKEHOME/.claude/agents"
 
 assert_scratch_socket
 # w1: claude(x-1) + companion in a SUBDIR + a skip-marked companion at the root
 # -x/-y give the detached server a real size, so join-pane has room and _precheck_room passes.
-t new-session  -d -x 200 -y 50 -s main -n w1 -c "$T/goals" 'sleep 600'
-t split-window -d -t main:w1   -c "$T/goals/server"  'sleep 600'
-t split-window -d -t main:w1   -c "$T/goals"         'sleep 600'
-t split-window -d -t main:w1   -c "$T/goals-extra"   'sleep 600'
+t new-session  -d -x 200 -y 50 -s main -n w1 -c "$T/proj" 'sleep 600'
+t split-window -d -t main:w1   -c "$T/proj/server"  'sleep 600'
+t split-window -d -t main:w1   -c "$T/proj"         'sleep 600'
+t split-window -d -t main:w1   -c "$T/proj-extra"   'sleep 600'
 # w2: claude(x-2) + companion  (sibling worktree — string-prefix trap)
-t new-window   -d -t main -n w2 -c "$T/goals-2"      'sleep 600'
-t split-window -d -t main:w2   -c "$T/goals-2"       'sleep 600'
+t new-window   -d -t main -n w2 -c "$T/proj-2"      'sleep 600'
+t split-window -d -t main:w2   -c "$T/proj-2"       'sleep 600'
 # w3: two claude panes, MIXED roles (review + test) — a legacy pane shape (grandfathered names; the post-DX-jn-cc-005 fleet is cc + feature)
 t new-window   -d -t main -n w3 -c "$T/pr"           'sleep 600'
 t split-window -d -t main:w3   -c "$T/test"          'sleep 600'
 # w4/w5: feature agents 3 and 4. Four features is what makes `wide` a real 2x2, and what makes
 # `dual` produce TWO windows that derive the same name and must be disambiguated.
-t new-window   -d -t main -n w4 -c "$T/goals-3"      'sleep 600'
-t split-window -d -t main:w4   -c "$T/goals-3"       'sleep 600'
-t new-window   -d -t main -n w5 -c "$T/goals-4"      'sleep 600'
-t split-window -d -t main:w5   -c "$T/goals-4"       'sleep 600'
+t new-window   -d -t main -n w4 -c "$T/proj-3"      'sleep 600'
+t split-window -d -t main:w4   -c "$T/proj-3"       'sleep 600'
+t new-window   -d -t main -n w5 -c "$T/proj-4"      'sleep 600'
+t split-window -d -t main:w5   -c "$T/proj-4"       'sleep 600'
 
 read_panes(){ t list-panes -a -F '#{window_name} #{pane_id} #{pane_current_path}'; }
 pane_at(){ read_panes | awk -v w="$1" -v p="$2" '$1==w && $3==p {print $2; exit}'; }
 
-P_A="$(pane_at w1 "$T/goals")"            # claude(x-1)  — first pane created in w1
-P_B="$(pane_at w1 "$T/goals/server")"     # companion in a subdir
-P_C="$(read_panes | awk -v w=w1 -v p="$T/goals" '$1==w && $3==p {print $2}' | tail -1)"  # skip-marked
-P_H="$(pane_at w1 "$T/goals-extra")"      # prefix-sharing dir owned by NO agent
-P_D="$(pane_at w2 "$T/goals-2")"          # claude(x-2)
-P_E="$(read_panes | awk -v w=w2 -v p="$T/goals-2" '$1==w && $3==p {print $2}' | tail -1)"
+P_A="$(pane_at w1 "$T/proj")"            # claude(x-1)  — first pane created in w1
+P_B="$(pane_at w1 "$T/proj/server")"     # companion in a subdir
+P_C="$(read_panes | awk -v w=w1 -v p="$T/proj" '$1==w && $3==p {print $2}' | tail -1)"  # skip-marked
+P_H="$(pane_at w1 "$T/proj-extra")"      # prefix-sharing dir owned by NO agent
+P_D="$(pane_at w2 "$T/proj-2")"          # claude(x-2)
+P_E="$(read_panes | awk -v w=w2 -v p="$T/proj-2" '$1==w && $3==p {print $2}' | tail -1)"
 P_F="$(pane_at w3 "$T/pr")"               # claude(x-pr)
 P_G="$(pane_at w3 "$T/test")"             # claude(x-test-1)
-P_I="$(pane_at w4 "$T/goals-3")"          # claude(x-3)
-P_J="$(read_panes | awk -v w=w4 -v p="$T/goals-3" '$1==w && $3==p {print $2}' | tail -1)"
-P_K="$(pane_at w5 "$T/goals-4")"          # claude(x-4)
-P_L="$(read_panes | awk -v w=w5 -v p="$T/goals-4" '$1==w && $3==p {print $2}' | tail -1)"
+P_I="$(pane_at w4 "$T/proj-3")"          # claude(x-3)
+P_J="$(read_panes | awk -v w=w4 -v p="$T/proj-3" '$1==w && $3==p {print $2}' | tail -1)"
+P_K="$(pane_at w5 "$T/proj-4")"          # claude(x-4)
+P_L="$(read_panes | awk -v w=w5 -v p="$T/proj-4" '$1==w && $3==p {print $2}' | tail -1)"
 
 # Guard the fixture itself. An empty pane id would make the assertions below compare "" to ""
 # and pass without exercising anything — the failure mode this fixture already had once.
@@ -136,14 +136,14 @@ t set-option -p -t "$P_C" @fleet-layout-skip 1
 
 # Registry: <name>.<pid> containing the pane id.  $$ is a real live pid, so fleet_alive passes.
 reg(){ printf '%s\n' "$2" > "$FAKEHOME/.claude/running-agents/$1.$$"; printf '%s\n' "$3" > "$FAKEHOME/.claude/agents/$1.cwd"; }
-reg x-1      "$P_A" "$T/goals"
-reg x-2      "$P_D" "$T/goals-2"
+reg x-1      "$P_A" "$T/proj"
+reg x-2      "$P_D" "$T/proj-2"
 reg x-pr     "$P_F" "$T/pr"
 reg x-test-1 "$P_G" "$T/test"
-reg x-3      "$P_I" "$T/goals-3"
-reg x-4      "$P_K" "$T/goals-4"
+reg x-3      "$P_I" "$T/proj-3"
+reg x-4      "$P_K" "$T/proj-4"
 # Stale sidecar: a dead agent whose .cwd still points at a live worktree. Must claim nothing.
-printf '%s\n' "$T/goals" > "$FAKEHOME/.claude/agents/x-dead.cwd"
+printf '%s\n' "$T/proj" > "$FAKEHOME/.claude/agents/x-dead.cwd"
 
 # Run the script's library half with our fake HOME + scratch socket.
 # TMUX_PANE must be non-empty or the dispatcher's fleet_tmux_ok gate exits 0 before doing
@@ -168,7 +168,7 @@ eq "x-1's companion is the SUBDIR pane only (boundary prefix; skip-marked pane e
    "$P_B" "$(lib 'attribute_panes' | awk -F'\t' '$1=="x-1"{print $3}')"
 ok "the sibling worktree's panes never attach to x-1 (longest-match)" \
    "! lib 'attribute_panes' | awk -F'\t' '\$1==\"x-1\"{print \$3}' | grep -q '$P_D\|$P_E'"
-# Isolates the boundary rule: no agent owns goals-extra, so longest-match cannot rescue this.
+# Isolates the boundary rule: no agent owns proj-extra, so longest-match cannot rescue this.
 # A bare `case \$ppath in \$a_cwd*` would hand this pane to x-1.
 ok "an unowned dir sharing x-1's string prefix is NOT a companion (boundary-aware prefix)" \
    "! lib 'attribute_panes' | cut -f3 | grep -q '$P_H'"
@@ -665,14 +665,18 @@ mkdir -p "$T/boot-1" "$T/boot-2" "$T/boot-3" "$T/boot-4"
 # Per-case boot homes. bmk <home> writes the standard .claude skeleton.
 bmk(){ mkdir -p "$1/.claude/running-agents" "$1/.claude/agents" "$1/.config" "$1/.claude/projects"; }
 # manifest <home> <entries-json…> — wraps entries in the worktrees envelope.
-manifest(){ local h="$1"; shift; printf '{ "worktrees": [ %s ] }\n' "$*" > "$h/.config/goals-worktrees.json"; }
-brun(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=bootsess FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="${BPANE:-$TMUX_PANE}" bash "$SCRIPT" "$@"; }
-blib(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=bootsess FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
+# The manifest path is a KNOB now (P1/P2). The harness pins it explicitly for every boot/down
+# invocation: fleet-layout.sh sources _config.sh, so the REPO's own workflow.config would
+# otherwise leak in. Exported values win (_config.sh's env-wins snapshot/re-apply).
+MANIFEST_REL='.config/wf-worktrees.json'
+manifest(){ local h="$1"; shift; printf '{ "worktrees": [ %s ] }\n' "$*" > "$h/$MANIFEST_REL"; }
+brun(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=bootsess WORKFLOW_WORKTREES_MANIFEST="${WTM_OVERRIDE-$h/$MANIFEST_REL}" WORKFLOW_CELL_COMMAND="${CELLCMD-monocle}" FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="${BPANE:-$TMUX_PANE}" bash "$SCRIPT" "$@"; }
+blib(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=bootsess WORKFLOW_WORKTREES_MANIFEST="${WTM_OVERRIDE-$h/$MANIFEST_REL}" WORKFLOW_CELL_COMMAND="${CELLCMD-monocle}" FLEET_TMUX_SOCKET="$SOCKET" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
 bwins(){ t list-windows -t bootsess -F '#{window_name}' | sort | tr '\n' ' ' | sed 's/ $//'; }
 
 # Corrupt JSON → loud non-zero, never an empty-fleet success.
 CJH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$CJH"
-printf '{ not json' > "$CJH/.config/goals-worktrees.json"
+printf '{ not json' > "$CJH/$MANIFEST_REL"
 cj_out="$(brun "$CJH" boot 2>&1)"; cj_rc=$?
 eq "corrupt manifest JSON → non-zero exit"          "1" "$([ "$cj_rc" -ne 0 ] && echo 1 || echo 0)"
 eq "…with an explicit manifest error, not silence"  "1" "$(printf '%s\n' "$cj_out" | grep -ci 'manifest')"
@@ -684,10 +688,10 @@ eq "…names the manifest in the error"               "1" "$(printf '%s\n' "$mf_
 # Unreadable file → loud failure.
 UBH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$UBH"
 manifest "$UBH" '{"path": "'"$T/boot-1"'", "lane": 1, "agent": "b-1"}'
-chmod 000 "$UBH/.config/goals-worktrees.json"
+chmod 000 "$UBH/$MANIFEST_REL"
 ub_rc=0; brun "$UBH" boot >/dev/null 2>&1 || ub_rc=$?
 eq "unreadable manifest → non-zero exit"            "1" "$([ "$ub_rc" -ne 0 ] && echo 1 || echo 0)"
-chmod 600 "$UBH/.config/goals-worktrees.json"
+chmod 600 "$UBH/$MANIFEST_REL"
 # python3 gone (stubbed to the command-not-found rc) → loud failure, not empty fleet.
 py_rc=0; blib "$CJH" 'python3(){ return 127; }; _boot_manifest_agents' >/dev/null 2>&1 || py_rc=$?
 eq "python3 unavailable → _boot_manifest_agents fails non-zero" "1" "$([ "$py_rc" -ne 0 ] && echo 1 || echo 0)"
@@ -902,8 +906,8 @@ for d in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 other other2; do mkdir -p "$T
 dwin(){ t new-window   -d -P -F '#{pane_id}' -t downsess -n "$1" -c "$2" 'sleep 600'; }
 dsplit(){ t split-window -d -P -F '#{pane_id}' -t "downsess:$1" -c "$2" 'sleep 600'; }
 alive(){ t list-panes -a -F '#{pane_id}' | grep -qx "$1"; }
-drun(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=downsess FLEET_TMUX_SOCKET="$SOCKET" FLEET_DOWN_SETTLE=0 TMUX_PANE="${DPANE:-$TMUX_PANE}" bash "$SCRIPT" "$@"; }
-dlib(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=downsess FLEET_TMUX_SOCKET="$SOCKET" FLEET_DOWN_SETTLE=0 TMUX_PANE="${DPANE:-$TMUX_PANE}" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
+drun(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=downsess WORKFLOW_WORKTREES_MANIFEST="$h/$MANIFEST_REL" FLEET_TMUX_SOCKET="$SOCKET" FLEET_DOWN_SETTLE=0 TMUX_PANE="${DPANE:-$TMUX_PANE}" bash "$SCRIPT" "$@"; }
+dlib(){ local h="$1"; shift; HOME="$h" WORKFLOW_FLEET_HOME_SESSION=downsess WORKFLOW_WORKTREES_MANIFEST="$h/$MANIFEST_REL" FLEET_TMUX_SOCKET="$SOCKET" FLEET_DOWN_SETTLE=0 TMUX_PANE="${DPANE:-$TMUX_PANE}" FLEET_LAYOUT_LIB=1 bash -c "source '$SCRIPT'; $*"; }
 dreg(){ printf '%s\n' "$3" > "$1/.claude/running-agents/$2.$$"; printf '%s\n' "$4" > "$1/.claude/agents/$2.cwd"; }
 
 # The clean run: d-1 (claude + companion, plus a skip-marked survivor and a co-tenant at a
@@ -917,7 +921,7 @@ K_C2="$(dwin dkb "$T/dn-2")"
 K_CS="$(dwin dkc "$T/dn-3")"
 for v in K_C1 K_M1 K_S1 K_O1 K_C2 K_CS; do eval "val=\$$v"; [ -n "$val" ] || { echo "FATAL: down fixture pane $v empty"; exit 1; }; done
 dreg "$DKH" d-1                 "$K_C1" "$T/dn-1"
-dreg "$DKH" goals-onchain-2-69  "$K_C2" "$T/dn-2"
+dreg "$DKH" wf-proj-2-69  "$K_C2" "$T/dn-2"
 dreg "$DKH" d-self              "$K_CS" "$T/dn-3"
 # a DEAD registration at a targeted path: the pid-only sweep must remove it
 printf 'cwd:%s\n' "$T/dn-1" > "$DKH/.claude/running-agents/d-1-old.$DEADPID"
@@ -993,9 +997,9 @@ gm(){ # gm <desc> <home> [args…] — expect non-zero AND the witness pane aliv
 }
 gm "corrupt manifest"    "$CJH"
 gm "missing manifest"    "$MFH"
-chmod 000 "$UBH/.config/goals-worktrees.json"
+chmod 000 "$UBH/$MANIFEST_REL"
 gm "unreadable manifest" "$UBH"
-chmod 600 "$UBH/.config/goals-worktrees.json"
+chmod 600 "$UBH/$MANIFEST_REL"
 gm "glob-metachar agent name" "$GBH"
 gm "relative path entry"      "$RPH"
 # zero agent entries: parses fine, enumerates nothing — the vacuous-exit-0 trap
@@ -1170,8 +1174,8 @@ echo; echo "down: self-hardening (token-keyed primary + the terminal kill-helper
 # equality can identify self. --force must not change that.
 TSH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$TSH"; mkdir -p "$T/dn-19"
 TS_P="$(dwin dkt "$T/dn-19")"
-printf '%s\n' "$TS_P" > "$TSH/.claude/running-agents/goals-onchain-x-yz.$$"
-printf '%s\n' "$T/dn-19" > "$TSH/.claude/agents/goals-onchain-x-yz.cwd"
+printf '%s\n' "$TS_P" > "$TSH/.claude/running-agents/wf-proj-x-yz.$$"
+printf '%s\n' "$T/dn-19" > "$TSH/.claude/agents/wf-proj-x-yz.cwd"
 manifest "$TSH" '{"path": "'"$T/dn-19"'", "lane": 19, "agent": "d-tself"}'
 ts_out="$(DPANE="$TS_P" drun "$TSH" down --force 2>&1)"; ts_rc=$?
 eq "transient-named self + misdirected toplevel + --force → skipped (self), exit 0" "0" "$ts_rc"
@@ -1210,13 +1214,13 @@ mkdir -p "$T/boot-h1" "$T/boot-h2" "$T/boot-h3"
 # a LIVE registration under a TRANSIENT name at the entry path → live, no window, no launch
 BHH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$BHH"
 H_P1="$(dwin bh1 "$T/boot-h1")"
-printf '%s\n' "$H_P1" > "$BHH/.claude/running-agents/goals-onchain-9-ab.$$"
-printf '%s\n' "$T/boot-h1" > "$BHH/.claude/agents/goals-onchain-9-ab.cwd"
+printf '%s\n' "$H_P1" > "$BHH/.claude/running-agents/wf-proj-9-ab.$$"
+printf '%s\n' "$T/boot-h1" > "$BHH/.claude/agents/wf-proj-9-ab.cwd"
 manifest "$BHH" '{"path": "'"$T/boot-h1"'", "lane": 1, "agent": "bh-1"}'
 : > "$BHH/rec"
 hb_out="$(FLEET_BOOT_LAUNCH_RECORDER="$BHH/rec" brun "$BHH" boot 2>&1)"; hb_rc=$?
 eq "transient-name live registration at the entry path → reported live-by-path" \
-   "1" "$(printf '%s\n' "$hb_out" | grep -Ec 'bh-1 +live \(as goals-onchain-9-ab')"
+   "1" "$(printf '%s\n' "$hb_out" | grep -Ec 'bh-1 +live \(as wf-proj-9-ab')"
 eq "…boot launched nothing (the 2026-07-10 double-launch hazard)" "0" "$(wc -l < "$BHH/rec" | tr -d ' ')"
 ok "…and created no bh-1 window" "! t list-windows -t bootsess -F '#{window_name}' | grep -qx bh-1"
 # a bare pane at the entry path with NO registration → occupied, no launch
@@ -1237,6 +1241,125 @@ av_rc=0; HOME="$BAH" WORKFLOW_FLEET_HOME_SESSION=bootsess FLEET_TMUX_SOCKET="$SO
   boot_fleet" >/dev/null 2>&1 || av_rc=$?
 eq "blind pane list during occupancy → boot refuses that launch (non-zero)" "1" "$([ "$av_rc" -ne 0 ] && echo 1 || echo 0)"
 eq "…and recorded no launch" "0" "$(wc -l < "$BAH/rec" | tr -d ' ')"
+
+# ---------------------------------------------------------------- DX-jn-cc-014: parameterization
+# The manifest path, the cell command, and the home session are KNOBS now — this section owns them.
+echo
+echo "DX-jn-cc-014 — manifest resolver, config load, cell knob, down filter, boot session"
+
+# --- P1: fleet_manifest_path (unit; no tmux needed) --------------------------------------------
+RES="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$RES/main/.claude" "$RES/.config"
+( cd "$RES/main" && git init -q . && git commit -q --allow-empty -m x ) 2>/dev/null
+
+# env override wins
+r_env="$(cd "$RES/main" && HOME="$RES" WORKFLOW_WORKTREES_MANIFEST=/tmp/pinned.json bash -c ". '$here/_fleet.sh'; fleet_manifest_path")"
+eq "resolver: WORKFLOW_WORKTREES_MANIFEST wins" "/tmp/pinned.json" "$r_env"
+
+# default derives from the MAIN CLONE's basename
+r_def="$(cd "$RES/main" && HOME="$RES" bash -c "unset WORKFLOW_WORKTREES_MANIFEST; . '$here/_fleet.sh'; fleet_manifest_path")"
+eq "resolver: default derives <main-basename>-worktrees.json" "$RES/.config/main-worktrees.json" "$r_def"
+
+# worktree-invariant: a LINKED worktree resolves to the SAME path (git common dir, not toplevel)
+( cd "$RES/main" && git worktree add -q -b wt "$RES/main-wt" ) 2>/dev/null
+r_wt="$(cd "$RES/main-wt" && HOME="$RES" bash -c "unset WORKFLOW_WORKTREES_MANIFEST; . '$here/_fleet.sh'; fleet_manifest_path")"
+eq "resolver: a linked worktree resolves to the SAME manifest (worktree-invariant)" "$RES/.config/main-worktrees.json" "$r_wt"
+
+# non-repo → non-zero AND empty output (return status is a contract)
+NR="$(cd "$(mktemp -d)" && pwd -P)"
+r_nr="$(cd "$NR" && HOME="$RES" bash -c "unset WORKFLOW_WORKTREES_MANIFEST; . '$here/_fleet.sh'; fleet_manifest_path" 2>/dev/null)"; r_nr_rc=$?
+eq "resolver: outside a repo refuses (non-zero)" "1" "$([ "$r_nr_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "resolver: …and prints nothing" "" "$r_nr"
+
+# --- P2: fleet-layout.sh loads workflow.config (config-file-only path) --------------------------
+# BORN-GREEN GUARD: the env knob must be UNSET for this row, else it passes via the env var even
+# with the config load entirely absent (rev-b).
+CFH="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$CFH/.config" "$CFH/wt"
+( cd "$CFH/wt" && git init -q . && git commit -q --allow-empty -m x ) 2>/dev/null
+printf '{ "worktrees": [ {"agent":"c-1","active":true,"path":"%s"} ] }\n' "$CFH/wt" > "$CFH/.config/from-config.json"
+CFG_REPO="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$CFG_REPO/.claude/scripts"
+cp "$SCRIPT" "$here/_fleet.sh" "$here/_config.sh" "$CFG_REPO/.claude/scripts/" 2>/dev/null || true
+( cd "$CFG_REPO" && git init -q . && git commit -q --allow-empty -m x ) 2>/dev/null
+printf 'WORKFLOW_WORKTREES_MANIFEST="%s"\n' "$CFH/.config/from-config.json" > "$CFG_REPO/.claude/workflow.config"
+cfg_out="$(cd "$CFG_REPO" && env -u WORKFLOW_WORKTREES_MANIFEST HOME="$CFH" WORKFLOW_FLEET_HOME_SESSION=bootsess FLEET_TMUX_SOCKET="$SOCKET" bash "$CFG_REPO/.claude/scripts/fleet-layout.sh" boot --dry-run 2>&1 || true)"
+eq "config load: a manifest set ONLY in workflow.config reaches boot (env unset)" "1" "$(echo "$cfg_out" | grep -qi 'c-1' && echo 1 || echo 0)"
+
+# --- P3: WORKFLOW_CELL_COMMAND (empty default upstream) ----------------------------------------
+CCH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$CCH"; mkdir -p "$CCH/w1"
+manifest "$CCH" "$(printf '{"agent":"cc-1","active":true,"path":"%s"}' "$CCH/w1")"
+t new-session -d -s bootsess -n placeholder
+CELLCMD='' FLEET_BOOT_LAUNCH_RECORDER="$CCH/rec" brun "$CCH" boot >/dev/null 2>&1; cc_rc=$?
+eq "cell knob EMPTY: boot still succeeds (rc 0 — the success path is deliberate)" "0" "$cc_rc"
+eq "cell knob EMPTY: 3-pane cell is still built" "3" "$(t list-panes -t bootsess:cc-1 -F x 2>/dev/null | wc -l | tr -d ' ')"
+eq "cell knob EMPTY: NO companion command is keyed (recorder holds only the claude launch)" "cc-1:claude" "$(sed 's/\t/:/' "$CCH/rec" 2>/dev/null | paste -sd, -)"
+eq "cell knob EMPTY: no DEGRADED report" "0" "$(CELLCMD='' brun "$CCH" boot 2>&1 | grep -ci DEGRADED)"
+t kill-session -t bootsess 2>/dev/null || true
+
+# --- P4: down <agent...> filter ----------------------------------------------------------------
+DFH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$DFH"; mkdir -p "$DFH/.claude/agents" "$DFH/.claude/running-agents" "$DFH/wa" "$DFH/wb"
+manifest "$DFH" "$(printf '{"agent":"d-a","active":true,"path":"%s"},{"agent":"d-b","active":true,"path":"%s"}' "$DFH/wa" "$DFH/wb")"
+t new-session -d -s bootsess -n keep
+pa="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n d-a -c "$DFH/wa")"
+pb="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n d-b -c "$DFH/wb")"
+printf '%s' "$pa" > "$DFH/.claude/running-agents/d-a.$$"; printf '%s' "$DFH/wa" > "$DFH/.claude/agents/d-a.cwd"
+printf '%s' "$pb" > "$DFH/.claude/running-agents/d-b.$$"; printf '%s' "$DFH/wb" > "$DFH/.claude/agents/d-b.cwd"
+
+FLEET_DOWN_SETTLE=1 brun "$DFH" down d-a >/dev/null 2>&1; df_rc=$?
+eq "down <agent>: the requested agent's pane is dead" "0" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$pa")"
+eq "down <agent>: the OTHER agent's pane survives" "1" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$pb")"
+eq "down <agent>: exit 0 when the requested agent is verified down" "0" "$df_rc"
+
+# unknown name → LOUD per-name refusal, nothing killed (empty-enumeration lesson).
+# Message-specific: rc≠0 alone is born-green (the arg-parse usage branch already exits non-zero).
+un_out="$(FLEET_DOWN_SETTLE=1 brun "$DFH" down no-such-agent 2>&1)"; un_rc=$?
+eq "down <unknown>: refuses non-zero" "1" "$([ "$un_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "down <unknown>: names the unknown agent in the refusal" "1" "$(echo "$un_out" | grep -qi "no-such-agent" && echo 1 || echo 0)"
+eq "down <unknown>: the live agent's pane is untouched" "1" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$pb")"
+
+# invalid name syntax → refused BEFORE enumeration
+bad_out="$(FLEET_DOWN_SETTLE=1 brun "$DFH" down 'bad;name' 2>&1)"; bad_rc=$?
+eq "down <invalid>: refuses non-zero" "1" "$([ "$bad_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "down <invalid>: says the name is invalid" "1" "$(echo "$bad_out" | grep -qi 'invalid' && echo 1 || echo 0)"
+
+# a requested SELF is a loud refusal, never a silent skip (an exemption must not satisfy a
+# per-request success claim — remove-worktree would read exit 0 as "agent is down")
+selfp="$(t new-window -d -P -F '#{pane_id}' -t bootsess -n d-self -c "$DFH/wb")"
+printf '%s' "$selfp" > "$DFH/.claude/running-agents/d-self.$$"; printf '%s' "$DFH/wb" > "$DFH/.claude/agents/d-self.cwd"
+self_out="$(FLEET_DOWN_SETTLE=1 BPANE="$selfp" brun "$DFH" down d-self 2>&1)"; self_rc=$?
+eq "down <self>: refuses non-zero (never a silent skip)" "1" "$([ "$self_rc" -ne 0 ] && echo 1 || echo 0)"
+eq "down <self>: says so explicitly" "1" "$(echo "$self_out" | grep -qi 'self' && echo 1 || echo 0)"
+eq "down <self>: own pane survives" "1" "$(t list-panes -a -F '#{pane_id}' 2>/dev/null | grep -cx "$selfp")"
+t kill-session -t bootsess 2>/dev/null || true
+
+# --- P2b: boot outside tmux refuses LOUDLY (rc 2 — the specific code down uses) -----------------
+OTH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$OTH"; mkdir -p "$OTH/w1"
+manifest "$OTH" "$(printf '{"agent":"o-1","active":true,"path":"%s"}' "$OTH/w1")"
+ot_out="$(HOME="$OTH" WORKFLOW_WORKTREES_MANIFEST="$OTH/$MANIFEST_REL" FLEET_TMUX_SOCKET="$SOCKET" env -u TMUX -u TMUX_PANE bash "$SCRIPT" boot 2>&1)"; ot_rc=$?
+eq "boot outside tmux: exits 2 (NOT 0 — 'nothing to do' would read as 'fleet is up')" "2" "$ot_rc"
+eq "boot outside tmux: says it cannot launch" "1" "$(echo "$ot_out" | grep -qi 'not inside tmux' && echo 1 || echo 0)"
+lay_rc=0; HOME="$OTH" FLEET_TMUX_SOCKET="$SOCKET" env -u TMUX -u TMUX_PANE bash "$SCRIPT" name-windows >/dev/null 2>&1 || lay_rc=$?
+eq "…while a cosmetic layout verb still exits 0 outside tmux" "0" "$lay_rc"
+
+# --- P2c layer 2: boot resolves the home session, and REBINDS it --------------------------------
+SRH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$SRH"; mkdir -p "$SRH/w1"
+manifest "$SRH" "$(printf '{"agent":"s-1","active":true,"path":"%s"}' "$SRH/w1")"
+t new-session -d -s notmain -n anchor
+anchor_pane="$(t list-panes -t notmain:anchor -F '#{pane_id}' | head -1)"
+# configured session 'bootsess' does NOT exist → fall back to the invoking client's session
+sr_out="$(HOME="$SRH" WORKFLOW_WORKTREES_MANIFEST="$SRH/$MANIFEST_REL" WORKFLOW_FLEET_HOME_SESSION=bootsess WORKFLOW_CELL_COMMAND='' FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="$anchor_pane" bash "$SCRIPT" boot 2>&1)"
+eq "boot: reports the session fallback" "1" "$(echo "$sr_out" | grep -qi "using current session" && echo 1 || echo 0)"
+eq "boot: creates the window in the FALLBACK session" "1" "$(t list-windows -t notmain -F '#{window_name}' 2>/dev/null | grep -cx 's-1')"
+# THE REBIND PROOF: the duplicate-launch guard must follow the resolved session. A window already
+# named for the agent → window-exists, NO launch. Under a partial rebind the guard queries the
+# nonexistent 'bootsess', matches nothing, and duplicate-launches. (rev-a's mutation-proof)
+sr2="$(HOME="$SRH" WORKFLOW_WORKTREES_MANIFEST="$SRH/$MANIFEST_REL" WORKFLOW_FLEET_HOME_SESSION=bootsess WORKFLOW_CELL_COMMAND='' FLEET_BOOT_LAUNCH_RECORDER="$SRH/rec2" FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="$anchor_pane" bash "$SCRIPT" boot 2>&1)"
+eq "boot re-run: the window-exists guard FOLLOWS the resolved session" "1" "$(echo "$sr2" | grep -qi 'window-exists' && echo 1 || echo 0)"
+eq "boot re-run: launches nothing (no duplicate)" "0" "$([ -s "$SRH/rec2" ] && echo 1 || echo 0)"
+eq "boot re-run: still exactly ONE window for the agent" "1" "$(t list-windows -t notmain -F '#{window_name}' 2>/dev/null | grep -cx 's-1')"
+# resolved session == the EXT session → loud refusal (the preamble's home!=ext guard ran BEFORE
+# resolution, so the rebind must re-assert it)
+ext_out="$(HOME="$SRH" WORKFLOW_WORKTREES_MANIFEST="$SRH/$MANIFEST_REL" WORKFLOW_FLEET_HOME_SESSION=bootsess WORKFLOW_FLEET_EXT_SESSION=notmain WORKFLOW_CELL_COMMAND='' FLEET_TMUX_SOCKET="$SOCKET" TMUX_PANE="$anchor_pane" bash "$SCRIPT" boot 2>&1)"; ext_rc=$?
+eq "boot: resolved session == ext session → refuses (rc 2)" "2" "$ext_rc"
+t kill-session -t notmain 2>/dev/null || true
 
 echo
 echo "  $pass passed, $fail failed"

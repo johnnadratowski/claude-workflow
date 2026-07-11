@@ -44,6 +44,12 @@ tmux() {
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_fleet.sh
 . "$_here/_fleet.sh"
+# Load the project's workflow.config[.local] so the knobs below (manifest path, cell command,
+# home session) work from config with zero ceremony in ANY project — not only when exported.
+# Guarded: absence is not an error. _config.sh is env-wins (it snapshots exported WORKFLOW_*
+# values and re-applies them after sourcing), so a per-invocation env override still wins.
+# shellcheck source=_config.sh
+[ -r "$_here/_config.sh" ] && . "$_here/_config.sh"
 
 DRY_RUN=0
 FORCE=0                                        # set by the dispatcher's --force (down only)
@@ -58,6 +64,12 @@ TAB="$(printf '\t')"
 # relocates a window between sessions on one server without changing pane ids, so the registry,
 # send-keys delivery, and list-panes liveness are all untouched. (DX-jn-cc-002)
 FL_HOME_SESSION="${WORKFLOW_FLEET_HOME_SESSION:-main}"
+# The command the cell's top-right companion pane runs (DX-jn-cc-014). EMPTY BY DEFAULT: typing
+# a command into a consuming project's pane is an ACTION, and send-keys succeeds at the tmux
+# layer even when the receiving shell errors — so a default keystroke for a tool the machine
+# lacks would print `command not found` in every agent's pane AND be invisible to boot's report.
+# A project that wants one sets WORKFLOW_CELL_COMMAND in its workflow.config (e.g. "monocle").
+FL_CELL_COMMAND="${WORKFLOW_CELL_COMMAND:-}"
 FL_EXT_SESSION="${WORKFLOW_FLEET_EXT_SESSION:-${WORKFLOW_FLEET_WIDE_SESSION:-wide}}"
 FL_PLACEHOLDER='__fl_placeholder'
 
@@ -944,7 +956,9 @@ attach_external() {
 # into panes THIS RUN created (captured from its own `new-window -P`) — never into a
 # pre-existing pane, whose state is unknown. Resume prompts are answered by the human.
 
-BOOT_MANIFEST="$HOME/.config/goals-worktrees.json"
+# The manifest path comes from the ONE resolver (fleet_manifest_path, _fleet.sh) — never a
+# hardcoded per-project filename. Unresolvable → empty, and the `-r` guard below refuses loudly.
+BOOT_MANIFEST="$(fleet_manifest_path 2>/dev/null || true)"
 
 # agent \t active \t path — one line per manifest entry carrying an `agent` field.
 # LOUD failure model: a corrupt/missing/unreadable manifest, or python3 unavailable,
@@ -1028,21 +1042,26 @@ _boot_window_exists() { tmux list-windows -t "$FL_HOME_SESSION" -F '#{window_nam
 
 _boot_report() { printf '  %-14s %s\n' "$1" "$2"; }
 
-# The cell (DX-jn-cc-012): claude full-height left, right column stacked — monocle
-# top-right, shell at the prompt bottom-right. Called ONLY from boot's launch branch, so
-# every pane it splits or keys into was created by THIS run. Sizes are set at creation
-# time (-l 40%, then the v-split's even default — _balance_cell's steady-state ratio):
-# balance_cells needs attribution, which needs a registration that doesn't exist until
-# the booted claude's SessionStart fires. A failure DEGRADES (report + return 1, the
-# claude launch already happened and matters more than its companions); a failed v-split
-# leaves the single right pane at the prompt with NO monocle — a bare shell is the safe
-# degraded state.
+# The cell (DX-jn-cc-012): claude full-height left, right column stacked — the configured
+# companion command (WORKFLOW_CELL_COMMAND) top-right, shell at the prompt bottom-right.
+# Called ONLY from boot's launch branch, so every pane it splits or keys into was created by
+# THIS run. Sizes are set at creation time (-l 40%, then the v-split's even default —
+# _balance_cell's steady-state ratio): balance_cells needs attribution, which needs a
+# registration that doesn't exist until the booted claude's SessionStart fires. A failure
+# DEGRADES (report + return 1, the claude launch already happened and matters more than its
+# companions); a failed v-split leaves the single right pane at the prompt with no companion —
+# a bare shell is the safe degraded state.
+#
+# WORKFLOW_CELL_COMMAND EMPTY (the default) → the cell is still built, both right panes just sit
+# at a shell prompt and NOTHING is keyed. The success return is DELIBERATE (a helper's return
+# status is a contract): with no keystroke there is no last-command status to leak, so we return
+# 0 explicitly rather than inheriting whatever the last conditional evaluated to.
 _boot_cell() {
   local agent="$1" pane="$2" path="$3" right bottom
   if [ "$DRY_RUN" = 1 ]; then
     _rw split-window -d -h -l '40%' -P -F '#{pane_id}' -t "$pane" -c "$path"
     _rw split-window -d -v -P -F '#{pane_id}' -t '<right-pane>' -c "$path"
-    _rw send-keys -t '<right-pane>' monocle C-m
+    [ -n "$FL_CELL_COMMAND" ] && _rw send-keys -t '<right-pane>' "$FL_CELL_COMMAND" C-m
     return 0
   fi
   if ! right="$(tmux split-window -d -h -l '40%' -P -F '#{pane_id}' -t "$pane" -c "$path")" || [ -z "$right" ]; then
@@ -1051,10 +1070,11 @@ _boot_cell() {
   if ! bottom="$(tmux split-window -d -v -P -F '#{pane_id}' -t "$right" -c "$path")" || [ -z "$bottom" ]; then
     _boot_report "$agent" "cell DEGRADED (v-split errored — right pane left at the prompt)"; return 1
   fi
+  [ -n "$FL_CELL_COMMAND" ] || return 0        # no companion configured — bare shells, success
   if [ -n "${FLEET_BOOT_LAUNCH_RECORDER:-}" ]; then
-    printf '%s\t%s\n' "$agent" "monocle" >> "$FLEET_BOOT_LAUNCH_RECORDER"
-  elif ! tmux send-keys -t "$right" "monocle" C-m; then
-    _boot_report "$agent" "cell DEGRADED (monocle keystroke errored — top-right pane at the prompt)"; return 1
+    printf '%s\t%s\n' "$agent" "$FL_CELL_COMMAND" >> "$FLEET_BOOT_LAUNCH_RECORDER"
+  elif ! tmux send-keys -t "$right" "$FL_CELL_COMMAND" C-m; then
+    _boot_report "$agent" "cell DEGRADED ($FL_CELL_COMMAND keystroke errored — top-right pane at the prompt)"; return 1
   fi
 }
 
@@ -1070,8 +1090,35 @@ _boot_refocus() {
   _rw select-window -t "$win" || true
 }
 
+# Resolve the session boot creates its windows in, and REBIND FL_HOME_SESSION to it — one
+# session identity for the whole run, never a boot-local second variable (DX-jn-cc-014). Four
+# sites on boot's path read FL_HOME_SESSION: the two new-window calls, _boot_window_exists (the
+# duplicate-launch guard), and name_windows → _order_windows. A partial rebind would blind the
+# guard and silently no-op the ordering in exactly the projects this exists to serve.
+#
+# The CONFIGURED session wins when it exists on the server; otherwise fall back to the invoking
+# client's own session (a generic project's default session is `0`, not `main` — `main` is one
+# machine's zshrc convention). Boot NEVER creates a session. The persisted identity
+# (WORKFLOW_FLEET_HOME_SESSION in workflow.config.local, written by base-initialize/base-setup)
+# is the primary mechanism — this is the backstop for repos that never ran either.
+_boot_resolve_session() {
+  _session_exists "$FL_HOME_SESSION" && return 0
+  local cur
+  cur="$(tmux display-message -p -t "${TMUX_PANE:-}" '#{session_name}' 2>/dev/null || true)"
+  [ -n "$cur" ] || { echo "fleet-layout boot: session '$FL_HOME_SESSION' not found and no current session to fall back to; refusing" >&2; return 2; }
+  echo "fleet-layout boot: session '$FL_HOME_SESSION' not found — using current session '$cur'. Persist WORKFLOW_FLEET_HOME_SESSION=\"$cur\" in .claude/workflow.config.local — in the MAIN CLONE and in each agent worktree (or re-seed them) — or name-windows ordering and the layout verbs will keep targeting '$FL_HOME_SESSION'." >&2
+  FL_HOME_SESSION="$cur"
+  # The preamble's home!=ext guard ran against the CONFIGURED value, before this resolution — so
+  # re-assert it. Without this a rebind could walk around a guard the preamble already cleared,
+  # and `single` would later tear down the session holding every agent.
+  [ "$FL_HOME_SESSION" != "$FL_EXT_SESSION" ] || {
+    echo "fleet-layout boot: resolved home session '$FL_HOME_SESSION' equals the external session; refusing" >&2; return 2; }
+  return 0
+}
+
 boot_fleet() {
   local rows self toplevel launched=0 rc=0
+  _boot_resolve_session || return $?
   rows="$(_boot_manifest_agents)" || return 1
   [ -n "$rows" ] || { echo "fleet-layout boot: manifest has no agent entries — nothing to boot" >&2; return 1; }
   printf '%s\n' "$rows" | _boot_validate || return 1
@@ -1303,6 +1350,27 @@ down_fleet() {
     echo "fleet-layout down: manifest has no agent entries — refusing (an empty enumeration must never read as 'fleet is down')" >&2
     return 1; }
   printf '%s\n' "$rows" | _boot_validate || return 1
+  # ---- per-agent filter (DX-jn-cc-014) ----
+  # Applied AFTER the whole-manifest parse + validation, so a corrupt manifest still refuses even
+  # when a filter is given. An UNKNOWN requested name is a loud refusal, never a silent no-match:
+  # a filtered-to-empty set must not satisfy the exit contract vacuously ("subset is down, exit 0"
+  # while the agent still runs — the caller, e.g. remove-worktree, would then delete its worktree).
+  if [ -n "${DOWN_FILTER:-}" ]; then
+    local want kept="" have
+    for want in $DOWN_FILTER; do
+      have="$(printf '%s\n' "$rows" | cut -f1 | grep -qxF -- "$want" && echo 1 || echo 0)"
+      if [ "$have" = 0 ]; then
+        echo "fleet-layout down: '$want' is not in the manifest — refusing (nothing was killed for it)" >&2
+        bad=1; continue
+      fi
+      kept="${kept}$(printf '%s\n' "$rows" | awk -F"$TAB" -v a="$want" '$1==a')
+"
+    done
+    rows="$(printf '%s' "$kept" | sed '/^$/d')"
+    [ -n "$rows" ] && [ "$bad" = 0 ] || {
+      echo "fleet-layout down: no requested agent could be targeted — refusing." >&2
+      return 1; }
+  fi
   [ -d "$HOME/.claude/running-agents" ] || {
     echo "fleet-layout down: registry directory missing — cannot enumerate the fleet; refusing" >&2; return 1; }
   for f in "$HOME"/.claude/running-agents/*; do
@@ -1367,6 +1435,12 @@ EOF
     [ -n "$agent" ] || continue
     apath="$(_abs "$path")"
     if [ -n "$self_name" ] && [ "$agent" = "$self_name" ]; then
+      # Explicitly REQUESTED self → refuse loudly. The silent skip is correct only for an
+      # unrequested whole-fleet sweep; for a named request, exit 0 would tell the caller the
+      # agent is down while it is the very process running this command.
+      if [ -n "${DOWN_FILTER:-}" ]; then
+        _down_report "$agent" "REFUSED (self — a run cannot down its own pane)"; bad=1; continue
+      fi
       _down_report "$agent" "skipped (self)"; continue
     fi
     m=""
@@ -1378,6 +1452,9 @@ EOF
            done)"
     fi
     if [ -n "$m" ] && printf '%s\n' "$m" | cut -f2 | grep -qxF -- "$self_token"; then
+      if [ -n "${DOWN_FILTER:-}" ]; then
+        _down_report "$agent" "REFUSED (self — a run cannot down its own pane)"; bad=1; continue
+      fi
       _down_report "$agent" "skipped (self)"; continue
     fi
     if [ -n "$toplevel" ] && [ -n "$apath" ] && [ "$apath" = "$toplevel" ]; then
@@ -1513,7 +1590,11 @@ $summaries
 EOF
 
   if [ "$bad" = 0 ]; then
-    echo "fleet down: every non-self entry is downed-and-verified or not running."
+    if [ -n "${DOWN_FILTER:-}" ]; then
+      echo "fleet down: every REQUESTED agent (${DOWN_FILTER# }) is downed-and-verified or not running."
+    else
+      echo "fleet down: every non-self entry is downed-and-verified or not running."
+    fi
   else
     echo "fleet down: NOT fully down — see the report above." >&2
   fi
@@ -1542,18 +1623,35 @@ _down_sweep_path() {
 
 [ -n "${FLEET_LAYOUT_LIB:-}" ] && return 0
 
-USAGE="usage: fleet-layout.sh <single|dual|wide|attach|balance|name-windows|boot|down> [--dry-run] [--force]"
+USAGE="usage: fleet-layout.sh <single|dual|wide|attach|balance|name-windows|boot|down> [--dry-run] [--force] [agent...  (down only)]"
 verb=""
+DOWN_FILTER=""          # space-separated agent names; empty = whole fleet (today's behavior)
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --force)   FORCE=1 ;;
-    single|dual|wide|attach|balance|name-windows|boot|down) verb="$arg" ;;
-    *) echo "$USAGE" >&2; exit 2 ;;
+    single|dual|wide|attach|balance|name-windows|boot|down)
+      # A bare verb word AFTER the verb is an agent name for `down` (an agent may legitimately
+      # be named e.g. `test`), so only the FIRST verb-shaped arg is the verb.
+      if [ -z "$verb" ]; then verb="$arg"; else DOWN_FILTER="$DOWN_FILTER $arg"; fi ;;
+    -*) echo "$USAGE" >&2; exit 2 ;;
+    *) DOWN_FILTER="$DOWN_FILTER $arg" ;;
   esac
 done
 [ -n "$verb" ] || { echo "$USAGE" >&2; exit 2; }
 [ "$FORCE" = 1 ] && [ "$verb" != down ] && { echo "fleet-layout: --force applies to down only" >&2; exit 2; }
+# Agent names are accepted by `down` alone — a stray word anywhere else is a usage error, never
+# a silently-ignored argument.
+if [ -n "$DOWN_FILTER" ] && [ "$verb" != down ]; then
+  echo "fleet-layout: agent names apply to \`down\` only (got:$DOWN_FILTER)" >&2; exit 2
+fi
+# Validate BEFORE anything touches the filesystem or tmux — same rule boot applies to manifest
+# names (the name feeds greps and reports).
+for _n in $DOWN_FILTER; do
+  case "$_n" in
+    *[!A-Za-z0-9_-]*) echo "fleet-layout down: invalid agent name '$_n' (allowed: A-Za-z0-9_-)" >&2; exit 2 ;;
+  esac
+done
 
 # The soft exit 0 is right for the layout verbs (nothing to restructure) and a FAIL-OPEN
 # for down: "nothing to do, exit 0" outside tmux would read to a crash-recovering
@@ -1561,6 +1659,14 @@ done
 if ! fleet_tmux_ok; then
   if [ "$verb" = down ]; then
     echo "fleet-layout down: not inside tmux — cannot enumerate or kill fleet panes; refusing (this does NOT mean the fleet is down)" >&2
+    exit 2
+  fi
+  # boot is a SPIN-UP verb an init flow depends on: "nothing to do, exit 0" outside tmux would
+  # read to base-initialize (or a crash-recovering operator) as "the fleet is up" while zero
+  # agents launched — the boot-side cousin of down's vacuous-success failure. The cosmetic
+  # layout verbs keep exit 0 (restructuring nothing IS a valid no-op for them).
+  if [ "$verb" = boot ]; then
+    echo "fleet-layout boot: not inside tmux — cannot create windows or launch agents; refusing (this does NOT mean the fleet is up)" >&2
     exit 2
   fi
   echo "fleet-layout: not inside tmux — nothing to do" >&2; exit 0

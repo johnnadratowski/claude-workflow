@@ -47,9 +47,11 @@ across. `single` brings them home and closes that window. You do not need `attac
 
 ## `boot` — one command brings the fleet up from cold
 
-Enumerates the fleet from the machine-local manifest `~/.config/goals-worktrees.json`
-(entries carrying an `agent` field; schema documented in
-[`list-worktrees`](../list-worktrees/SKILL.md)), then per agent, in canonical
+Enumerates the fleet from the **machine-local worktrees manifest** — its path comes from
+`fleet_manifest_path` (`_fleet.sh`): `WORKFLOW_WORKTREES_MANIFEST` when set, else
+`~/.config/<main-clone-basename>-worktrees.json` (derived from the git common dir, so every
+worktree of a clone resolves to the same file). Entries carrying an `agent` field; schema
+documented in [`list-worktrees`](../list-worktrees/SKILL.md). Then per agent, in canonical
 (agent-number) order:
 
 - **`active: false`** → reported `held` (parked lane), skipped.
@@ -66,15 +68,28 @@ Enumerates the fleet from the machine-local manifest `~/.config/goals-worktrees.
   type the launch into the pane id captured from that very call — `claude --continue`
   when `~/.claude/projects/` has prior sessions for the worktree, plain `claude` when
   not. The new window is then built into the full **cell** (DX-jn-cc-012): claude
-  full-height on the left (~60%), a right column stacked with **monocle running
-  top-right** and a **shell at the prompt bottom-right** — sized at creation time
+  full-height on the left (~60%), a right column stacked with the **configured companion
+  command running top-right** (`WORKFLOW_CELL_COMMAND` — **empty by default**, in which case
+  nothing is keyed and both right panes sit at a shell prompt) and a **shell at the prompt
+  bottom-right** — sized at creation time
   (`split-window -l 40%`, then an even v-split; attribution-driven `balance` can't run
   yet because the booting claude hasn't registered), all panes created and keyed by
   this same run. A failed split or keystroke **degrades, loudly**: the claude launch
   survives (it already happened and matters more than its companions), the degradation
   is reported (`cell DEGRADED …`), the remaining agents still boot, and the run exits
-  non-zero. A failed v-split leaves the single right pane at the prompt with no monocle
+  non-zero. A failed v-split leaves the single right pane at the prompt with no companion
   — a bare shell is the safe degraded state.
+
+**The window session resolves, and is never assumed.** Boot creates its windows in
+`WORKFLOW_FLEET_HOME_SESSION` when a session by that name exists; otherwise it falls back to
+the invoking client's current session, says so, and **rebinds** the home session for the whole
+run — so the duplicate-launch guard, the window creation, and the canonical ordering all follow
+one identity. Boot never creates a session, and refuses (exit 2) if the resolved session is the
+external-monitor session. The **persisted** identity is the primary mechanism:
+`base-initialize` / `base-setup` write `WORKFLOW_FLEET_HOME_SESSION` into the gitignored
+`.claude/workflow.config.local`, and `add-worktree` seeds that file into every agent worktree —
+because each agent's SessionStart runs `name-windows` in **its own worktree**, and a worktree
+with no `.local` would silently fall back to the default and never order its windows.
 
 Window names and canonical order **converge on their own**: each booting agent's
 SessionStart registration fires `name-windows` (register-agent.sh), so boot doesn't
@@ -87,7 +102,9 @@ boot reminds you and answers nothing — never blind-key Enter into a pane.
 
 **Failure model is loud:** a corrupt/missing/unreadable manifest (or python3
 unavailable) fails the run non-zero — it never degrades to "0 agents, exit 0", which a
-crash-recovering operator would misread as "fleet already up". Agent names are validated
+crash-recovering operator would misread as "fleet already up". **Outside tmux, boot refuses
+(exit 2)** rather than reporting "nothing to do, exit 0" — a spin-up verb an init flow depends
+on must not report success while launching zero agents (the cosmetic layout verbs keep exit 0). Agent names are validated
 (`A-Za-z0-9_-` only) and paths must be absolute before anything touches the filesystem.
 
 Re-running boot is idempotent: live agents report `live`, already-created windows report
@@ -97,9 +114,21 @@ even the dead-entry sweep).
 
 ## `down` — stop the fleet cleanly (DX-jn-cc-010)
 
-The inverse of `boot`, and the script's ONLY killing verb. Enumerates the same manifest
-(every `agent`-bearing entry — `active: false` does NOT exempt an entry: "stop all
-agents" means all; the flag gates boot only), excludes self, and per entry:
+```bash
+fleet-layout.sh down [--dry-run] [--force] [agent...]
+```
+
+The inverse of `boot`, and the script's ONLY killing verb. With **no agent names** it downs the
+whole fleet; with names it downs **only those agents** — `remove-worktree` uses that to stop one
+agent before removing its worktree. A requested name that is **not in the manifest** is a loud
+refusal (`rc≠0`, nothing killed for it): a filtered-to-empty set must never read as "that agent
+is down" while it still runs. A requested name that resolves to **self** is likewise refused —
+a run cannot kill its own pane, and a silent skip would tell the caller the agent is down.
+(The unrequested whole-fleet sweep still skips self quietly, which is what "stop all the
+others" means.)
+
+Enumerates the same manifest (every `agent`-bearing entry — `active: false` does NOT exempt an
+entry: "stop all agents" means all; the flag gates boot only), excludes self, and per entry:
 
 - **Targeting is keyed on the WORKTREE PATH, never the name**: a live registration
   matches when its `~/.claude/agents/<name>.cwd` sidecar resolves to the entry path,
@@ -177,7 +206,9 @@ from `main`. Pane ids survive the move, so delivery, liveness, and the registry 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `WORKFLOW_FLEET_HOME_SESSION` | `main` | the laptop's session |
+| `WORKFLOW_WORKTREES_MANIFEST` | `~/.config/<main-clone-basename>-worktrees.json` | the fleet manifest `boot`/`down` enumerate (resolved by `fleet_manifest_path`) |
+| `WORKFLOW_CELL_COMMAND` | *(empty)* | command the cell's top-right companion pane runs. Empty ⇒ nothing is keyed and it stays a shell. Set it per project (e.g. `monocle`) |
+| `WORKFLOW_FLEET_HOME_SESSION` | `main`, else the invoking session | the session the agents' windows live in. **Persist it in `.claude/workflow.config.local`** (written by `base-initialize`/`base-setup`, seeded into each worktree by `add-worktree`) — it is machine-local, never committed |
 | `WORKFLOW_FLEET_EXT_SESSION` | `wide` | the external-monitor session |
 
 Tests: `bash .claude/scripts/fleet-layout.test.sh` (hermetic `$HOME` + scratch tmux socket).
