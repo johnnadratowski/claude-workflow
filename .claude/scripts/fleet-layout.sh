@@ -1270,23 +1270,28 @@ EOF
 #     worktree; down's UNACCOUNTED probe would report "not running" for a live pane.
 # Re-read ONE pane's cwd, briefly, for the transient not-yet-populated case (see _panes_at_path).
 #   rc 0 + path  — settled.
-#   rc 1         — the pane is GONE (display-message fails for a pane that no longer exists). That
-#                  is ABSENCE, not blindness: it vanished between the snapshot and now, so callers
-#                  treat it as an honest miss rather than refusing. Distinguishing the two is free
-#                  (the exit status says which), and conflating them would re-introduce spurious
-#                  refusals — the very thing this helper exists to remove.
-#   rc 2         — the pane EXISTS but still reports no location after retrying: genuinely blind,
-#                  and callers must treat it as UNKNOWN.
+#   rc 1         — the pane is GONE: it is absent from the server's pane list. That is ABSENCE, not
+#                  blindness — it vanished between the snapshot and now — so callers treat it as an
+#                  honest miss rather than a refusal. (Conflating the two would make every pane that
+#                  closes mid-run a spurious refusal, the class this helper exists to remove.)
+#   rc 2         — UNKNOWN: either the pane exists but still reports no location after retrying, or
+#                  we could not see the pane list at all. Callers must fail closed.
+#
+# NOTE what does NOT work as the gone-vs-blind oracle: display-message's EXIT STATUS. It exits 0
+# with EMPTY output for a pane that does not exist (verified, tmux 3.x) — it looks like an oracle
+# and is not. Pane-LIST membership answers the question; but the list itself can be blind, and an
+# empty -a reply is tmux contradicting itself by construction (our own pane is always in it), so it
+# is UNKNOWN — never "absent everywhere". Reading a blind list as "the pane is gone" would drop the
+# pane from _panes_at_path and let boot's occupancy backstop launch a SECOND claude into the
+# worktree: the same unknown-is-not-absent bug this helper was written to fix, one level down.
 _pane_path_settled() {
-  local pid="$1" i=0 p
+  local pid="$1" i=0 p all
   while [ "$i" -lt 10 ]; do
     p="$(tmux display-message -p -t "$pid" '#{pane_current_path}' 2>/dev/null)"
     [ -n "$p" ] && { printf '%s' "$p"; return 0; }
-    # Empty. Is the pane GONE, or merely not yet placeable? display-message's exit status cannot
-    # answer that — it exits 0 with empty output for a pane that does not exist (verified on tmux
-    # 3.x), so the status is not the oracle it looks like. Ask the pane LIST instead: id present =>
-    # the pane exists and we simply cannot place it yet (retry, then blind); id absent => it is gone.
-    tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pid" || return 1
+    all="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)"
+    [ -n "$all" ] || return 2                              # blind list => UNKNOWN, never "gone"
+    printf '%s\n' "$all" | grep -qx "$pid" || return 1    # genuinely absent => honest miss
     i=$((i+1)); sleep 0.05
   done
   return 2

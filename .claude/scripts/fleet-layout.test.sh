@@ -1621,6 +1621,39 @@ vg_rc=0; blib "$VPH" '
   _panes_at_path "'"$VPH/wv"'" >/dev/null' || vg_rc=$?
 eq "_panes_at_path: a pane that VANISHED (display-message fails) is an honest 'none' (rc 1), not UNKNOWN" "1" "$vg_rc"
 
+# --- the gone-vs-blind ORACLE must itself fail closed --------------------------------------------
+# _pane_path_settled tells "pane gone" from "pane blind" by asking the pane LIST. That query can be
+# blind too — and an EMPTY `list-panes -a` reply is tmux contradicting itself by construction (our
+# own pane is always in it). Reading it as "the pane is gone" would drop the pane from
+# _panes_at_path and let boot's occupancy backstop launch a SECOND claude into the worktree: the
+# unknown-is-not-absent bug, re-entering through the fix for that same bug's previous instance.
+echo
+echo "DX-jn-cc-014 — the gone-vs-blind oracle fails closed on a blind pane list"
+
+OBH="$(cd "$(mktemp -d)" && pwd -P)"; bmk "$OBH"
+ob_rc=0; blib "$OBH" '
+  tmux(){
+    case "$1" in
+      display-message) printf "" ;;                                  # blind: no location
+      list-panes)      printf "" ;;                                  # blind: no pane list either
+      *) command tmux -L "$FLEET_TMUX_SOCKET" "$@" ;;
+    esac
+  }
+  _pane_path_settled %7 >/dev/null' || ob_rc=$?
+eq "_pane_path_settled: a BLIND pane list => rc 2 (UNKNOWN), never rc 1 ('gone')" "2" "$ob_rc"
+
+# …and a readable list that genuinely lacks the pane is still an honest "gone" (rc 1).
+og_rc=0; blib "$OBH" '
+  tmux(){
+    case "$1" in
+      display-message) printf "" ;;
+      list-panes)      printf "%%1\n%%2\n" ;;                        # readable; %7 is not in it
+      *) command tmux -L "$FLEET_TMUX_SOCKET" "$@" ;;
+    esac
+  }
+  _pane_path_settled %7 >/dev/null' || og_rc=$?
+eq "_pane_path_settled: a readable list without the pane => rc 1 (genuinely gone)" "1" "$og_rc"
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
