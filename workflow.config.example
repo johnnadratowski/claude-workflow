@@ -86,7 +86,22 @@
 # Default model for the /review-subagent local review subagent (a review-role Agent).
 # Overridable per-invocation via `/review-subagent --model <m>`. One of: sonnet | opus |
 # haiku | fable. Default sonnet (the current Sonnet).
+# NOTE: /review-subagent + this knob are superseded by the native subagent defs below
+# (.claude/agents/) once the gates are rewired to them; kept until that cutover lands.
 WORKFLOW_SUBAGENT_REVIEW_MODEL="sonnet"
+
+# ── Native subagent models (.claude/agents/{planner,reviewer,tester}.md) ────────────────────
+# Models for the native subagent definitions the modern gates spawn via the Agent tool. One of:
+# sonnet | opus | haiku | fable.
+#   plan:   DEFAULTS to `fable` (cheap plan authoring), set active below.
+#   review: MODEL-DIVERSE — rev-a runs _A (default `fable`), rev-b runs _B (default `sonnet`),
+#     so the two reviewers audit on DIFFERENT models. A SINGLE reviewer runs the stronger _B.
+#     Each empty ⇒ omit the Agent `model` param ⇒ that reviewer inherits the session model.
+#   test:   UNSET (left commented) omits the param, so the tester INHERITS the session model.
+WORKFLOW_PLAN_MODEL="fable"        # planner spawns (plan authoring)
+WORKFLOW_REVIEW_MODEL_A="fable"    # rev-a (first reviewer)
+WORKFLOW_REVIEW_MODEL_B="sonnet"   # rev-b (second reviewer) + any single reviewer
+#   WORKFLOW_TEST_MODEL=""         # tester spawns (gate sweeps)
 
 # Days before drain-inbox.sh garbage-collects an undelivered message left
 # in a mailbox (default 7). Only abandoned mail (in mailboxes of agents
