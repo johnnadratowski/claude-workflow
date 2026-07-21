@@ -2,6 +2,13 @@
 
 ## Changelog
 
+- **2.0.0** — **Subagent convergence (DX-jn-cc-017).** Rewritten as a thin stub that
+  **spawns the [`tester`](../../agents/tester.md) definition in place** on the current
+  worktree (model `WORKFLOW_TEST_MODEL`) — it owns the gate catalog + any test lock and
+  makes zero git/source mutations. The old in-worktree checkout / `--with-base` / `--as-is`
+  / `--pr` modes are retired: the CALLER arranges the tree (`/base-merge down` replaces
+  `--with-base`; a scratch worktree for another branch/PR). Remains a PROJECT-OWNED stub
+  (never synced by `/update-workflow`).
 - **1.2.0** — **Branch-flexible target, symmetric with `base-pr`.** The skill now
   takes an optional `<target>` (omitted → current branch; a local branch / SHA /
   tag → checked out in this worktree; `--pr <n>` → fetched PR head, detached) so

@@ -19,10 +19,13 @@ writes it as `<base>`.)
   startup instructions** based on its name.
 - **Roles** (derived from the agent name; override via `~/.claude/agents/<name>.role`):
   - **feature** — implements TODOs end-to-end (the default).
-  - **review** (`*-pr` / `*-review`) — runs `/base-pr` audits, replies GREEN or findings.
-  - **test** (`*-test`) — runs `/base-test` gate sweeps, replies PASS or failures.
   - **coordinator** (`cc` / `*-cc` / `coordinator`) — acts for the user; rides a dedicated
     `<base>-cc` branch and can also do feature work on it (see `agent-roles/coordinator.md`).
+  - Review and test are **not pane roles** anymore: every session spawns its own
+    [`reviewer`](agents/reviewer.md) / [`tester`](agents/tester.md) **subagents** via the
+    Agent tool (plans via the [`planner`](agents/planner.md) subagent). The name classifier
+    still recognizes legacy `*-pr`/`*-test` names (window labels, fanout targeting), but no
+    role files ship for them.
 - **Local-first branching.** All worktrees share one `.git`, so **local `refs/heads/<base>`**
   is the single coordination ref every agent reads and advances — a peer's work is mergeable
   the moment it's *committed*. `origin/<base>` advances **only** when someone runs `/base-push`;
@@ -74,7 +77,7 @@ writes it as `<base>`.)
 ### Work + autonomy
 | Skill | What it does |
 |---|---|
-| `/todo` | File-per-TODO lifecycle. Mints `AREA-<lane>NNN` IDs (`WORKFLOW_TODO_LANE`), regenerates `docs/TODO.md` via `scripts/gen-todos.mjs`. Complex plans pass a peer **plan-review gate** (`PLAN GREEN` → `plan_review:` frontmatter), then user sign-off on the gate's deltas, before implementation; the human is the terminal reviewer of every loop. |
+| `/todo` | File-per-TODO lifecycle. Mints `AREA-<lane>NNN` IDs (`WORKFLOW_TODO_LANE`), regenerates `docs/TODO.md` via `scripts/gen-todos.mjs`. Complex plans pass a **plan-review gate** (reviewer-subagent `PLAN GREEN` → `plan_review:` frontmatter), then user sign-off on the gate's deltas, before implementation; the human is the terminal reviewer of every loop. |
 | `/afk` | Drive a task to done unattended: implement → doc-sync → review loop → test loop → land. Stops only for blocking questions. |
 
 ### Setup + project definition
@@ -88,20 +91,27 @@ writes it as `<base>`.)
 `/add-worktree` · `/remove-worktree` · `/list-worktrees`. The coordinator worktree rides a
 dedicated `<base>-cc` branch (`/add-worktree cc --branch <base>-cc --from origin/<base>`).
 
-### Review
-| Skill | What it does |
+### Plan
+| Definition | What it does |
 |---|---|
-| `/review-subagent` | Spawn a **local review subagent** (an Agent with our `review.md` + `base-pr` instructions) to audit a diff/commit read-only — a first-class reviewer alongside the fleet peer. Model defaults to the current Sonnet (`--model` / `WORKFLOW_SUBAGENT_REVIEW_MODEL`). The subagent arm of the peer-review gate's **Both / Only peer / Only subagent / None** choice. |
+| [`planner` definition](agents/planner.md) | Authors a started TODO's plan doc (`/todo start`): investigates + collaborates with the human (agent panel) + writes `docs/todo_plans/<slug>.md`, returning an implementation handoff. Runs **in-cwd** (writes the real worktree — NOT isolation), plans-only (no source edits). Model: `WORKFLOW_PLAN_MODEL`, **default `fable`**. |
+
+### Review + test
+| Skill / definition | What it does |
+|---|---|
+| [`reviewer` definition](agents/reviewer.md) | THE review path: every session spawns it via the Agent tool — mode 1 (TODO-scoped plan/diff) or mode 2 (range/PR/bundle). Read-only, isolation-worktree, byte-exact `GREEN LIGHT`/`PLAN GREEN` verdicts. **Model-diverse**: rev-a `WORKFLOW_REVIEW_MODEL_A` (default `fable`), rev-b `WORKFLOW_REVIEW_MODEL_B` (default `sonnet`); a single reviewer runs `_B`; empty ⇒ inherit. |
+| [`tester` definition](agents/tester.md) | THE test path: spawned **in place** on the worktree to run the project's quality-gate sweep (+ any E2E); zero git/source mutations. Model: `WORKFLOW_TEST_MODEL`, unset ⇒ inherit. |
 | `/monocle-review` | The **human**-review gate — sends the diff to Monocle natively + attaches TODO/plan context, blocks on the verdict. |
 
 > **Gate prompts use `AskUserQuestion`.** The workflow's choice gates present a **native
 > multiple-choice** via the `AskUserQuestion` tool — not options printed as text with a typed
 > reply. Both `/todo` review gates (plan **and** diff) ask **two independent questions in one
-> call, never merged into a single Monocle-xor-peer choice**: **Q1 — Monocle _or not_** (the
-> human-review engine) and **Q2 — Reviewers** (**Both / Only peer / Only subagent / None**).
-> The axes are orthogonal — choosing Monocle never skips peer review, and declining peer never
-> skips Monocle (canonical contract: `/monocle-review` → "Contract for the gates"). If the user
-> already specified a choice, skip that ask.
+> call, never merged into a single choice**: **Q1 — Monocle _or not_** (the
+> human-review engine) and **Q2 — Reviewers** (**Two reviewers / One reviewer / None** —
+> spawns of the `reviewer` definition).
+> The axes are orthogonal — choosing Monocle never skips agent review, and declining agent
+> review never skips Monocle (canonical contract: `/monocle-review` → "Contract for the gates").
+> If the user already specified a choice, skip that ask.
 
 ### Deep audit (language-agnostic) — escalated by `/base-pr` on high-risk diffs
 `/feynman-auditor` · `/state-inconsistency-auditor` · `/nemesis-auditor`.

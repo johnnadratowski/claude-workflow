@@ -1,5 +1,12 @@
 # todo — changelog
 
+- **8.0.0** — **Subagent convergence (DX-jn-cc-017).** Both review gates' Q2 is now
+  **Two reviewers / One reviewer / None** — independent spawns of the
+  [`reviewer`](../../agents/reviewer.md) definition (`rev-a`/`rev-b`, model-diverse
+  `WORKFLOW_REVIEW_MODEL_A`/`_B`) — replacing the peer + `/review-subagent` model. The diff
+  review (step 9) and test (step 10) spawn the `reviewer` / [`tester`](../../agents/tester.md)
+  definitions; fix rounds resume the same named reviewer by SHA. Plan authoring is the
+  [`planner`](../../agents/planner.md) subagent (`start` step 3).
 - **7.15.0** — The 3-option prompt's **"Send to Monocle" now explicitly blocks on the
   verdict** (send AND wait, never fire-and-forget) at both the plan gate and the
   implementation/diff gate — choosing Monocle means waiting for the reviewer before

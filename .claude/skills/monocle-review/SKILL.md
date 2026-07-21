@@ -154,15 +154,15 @@ only sends **context** (TODO + plan).
    if the file set changed; re-run step 6 to re-annotate the new code) → re-wait until
    approved. (Only skip the wait if the user explicitly asked for fire-and-forget.)
 
-## Contract for the gates (two independent axes — human review + peer/agent review)
+## Contract for the gates (two independent axes — human review + agent review)
 
 **Both** review gates — the `/todo` **plan** gate and the **implementation/diff** gate —
 work the same way: the agent asks the user **via the `AskUserQuestion` tool** (native
 multiple-choice, NOT options printed as text). It is **two independent questions asked
 together, never one merged choice.** The old single "Monocle / peer / skip" prompt was
-wrong: it let picking Monocle silently drop peer review (and let "skip" drop everything).
-The two axes are orthogonal — **choosing a human-review method must NEVER drop peer review,
-and declining peer review must NEVER drop the Monocle human review:**
+wrong: it let picking Monocle silently drop agent review (and let "skip" drop everything).
+The two axes are orthogonal — **choosing a human-review method must NEVER drop agent
+review, and declining agent review must NEVER drop the Monocle human review:**
 
 > **Q1 — Human review (header "Monocle"): _Monocle, or not._**
 > **Monocle** = `/monocle-review <plan|diff> <ID>` (this skill sends the context artifacts,
@@ -171,22 +171,32 @@ and declining peer review must NEVER drop the Monocle human review:**
 > the engine is live** (`monocle-review.sh available`); when it's down, Q1 is not asked and
 > the axis is "No Monocle".
 >
-> **Q2 — Peer / agent review (header "Reviewers"): _peer + subagent, just peer, just
-> subagent, or not._**
-> **Both** = fleet peer (`agent-send`/`base-pr`) **and** local **`/review-subagent`**,
-> dispatched together, both must go GREEN · **Only peer** · **Only subagent** · **None**.
-> See [`agent-roles/feature.md`](../../agent-roles/feature.md).
+> **Q2 — Agent review (header "Reviewers"): _two reviewers, one, or none._**
+> **Two reviewers** = two independent spawns of the
+> [`reviewer`](../../agents/reviewer.md) definition (Agent tool, names `rev-a`/`rev-b`),
+> dispatched together — both must go GREEN · **One reviewer** = a single spawn (`rev-a`)
+> · **None**. Spawn prompt = the definition's **mode-1 contract**: TODO id, review type
+> (plan/diff), target (SHA / range / `working` with the diff inline; uncommitted plan
+> docs inline), business decisions not yet in the files, and the pin SHA. **Model —
+> MODEL-DIVERSE:** `rev-a` runs `WORKFLOW_REVIEW_MODEL_A` (default `fable`), `rev-b` runs
+> `WORKFLOW_REVIEW_MODEL_B` (default `sonnet`), so the two reviewers audit on **different**
+> models. A **single** reviewer (Q2 = One, and the range/PR audits in `/base-pr` /
+> `/pr-comments`) runs the stronger **`WORKFLOW_REVIEW_MODEL_B`** (`sonnet`) — a lone
+> reviewer is never the weak model. Pass each as the Agent `model` param; an **empty** knob
+> ⇒ omit ⇒ that reviewer inherits this session's model. **Fix rounds RESUME the same named
+> reviewer** (SendMessage with the fix SHA) — a fresh spawn under the same name is for the
+> NEXT TODO (that's the per-TODO context clear).
 
 Ask **both questions in a single `AskUserQuestion` call** (the tool takes multiple
-questions). The answers **compose independently** — any of *Monocle + Both*, *No Monocle +
-Only peer*, *Monocle + None*, *No Monocle + None*, etc. Monocle is the **human**-review
-engine; peer/subagent is **agent** corroboration that runs before the human's terminal
-sign-off — **one is never a substitute for the other.** Whatever the answers, **the human is
-the terminal reviewer of every loop** (a "No Monocle + None" pick still ends with the user's
-go, just reviewed as a plain diff — it is not "no review").
+questions). The answers **compose independently** — any of *Monocle + Two*, *No Monocle +
+One*, *Monocle + None*, etc. Monocle is the **human**-review engine; the reviewer spawns
+are **agent** corroboration that runs before the human's terminal sign-off — **one is
+never a substitute for the other.** Whatever the answers, **the human is the terminal
+reviewer of every loop** (a "No Monocle + None" pick still ends with the user's go, just
+reviewed as a plain diff — it is not "no review").
 
-**Under `/afk`:** no prompt — Q1 = **No Monocle** (no human present), Q2 = **Both**.
-(Full gate wiring: the `/todo` skill's plan gate + step 7; `/review-subagent`.)
+**Under `/afk`:** no prompt — Q1 = **No Monocle** (no human present), Q2 = **Two
+reviewers**. (Full gate wiring: the `/todo` skill's plan gate + step 7.)
 
 ## Declarative artifact set
 
@@ -209,6 +219,6 @@ rather than sent as an artifact.
 
 ---
 
-**Skill Version**: 1.7.0
+**Skill Version**: 2.0.0
 **Category**: Workflow, Review
 _Version history: see [CHANGELOG.md](./CHANGELOG.md)._

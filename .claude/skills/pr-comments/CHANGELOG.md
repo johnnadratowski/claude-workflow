@@ -2,6 +2,10 @@
 
 ## Changelog
 
+- **1.6.0** — **Subagent convergence (DX-jn-cc-017).** Phase-5 fix review and the phase-6
+  package audit now **spawn the [`reviewer`](../../agents/reviewer.md) definition (mode 2)**
+  (model `WORKFLOW_REVIEW_MODEL_B`), replacing the fleet-peer / `/review-subagent` dispatch.
+  Same read-only coherence audit, no fleet needed.
 - **1.5.0** — A reply that cites a fix now **links the diff, not just the hash**: keep the
   commit SHA and add a direct commit-diff link (`…/commit/<sha>`, anchored to the file/line
   — `#diff-<sha256(path)>R<n>` — when the comment is LOC-specific) so the reviewer jumps to

@@ -1,6 +1,6 @@
 ---
 name: pr-comments
-description: Methodically service a GitHub PR's review round — complete comment inventory across all three surfaces, critical investigation of every claim before any disposition (refuting wrong feedback with evidence is a first-class outcome), clustered triage with the user while reply drafts accumulate UNPOSTED, implementation through the internal review flow with TODO ledger linkage, a peer package-audit near the end, and atomic posting only on the user's final approval. Use when the user says "go through the PR comments", "service the review feedback", "address the comments on PR <n>".
+description: Methodically service a GitHub PR's review round — complete comment inventory across all three surfaces, critical investigation of every claim before any disposition (refuting wrong feedback with evidence is a first-class outcome), clustered triage with the user while reply drafts accumulate UNPOSTED, implementation through the internal review flow with TODO ledger linkage, a reviewer-subagent package-audit near the end, and atomic posting only on the user's final approval. Use when the user says "go through the PR comments", "service the review feedback", "address the comments on PR <n>".
 ---
 
 # pr-comments — service a PR review round, methodically
@@ -140,7 +140,7 @@ Then **block on the verdict** (the `monocle-review` blocking default — never f
 
 ### 5. Implement accepted fixes — internal flow + TODO linkage
 
-Fixes go through the normal internal flow: implement on the working branch, gates, peer diff review for substantive changes, then onto the `pr/*` branch (cherry-pick or re-split, matching how the PR was scoped — and push to the `pr/*` head only as part of phase 7's approved package).
+Fixes go through the normal internal flow: implement on the working branch, gates, a reviewer-subagent diff review for substantive changes (mode 1 when a TODO scopes the fix, else mode 2), then onto the `pr/*` branch (cherry-pick or re-split, matching how the PR was scoped — and push to the `pr/*` head only as part of phase 7's approved package).
 
 > **If you route any review through Monocle here** (the fix diff, or the phase-6 package audit), it follows the **`monocle-review` blocking default — send AND wait for the verdict** (`get_feedback` wait=true), then act on it. Never fire-and-forget: a Monocle review you sent but didn't wait on is an ignored request. (Fire-and-forget is opt-in only — when the user explicitly says so.) If the fix is already committed onto the `pr/*` branch, review it via `set_base_ref` rather than a raw diff artifact.
 
@@ -152,7 +152,7 @@ Fixes go through the normal internal flow: implement on the working branch, gate
 
 ### 6. Package audit — peer review of the whole round (near-last)
 
-Bundle = original comments + the implementation diff + every draft reply. Send it to a review-role reviewer to audit **coherence**: do the fixes actually address the comments; do the replies describe the fixes accurately; are the refutations correct; is anything left unanswered? **Pick the reviewer by mode:** in **fleet mode** (`WORKFLOW_FLEET_MODE=1`) send it to a live review-role peer (classifier: `.claude/scripts/agent-fanout.sh status`, ROLE `review`); in **solo mode** (no peers) run **`/review-subagent`** on the bundle instead — same read-only coherence audit, no fleet needed. Apply its feedback, then show the user **both the audit feedback AND the delta it caused** (diff + changed drafts).
+Bundle = original comments + the implementation diff + every draft reply. Spawn the [`reviewer`](../../agents/reviewer.md) definition in **mode 2 (range/bundle audit)** with the bundle inline to audit **coherence**: do the fixes actually address the comments; do the replies describe the fixes accurately; are the refutations correct; is anything left unanswered? (Same spawn solo or fleet — the reviewer is local, no peers involved; model from `WORKFLOW_REVIEW_MODEL_B` (single-reviewer knob, default `sonnet`; empty ⇒ inherit).) Apply its feedback, then show the user **both the audit feedback AND the delta it caused** (diff + changed drafts).
 
 ### 7. Atomic posting — only on the user's final approval
 
@@ -185,10 +185,10 @@ Posting is all-or-nothing per the approved package — no partial early posts, n
 
 - **`open-pr`** — opened the PR; owns TODO tagging + the `pr:` back-pointer this skill's phase 5 updates route through.
 - **`todo`** — `reopen` / mint / body-update mechanics for ledger linkage.
-- **`base-pr`** — the internal diff reviewer used in phase 5; a review-role agent runs phase 6's package audit.
+- **`.claude/agents/reviewer.md`** — the reviewer definition behind phase 5's diff review and phase 6's package audit (mode 2).
 
 ---
 
-**Skill Version**: 1.5.0
+**Skill Version**: 1.6.0
 **Category**: Workflow, GitHub
 _Version history: see [CHANGELOG.md](./CHANGELOG.md)._

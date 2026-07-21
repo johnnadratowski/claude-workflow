@@ -186,50 +186,43 @@ Triggers: "add a todo …", or the FIRST step of any substantive work request.
      don't implement until it's submitted). **No Monocle** = the user reads the plan in the
      terminal. Offer the Monocle choice **only when the engine is live**
      (`monocle-review.sh available`); otherwise omit Q1.
-   - **Q2 — Reviewers: _peer + subagent, just peer, just subagent, or not_** — **Both / Only
-     peer / Only subagent / None**. The peer path hardens the plan to **PLAN GREEN**
-     (`/review-subagent` is the subagent arm; see
-     [`agent-roles/feature.md`](../../agent-roles/feature.md)).
+   - **Q2 — Reviewers: _two, one, or none_** — **Two reviewers / One reviewer / None**:
+     independent spawns of the [`reviewer`](../../agents/reviewer.md) definition that
+     harden the plan to **PLAN GREEN** (canonical spawn contract:
+     [`monocle-review`](../monocle-review/SKILL.md) → "Contract for the gates").
 
-   The two answers **compose** — picking Monocle never skips peer, and picking None-peer
-   never skips Monocle. `--review` / `--no-review` force or skip the gate. **Under `/afk` do
-   NOT prompt — default No Monocle + Both reviewers**, per the autonomous protocol. Record
-   the chosen paths' outcome in `plan_review:`; implementation does not start until it's
-   resolved. The **peer-review path (Q2 = Both / Only peer / Only subagent)**:
-   1. **Find a live review agent** — do NOT invent a name glob; use the
-      canonical role classifier via `.claude/scripts/agent-fanout.sh status`
-      and pick a live agent whose ROLE column is `review`. None alive → tell
-      the user and ask: proceed unreviewed, or wait/start one.
-   2. **Send the plan content inline** (peers see your committed repo state
-      only after a merge-down, so inline is the reliable form):
-      ```bash
-      .claude/scripts/agent-send.sh <reviewer> --stdin <<'BODY'
-      PLAN REVIEW REQUEST: <ID> — <title>
-      Plan doc: docs/todo_plans/<slug>.md (content below). Judge the APPROACH,
-      not code: (a) fit with the doc corpus (best-practices, architecture,
-      product); (b) best-practices rules cited — any that apply but are
-      missing?; (c) scope gaps; (d) simpler alternative? Reply --reply with
-      "PLAN GREEN" or numbered findings (blockers vs suggestions).
-      <plan content>
-      BODY
-      ```
-   3. **Wait for the verdict** (read-only review — minutes, not a diff audit's
-      30–60). Blockers → revise the plan, resend until **PLAN GREEN**.
-      Suggestions → adopt or note the rejection in the plan. If the reviewer
-      goes dark mid-loop: interactively, ask the user; under `/afk`, use its
-      receipt-watch/failover/stop-and-notify protocol.
-   4. **Record the outcome** in the TODO frontmatter — `plan_review: green
+   The two answers **compose** — picking Monocle never skips agent review, and picking
+   None never skips Monocle. `--review` / `--no-review` force or skip the gate. **Under
+   `/afk` do NOT prompt — default No Monocle + Two reviewers**, per the autonomous
+   protocol. Record the chosen paths' outcome in `plan_review:`; implementation does not
+   start until it's resolved. The **reviewer path (Q2 = Two / One)**:
+   1. **Spawn the reviewer(s)** via the Agent tool — `subagent_type: reviewer`, names
+      `rev-a` (+ `rev-b` for Two, dispatched together), `model` **model-diverse**:
+      rev-a = `WORKFLOW_REVIEW_MODEL_A` (default `fable`), rev-b = `WORKFLOW_REVIEW_MODEL_B`
+      (default `sonnet`); for **One** reviewer use the stronger `_B`; each empty ⇒ omit ⇒
+      inherit. The spawn prompt is the
+      definition's **mode-1 contract**: the TODO id, `type: plan`, the pin SHA
+      (`git rev-parse HEAD`), business decisions not yet in the files, and — because the
+      plan doc is usually **uncommitted** at this point — the **full plan content
+      inline**.
+   2. **Collect the verdict(s)** (read-only review — minutes, not a diff audit's
+      30–60; both must reach **PLAN GREEN** when Two). Blockers → revise the plan,
+      **resume the same named reviewer(s)** via SendMessage with the revision (inline
+      again if still uncommitted). Suggestions → adopt or note the rejection in the
+      plan. A reviewer that dies mid-loop is respawned under the same name with the
+      current revision — nothing is lost (its transcript persists on disk).
+   3. **Record the outcome** in the TODO frontmatter — `plan_review: green
       (<agent>, <date>)` or `plan_review: skipped (<reason>)` — validated by
       `gen:todos`. **Implementation does not start before a recorded green**
       (or an explicit user override / recorded skip).
-   5. **A material plan revision after green invalidates the record** — re-run
+   4. **A material plan revision after green invalidates the record** — re-run
       the gate, or append the delta + rationale to the plan doc and note it in
       the `plan_review` value. Don't let the record go stale-but-authoritative.
-   6. **User sign-off on the gate's deltas (interactive runs).** After PLAN
+   5. **User sign-off on the gate's deltas (interactive runs).** After PLAN
       GREEN, present the user what the gate CHANGED — each blocker/suggestion
-      and how the plan moved (or a one-line "peer gate: GREEN, no changes") —
+      and how the plan moved (or a one-line "reviewer gate: GREEN, no changes") —
       and get their sign-off before implementation starts. The plan side is
-      **user → agent → user**: the user approved the draft, the peer hardened
+      **user → agent → user**: the user approved the draft, the reviewer hardened
       it, the user reviews the hardening. **If the Monocle engine is live**
       (`.claude/scripts/monocle-review.sh available`), offer `/monocle-review plan
       <ID>` for this sign-off — there's no diff yet, so the plan IS the subject;
@@ -315,16 +308,17 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
    add/update in the same diff (money-movement / state-mutating ops are re-verified every time,
    regardless of note age).
 3. **Plan review gate** — present the **two-axis prompt** (Q1 Monocle-_or-not_ · Q2
-   Reviewers: **Both / Only peer / Only subagent / None**), asked together in one
-   `AskUserQuestion` call — never merged into a single Monocle-xor-peer choice (see `start`
-   step 4 + the canonical contract in [`monocle-review`](../monocle-review/SKILL.md)). For
-   the peer path: send the plan inline via `agent-send`,
+   Reviewers: **Two reviewers / One reviewer / None**), asked together in one
+   `AskUserQuestion` call — never merged into a single choice (see `start`
+   step 4 + the canonical contract in [`monocle-review`](../monocle-review/SKILL.md)).
+   For the reviewer path: spawn the [`reviewer`](../../agents/reviewer.md) definition
+   (mode 1, `type: plan`, plan content inline while uncommitted),
    revise on blockers until **PLAN GREEN**, record the outcome in the TODO's
    `plan_review:` frontmatter, then **present the user the gate's deltas for sign-off**
    (user → agent → user). Small plans skip (`--review`/`--no-review` override either way).
-   **The human is the terminal reviewer of every loop** — peer review always
+   **The human is the terminal reviewer of every loop** — agent review always
    precedes and never replaces user review; the same shape ends the diff side
-   (peer GREEN LIGHT → the user's go to ship). `/afk` is the autonomous
+   (reviewer GREEN LIGHT → the user's go to ship). `/afk` is the autonomous
    exception for both loops.
 4. **Implement** the plan; `start` the TODO (`in-progress`).
 5. **Run the gates** (`types:check`, `eslint`, relevant tests) on the working tree — no commit yet.
@@ -350,30 +344,33 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
      blocks on the verdict). **No Monocle** = the user reads the `git diff` in the terminal.
      Offer the Monocle choice **only when the engine is live** (`monocle-review.sh available`);
      otherwise omit Q1.
-   - **Q2 — Reviewers: _peer + subagent, just peer, just subagent, or not_** — **Both / Only
-     peer / Only subagent / None**: a fleet peer (`agent-send <reviewer> --stdin` / `/base-pr`)
-     and/or a local **`/review-subagent`**, dispatched together on **Both** (executed on the
-     committed change in step 9). See [`agent-roles/feature.md`](../../agent-roles/feature.md).
+   - **Q2 — Reviewers: _two, one, or none_** — **Two reviewers / One reviewer / None**:
+     independent spawns of the [`reviewer`](../../agents/reviewer.md) definition
+     (`rev-a`/`rev-b`, dispatched together on **Two**; executed on the committed change
+     in step 9). See the canonical contract in
+     [`monocle-review`](../monocle-review/SKILL.md).
 
-   The two answers **compose independently** — Monocle never skips peer, None-peer never skips
-   Monocle. **Under `/afk` do NOT prompt — No Monocle + Both.** **Never commit until the user
-   has had a chance to review** — this holds for EVERY round of changes: the initial
-   implementation AND each later fix round (step 9).
+   The two answers **compose independently** — Monocle never skips agent review, None never
+   skips Monocle. **Under `/afk` do NOT prompt — No Monocle + Two reviewers.** **Never commit
+   until the user has had a chance to review** — this holds for EVERY round of changes: the
+   initial implementation AND each later fix round (step 9).
 8. **Commit** referencing the ID — only **after** the user's review in step 7.
-9. **Peer review** — execute the committed change against the **Reviewers (Q2) selection from
-   step 7's gate** (**Both / Only peer / Only subagent / None** — ask via `AskUserQuestion` if
-   still unspecified; **None** ⇒ skip peer review, go straight to test): **Both** dispatches
-   a fleet peer (`agent-send <reviewer> --stdin` / `/base-pr`) AND a local **`/review-subagent`**
-   at the same time, both GREEN to pass — see [`agent-roles/feature.md`](../../agent-roles/feature.md);
-   address findings. **Each fix round loops back through step 7
-   first:** fix on the working tree (uncommitted) → STOP for the user's review → commit →
-   re-send. Repeat until **GREEN**. Peer review precedes — never replaces — user review;
+9. **Agent review** — execute the committed change against the **Reviewers (Q2) selection
+   from step 7's gate** (**Two reviewers / One reviewer / None** — ask via `AskUserQuestion`
+   if still unspecified; **None** ⇒ skip agent review, go straight to test): spawn the
+   [`reviewer`](../../agents/reviewer.md) definition (mode 1, `type: diff`, the committed
+   SHA/range) — **Two** dispatches `rev-a` + `rev-b` together, both **GREEN LIGHT** to
+   pass; address findings. **Each fix round loops back through step 7 first:** fix on the
+   working tree (uncommitted) → STOP for the user's review → commit → **resume the SAME
+   named reviewer(s)** (SendMessage, fix SHA — the fix-round audit is by SHA, first-class).
+   Repeat until **GREEN**. Agent review precedes — never replaces — user review;
    the human is the terminal reviewer of every loop (plan and diff). (Unchanged by the
    plan-review gate — that gate is additional and earlier.)
-10. **Test — before the merge, on the feature branch.** Once review is GREEN, run the test
-   sweep (the testing agent / `/base-test`) **against the feature branch itself —
-   testing does NOT require merging to the base first** (`/base-test --with-base` merges the
-   base *into* your branch to validate the combined result without landing your work). Fix
+10. **Test — before the merge, on the feature branch.** Once review is GREEN, spawn the
+   [`tester`](../../agents/tester.md) definition **in place on the feature branch** (model
+   from `WORKFLOW_TEST_MODEL`, unset ⇒ inherit; it makes zero git/source mutations —
+   testing does NOT require merging to the base first; to validate the combined result,
+   `/base-merge down` first, then spawn the tester on the merged tree). Fix
    failures the same way — through step 7's user-review gate — re-test until green.
 11. **Close — BEFORE you merge.** After review + test pass + the user's explicit go to ship,
    `done` the TODO (archive → `completed/` + `commits:` + `Closes:` + `pnpm gen:todos`)
@@ -389,22 +386,22 @@ This preserves the prior skill's review discipline, now hung off the TODO lifecy
 
 > The merge-to-base / `/base-push` steps remain gated on the user's explicit approval (see
 > the standing review-before-merge rule). The canonical order is **implement → doc-sync →
-> USER review → commit → peer review → test → close → merge** — and **no commit ever happens
+> USER review → commit → agent review → test → close → merge** — and **no commit ever happens
 > until the user has had a chance to review the change that goes into it** (every round, incl.
 > fixes). Testing and closing both happen on the feature branch *before* any merge, so
 > `done`-ing the TODO is the LAST step **before** the merge — the archive + regenerated index
 > ride in the SAME diff that gets merged/pushed/PR'd, so the published state is never stale and
 > no TODO is left hanging. **`/afk` is the only exception** to the per-commit user-review gate
-> (it runs autonomously on peer review + gates; the user reviews on return).
+> (it runs autonomously on agent review + gates; the user reviews on return).
 
 ## Quick reference
 
 | Input | Action |
 |-------|--------|
 | `/todo add <desc>` (or any substantive work request) | mint `AREA-<NS>-<agentid>-NNN`, write file, `gen:todos` |
-| `/todo start <ID>` | → in-progress + write plan in `docs/todo_plans/` + set `plan:` + **plan-review gate** for complex plans (peer `PLAN GREEN` → `plan_review:` frontmatter) before implementing |
+| `/todo start <ID>` | → in-progress + write plan in `docs/todo_plans/` + set `plan:` + **plan-review gate** for complex plans (reviewer `PLAN GREEN` → `plan_review:` frontmatter) before implementing |
 | `/todo <ID>` / `/todo do the <keyword> todo` | locate + plan + implement (planning workflow) |
-| `/todo done <ID>` / `/todo continue` | gates → doc-sync → **USER review → commit** (no commit before user review; `/afk` excepted) → **peer review** (fixes re-gate through user review) → **test** (feature branch, no base merge first) → user go → **archive TODO + plan (close) + regen index** → THEN merge/`/base-push`/`/open-pr` (**close always BEFORE the merge**, same diff) → offer `/open-pr <ID>` |
+| `/todo done <ID>` / `/todo continue` | gates → doc-sync → **USER review → commit** (no commit before user review; `/afk` excepted) → **agent review** (fixes re-gate through user review) → **test** (tester in place on the feature branch) → user go → **archive TODO + plan (close) + regen index** → THEN merge/`/base-push`/`/open-pr` (**close always BEFORE the merge**, same diff) → offer `/open-pr <ID>` |
 | `/todo defer <ID> <milestone>` | change milestone, ID unchanged |
 | `/todo block <ID> <blocker>` / `unblock <ID>` | dependency / status |
 | `/todo reopen <ID>` | move back from completed/, status open |
@@ -414,7 +411,7 @@ After every mutating verb: `pnpm gen:todos` + stage the file(s) and `docs/TODO.m
 
 ---
 
-**Skill Version**: 7.15.0
+**Skill Version**: 8.0.0
 **Category**: Workflow, Task Management
 
 _Version history: see [CHANGELOG.md](./CHANGELOG.md)._

@@ -83,13 +83,6 @@
 # the user overrides per-invocation.
 # WORKFLOW_TESTING_AGENT=""
 
-# Default model for the /review-subagent local review subagent (a review-role Agent).
-# Overridable per-invocation via `/review-subagent --model <m>`. One of: sonnet | opus |
-# haiku | fable. Default sonnet (the current Sonnet).
-# NOTE: /review-subagent + this knob are superseded by the native subagent defs below
-# (.claude/agents/) once the gates are rewired to them; kept until that cutover lands.
-WORKFLOW_SUBAGENT_REVIEW_MODEL="sonnet"
-
 # ── Native subagent models (.claude/agents/{planner,reviewer,tester}.md) ────────────────────
 # Models for the native subagent definitions the modern gates spawn via the Agent tool. One of:
 # sonnet | opus | haiku | fable.

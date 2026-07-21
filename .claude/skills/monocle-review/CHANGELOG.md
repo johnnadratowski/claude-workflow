@@ -2,6 +2,12 @@
 
 ## Changelog
 
+- **2.0.0** — **Subagent convergence (DX-jn-cc-017).** The gate contract's Q2 is now
+  **Agent review — Two reviewers / One reviewer / None**: independent spawns of the
+  [`reviewer`](../../agents/reviewer.md) definition (`rev-a`/`rev-b`, model-diverse
+  `WORKFLOW_REVIEW_MODEL_A`/`_B`; a lone reviewer runs the stronger `_B`), replacing the
+  retired peer + `/review-subagent` model (Both / Only peer / Only subagent / None). Fix
+  rounds resume the same named reviewer by SHA.
 - **1.7.0** — After staging a review, **always emit a stats block** (new procedure step 7,
   before the verdict wait): review name, base ref, # files in review, # context artifacts,
   # additional files (`add_files`), and the TODOs included — so the user sees exactly what

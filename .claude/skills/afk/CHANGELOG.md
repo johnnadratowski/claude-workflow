@@ -2,6 +2,14 @@
 
 ## Changelog
 
+- **3.0.0** — **Subagent convergence (DX-jn-cc-017).** The review loop spawns two
+  independent **[`reviewer`](../../agents/reviewer.md) subagents** (`rev-a`/`rev-b`,
+  model-diverse) each round instead of a fleet `--pr` peer + `/review-subagent`; the test
+  loop spawns the **[`tester`](../../agents/tester.md) subagent** in place instead of a
+  `--test` peer. Subagent spawns return-or-error (respawn under the same name), so the
+  receipt-watch / liveness / failover machinery and the `--pr`/`--test` flags are gone.
+  Plan authoring runs through the [`planner`](../../agents/planner.md) subagent
+  (`WORKFLOW_PLAN_MODEL`). Doc-sync language generalized off the goals-specific commands.
 - **1.2.0** — **Publish-default flipped to land-local-only.** A clean run now
   lands the work into local `<base>` via `/base-merge up` by default and stops
   there — no origin touch — so the user reviews and publishes on return. The

@@ -1,6 +1,6 @@
 ---
 name: afk
-description: Drive a task to completion autonomously while the user is away (AFK). Implements as far as possible, runs the PR-review loop and the test loop with peer agents until green, closes the TODO, and lands the work into the local base branch — stopping only for genuinely blocking questions (surfaced after PR + test). Refrains from asking questions unless necessary. Use when the user says "AFK", "run this autonomously", "drive this to done", "ship this unattended", "take it from here".
+description: Drive a task to completion autonomously while the user is away (AFK). Implements as far as possible, runs the review loop and the test loop with reviewer/tester subagents until green, closes the TODO, and lands the work into the local base branch — stopping only for genuinely blocking questions (surfaced after review + test). Refrains from asking questions unless necessary. Use when the user says "AFK", "run this autonomously", "drive this to done", "ship this unattended", "take it from here".
 ---
 
 # afk — autonomous task driver
@@ -10,48 +10,44 @@ You are about to run **unattended**. The user is away and wants this task carrie
 ## Invocation
 
 ```
-/afk [test-first] --pr <agent> [--test <agent>] [--todo <ID>] [--max-rounds N] [--publish] [--pr-on-close]
+/afk [test-first] [--todo <ID>] [--max-rounds N] [--publish] [--pr-on-close]
 ```
 
-- **`--pr <agent[,agent2,…]>`** (required) — the PR reviewer(s), as a **failover priority list** (e.g. `base-pr-2,base-pr`). `/afk` uses the first; if it's dead or never picks up / never replies within the timeout, it advances to the next — and may additionally discover other live review-role peers as further fallbacks (use the canonical classifier: `.claude/scripts/agent-fanout.sh status`, ROLE column `review` — not a name glob).
-- **`--test <agent>`** (default: `WORKFLOW_TESTING_AGENT` from `.claude/workflow.config`; else discover a live `*test*`-named peer) — the peer agent that runs the test sweep.
 - **`test-first`** — flavor B (test/fix loop *before* review). Default is flavor A (implement first).
 - **`--todo <ID>`** — the TODO this task closes (else infer from the task / branch; skip closing if none applies).
 - **`--max-rounds N`** (default `5`) — cap per loop (review, test). On reaching it, STOP and surface — never loop forever unattended.
-- **`--publish`** — on a clean run, after landing into local `<base>`, also `/base-push` to publish `origin/<base>`. **Default is land-local-only** — afk lands the work into the local base and stops there, so you review on return and publish yourself. Publishing is the one origin write afk can do, and only with this explicit opt-in (the old behavior was publish-by-default; flipped so an unattended run never advances `origin/<base>` without you asking — see Finish).
+- **`--publish`** — on a clean run, after landing into local `<base>`, also `/base-push` to publish `origin/<base>`. **Default is land-local-only** — afk lands the work into the local base and stops there, so you review on return and publish yourself. Publishing is the one origin write afk can do, and only with this explicit opt-in.
 - **`--pr-on-close`** — on a clean run, after closing the TODO, prepare a GitHub PR via `/open-pr <ID>` up to (but never past) its user-gated create step: branch, scope, gates, and the title/body package are ready; `gh pr create` itself waits for the user's return (PR creation is outward-facing — the autonomy contract's "never touch origin" exception does NOT extend to it). Without this flag, `/afk` skips the PR offer entirely.
 
-The **task** is the work the user set up before invoking this (the current branch's in-progress changes and/or the referenced TODO). You own all the code and all the fixes; the `--pr` and `--test` agents are **services** you consult.
+The **task** is the work the user set up before invoking this (the current branch's in-progress changes and/or the referenced TODO). You own all the code and all the fixes; the reviewer and tester **subagents** ([`reviewer`](../../agents/reviewer.md), [`tester`](../../agents/tester.md) — spawned via the Agent tool) are **services** you consult. They need no liveness management: a spawn either returns a result or errors, and a dead one is respawned under the same name with nothing lost.
 
-> **Solo mode (no base branch / no fleet — `WORKFLOW_FLEET_MODE=0`).** `/afk` still works and is
-> genuinely useful ("keep going without me") — it just DEGRADES off the peer/base machinery:
-> - **`--pr` is NOT required.** Reviewers default to **Only subagent** (`/review-subagent`) — no fleet
->   peer to consult. (`--pr <agent>` is honored only when peers actually exist.)
-> - **Test loop** runs **local `/base-test`** in this worktree (which itself degrades to a plain
->   as-is gate sweep in solo mode), not a `--test` peer.
-> - **Finish** lands via **plain git** on the branch/trunk the user pre-specified (never `/base-push`
->   or `/base-merge` — those are disabled solo); it never touches origin unless the user pre-authorized a
->   `git push`. No agent messaging, no fan-out. Everything else (autonomy contract, journal, blocked-path
->   stop, max-rounds) is unchanged.
+> **Solo vs fleet:** the review and test loops are identical in both modes — the subagents
+> are local, not fleet peers. Only **Finish** differs: fleet mode lands via
+> `/base-merge up` / `/base-push`; **solo mode** (`WORKFLOW_FLEET_MODE=0`) lands via
+> **plain git** on the branch/trunk the user pre-specified (never `/base-push` /
+> `/base-merge` — disabled solo), and never touches origin unless the user pre-authorized
+> a `git push`. Everything else (autonomy contract, journal, blocked-path stop,
+> max-rounds) is unchanged.
 
-> **Plan-review gate first:** if the TODO's plan has no recorded `plan_review:`
-> outcome (see the `todo` skill's start step 3) and the plan is complex, run the
-> gate BEFORE implementing — under `/afk` the gate is not shown (no human): Q1 =
-> **No Monocle**, Q2 (reviewers) = **Both** (the `--pr` peer **and** a
-> `/review-subagent`, dispatched together, both GREEN), same receipt-watch /
-> failover / stop-and-notify protocol as the review loop.
+> **Plan authoring + review gate first:** author the plan via the
+> [`planner`](../../agents/planner.md) subagent (`model` = `WORKFLOW_PLAN_MODEL`, default
+> `fable`) — under `/afk` it plans **autonomously** (no human attaches to steer; it records
+> open questions in the plan). Then, if the TODO's plan has no recorded `plan_review:`
+> outcome (see the `todo` skill's start step 4) and the plan is complex, run the gate BEFORE
+> implementing — under `/afk` the gate is not shown (no human): Q1 = **No Monocle**,
+> Q2 = **Two reviewers** (`rev-a` + `rev-b`, dispatched together, both **PLAN GREEN**).
 
 ## Autonomy contract
 
 - **`/afk` is the SOLE exception to the per-commit user-review gate.** The normal
   human-in-the-loop flow (feature.md / `/todo`) stops for the user's review of the
   uncommitted change *before every commit*; `/afk` runs unattended, so it commits on its own
-  (peer review + the test sweep substitute) and the user reviews everything **on return**.
+  (agent review + the test sweep substitute) and the user reviews everything **on return**.
   This is the whole point of `/afk` — do not stop for per-commit user review here.
 - **Do not ask questions unless genuinely blocked.** A decision with a sensible default is NOT a blocker: pick the default, **log it in the journal**, and keep going. The user reviews your choices on return.
-- **Blocking question** = something whose answer changes the implementation and has no safe default. When you hit one: implement everything you safely can around it, run it through PR + test anyway, then **stop before the final merge** and present the accumulated questions (see Finish → blocked path).
+- **Blocking question** = something whose answer changes the implementation and has no safe default. When you hit one: implement everything you safely can around it, run it through review + test anyway, then **stop before the final merge** and present the accumulated questions (see Finish → blocked path).
 - **Stay in scope.** Implement the task; do not opportunistically refactor unrelated code while unsupervised.
-- **Never** `--no-verify`, `--amend` published commits, force-push, run destructive git, or broadcast/fan-out to other agents. The only peers you message are `--pr` and `--test`.
+- **Never** `--no-verify`, `--amend` published commits, force-push, run destructive git, or broadcast/fan-out to fleet agents. Reviewer/tester subagent spawns are local and always sanctioned.
 - **Never touch origin** except the `/base-push` in Finish that runs ONLY when `--publish` was passed (default: land into local base, no origin touch). Coordination is the local base branch (`WORKFLOW_BASE_BRANCH`).
 
 ## Step 0 — Plan echo + journal
@@ -64,13 +60,7 @@ JOURNAL="logs/afk-$BRANCH.md"   # logs/ is gitignored
 mkdir -p logs
 ```
 
-Print and append to `$JOURNAL`: the task, flavor (A/B), `--pr`/`--test` agents, `--max-rounds`, the TODO ID, the merge policy ("land into local base; publish to origin only if --publish"), and the exact stop conditions. Keep appending a timestamped line at every state transition, every PR finding + how you resolved it, every non-blocking default you picked, and every test result. This journal is also your **resume state** if the run is interrupted (context compaction, restart) — on resume, read it to find where you left off.
-
-**Idle-fleet stalls self-heal — you don't manage a daemon.** The coordinator runs the
-`inbox-watcher` continuously (its `cc-watcher-keepalive` hook keeps one instance alive
-machine-wide), so any **parked message** or **errored/rate-limited peer** — crucially the
-review/test agents you'll be *waiting on* — gets re-nudged on a timer without a coordinator
-turn firing. Nothing to start or stop here.
+Print and append to `$JOURNAL`: the task, flavor (A/B), `--max-rounds`, the TODO ID, the planner/reviewer/tester models in effect (`WORKFLOW_PLAN_MODEL` [default `fable`] / `WORKFLOW_REVIEW_MODEL_A`+`_B` [rev-a `fable` / rev-b `sonnet`] / `WORKFLOW_TEST_MODEL`, or "inherit"), the merge policy ("land into local base; publish to origin only if --publish"), and the exact stop conditions. Keep appending a timestamped line at every state transition, every review finding + how you resolved it, every non-blocking default you picked, and every test result. This journal is also your **resume state** if the run is interrupted (context compaction, restart) — on resume, read it to find where you left off.
 
 ## State machine
 
@@ -92,65 +82,64 @@ turn firing. Nothing to start or stop here.
 
 ## Doc-sync
 
-Before review, run the documentation-sync step ([`docs/doc-sync.md`](../../../docs/doc-sync.md)) so the docs land in the same diff the reviewer sees:
+Before review, run the documentation-sync step ([`docs/doc-sync.md`](../../../docs/doc-sync.md), if the project has one) so the docs land in the same diff the reviewer sees:
 
-- **Encode the product/business decisions** this work made into the **product docs** — `docs/product.md` for overview, or a topic doc you see fit (e.g. `docs/vaults-and-allocations.md`) linked from `product.md`'s index — the rule/flow/limit/default you established or changed, and a sentence of *why*.
-- **Reconcile every doc the changed code touched** — best-practices, testing, `architecture.md`, `docs/security/*.md`, swagger (`@swagger` JSDoc → `pnpm --filter goals dump:swagger`), the relevant `CLAUDE.md` — per the map in `doc-sync.md`.
-- Keep it proportionate (a typo needs none; a behavior change almost always touches `product.md`). Log what you synced in the journal. The reviewer's doc-drift dimension will catch anything missed.
+- **Encode the product/business decisions** this work made into the **product docs** — the overview doc, or a topic doc you see fit linked from its index — the rule/flow/limit/default you established or changed, and a sentence of *why*.
+- **Reconcile every doc the changed code touched** — best-practices, testing, `architecture.md`, security docs, any API docs (regenerate them), the relevant `CLAUDE.md` — per the map in `doc-sync.md`.
+- Keep it proportionate (a typo needs none; a behavior change almost always touches the product docs). Log what you synced in the journal. The reviewer's doc-drift dimension will catch anything missed.
 
 ## Review loop
 
-**Reviewers under `/afk` — No Monocle + Both, no prompt.** `/afk` never shows the
-two-axis review gate (no human to answer): Q1 = **No Monocle**, Q2 (reviewers) = **Both** — the `--pr`
-fleet peer **and** a local review subagent (**`/review-subagent`**, the current Sonnet by default),
-**dispatched at the same time** each round. Collect both verdicts; the round is GREEN only
-when **both** are. (A subagent has no fleet-liveness failover concern, so it's a free second
-opinion on an unattended run.)
+**Reviewers under `/afk` — No Monocle + Two reviewers, no prompt.** `/afk` never shows the
+two-axis review gate (no human to answer): Q1 = **No Monocle**, Q2 = **Two reviewers** —
+two independent spawns of the [`reviewer`](../../agents/reviewer.md) definition
+(`rev-a` + `rev-b`), dispatched together each round; the round is GREEN only when **both**
+are. (Two independent readers is the unattended substitute for the human's eye.)
 
 Repeat up to `--max-rounds`:
 
-1. Commit any pending work first (so the reviewer sees a clean branch). **Dispatch both reviews at once:** spawn `/review-subagent <sha>` (background) AND send the peer request — **always `--stdin` heredoc** so nothing in the body gets shell-expanded:
-   ```bash
-   .claude/scripts/agent-send.sh <pr-agent> --stdin <<'BODY'
-   AFK review request — branch <BRANCH> @<sha>. Review locally: git diff <base>...<BRANCH>
-   Task: <one-line task summary>. Focus: <anything specific>.
-   Reply --reply with "GREEN LIGHT" if approved, or your findings (blockers vs nits). I'm driving an autonomous run and will fix + resend until green.
-   BODY
-   ```
-   Capture the staged request path from `agent-send`'s output (`msg=<reviewer>/<uuid>.<self>.req.txt`) — you'll watch it for receipt below. Resolve `<self>` from the registry (the file in `~/.claude/running-agents/` whose contents == `$TMUX_PANE`; its name is `<self>`).
-2. **Wait for the reply — and in parallel watch receipt + liveness.** The reviewer's `--reply` lands durably at `~/.claude/agent-inbox/<self>/*.<reviewer>.rep.txt` (per-recipient mailbox — you don't depend on a live nudge). Wait until that file appears, using the **Monitor** tool with an until-condition (foreground `sleep` is blocked). **A prompt reviewer makes this instant — the file shows up in seconds and you skip straight to step 3.** While waiting, interpret the two side-signals so you never sit blind on a stalled or dead reviewer:
-
-   | Your request file | Reviewer state | Meaning → action |
-   |---|---|---|
-   | **consumed** (deleted) | any | ✅ picked up & reviewing — keep waiting (silence is fine) |
-   | still present | busy (`~/.claude/agent-busy/<reviewer>` fresh) | normal — they'll drain it at their next Stop; keep waiting |
-   | still present | **idle** for a while (no busy marker, several min) | ⚠️ drain should have delivered — re-stage/re-nudge once; if still no pickup → **fail over** |
-   | (either) | **PID/pane gone** (`kill -0` fails or pane missing) | 💀 **fail over** immediately |
-
-   Suggested overall cap per reviewer: ~30 min after pickup (longer if the diff is large). On reply: you consume the file yourself (read + delete, like `agent-msg`). If the verdict instead arrives via a `/agent-msg … reply` turn (the run briefly yielded), handle it identically — the journal says you're mid-AFK, so route it into this loop rather than just integrating it.
-3. **Reviewer failover.** When step 2 says "fail over": advance to the next agent in the `--pr` list (or, if exhausted, a freshly-discovered live review-role peer not already tried — `agent-fanout.sh status`, ROLE `review`). Re-stage the same request to it, note the failover in the journal, and resume the wait. If **no** reviewer in the pool is reachable → **Stop** and notify (don't merge unreviewed).
-4. **Parse BOTH verdicts (Both default) — peer AND subagent.** Collect the peer's reply (steps 2–3) **and** the `/review-subagent` background Agent's result (from its completion notification — the Agent tool always returns a result or errors, so no liveness/failover concern for the subagent). Look for an explicit **GREEN LIGHT** in each.
+1. Commit any pending work first (so the reviewers see a clean SHA). **Spawn both
+   reviewers at once** (Agent tool, `subagent_type: reviewer`, names `rev-a`/`rev-b`,
+   `model` model-diverse: rev-a = `WORKFLOW_REVIEW_MODEL_A` (`fable`), rev-b =
+   `WORKFLOW_REVIEW_MODEL_B` (`sonnet`), each empty ⇒ omit) with the definition's
+   **mode-1 contract**: the TODO id, `type: diff`, the commit SHA/range, the pin SHA,
+   and any business decisions not yet in the files.
+2. **Collect both verdicts.** A spawn returns its verdict as its result (or errors —
+   respawn once under the same name; a second consecutive error on the same round is a
+   Stop condition). No liveness-watching, no failover pool: the Agent tool always
+   resolves.
+3. **Parse both — GREEN LIGHT required from each.**
    - **Both green** → exit the loop.
-   - **Findings from either** → fix every blocker (and reasonable nits) from **both** reviewers; if a finding is itself a blocking question with no safe default, record it and address what you can. Append each finding + resolution to the journal. Commit the fixes, then loop — **re-dispatch both** (resend to the peer — prefer the same one for continuity — AND re-spawn `/review-subagent` on the fixed commit). The round is GREEN only when **both** are green.
-5. **Cap / non-convergence.** If you reach `--max-rounds`, or the same finding keeps recurring (a reviewer isn't converging), **Stop** and surface the state — do not keep looping.
+   - **Findings from either** → fix every blocker (and reasonable nits) from **both**; if
+     a finding is itself a blocking question with no safe default, record it and address
+     what you can. Append each finding + resolution to the journal. Commit the fixes,
+     then loop — **resume the SAME named reviewers** (SendMessage to `rev-a`/`rev-b` with
+     the fix SHA; the fix-round audit is by SHA, first-class).
+4. **Cap / non-convergence.** If you reach `--max-rounds`, or the same finding keeps
+   recurring (a reviewer isn't converging), **Stop** and surface the state — do not keep
+   looping.
 
 ## Test loop
 
-Same shape, with the `--test` agent (default: `WORKFLOW_TESTING_AGENT`, else a live `*test*`-named peer):
+1. **Spawn the [`tester`](../../agents/tester.md)** (Agent tool, `subagent_type: tester`,
+   name `tester`, `model` = `WORKFLOW_TEST_MODEL` when set, else omit) **in place on the
+   branch**: "Full sweep. Changed range: `<base>..<BRANCH>`." The tester makes zero
+   git/source mutations and serializes any resource-bound phase (integration / E2E)
+   through the project's machine-wide test lock itself, if one is wired — long waits on
+   the lock are normal when another worktree is mid-sweep; its report says what ran.
+2. **Parse:** PASS → exit. Failures → **you** fix them (the tester reports; you own the
+   code), commit, then re-run — resume the same `tester` (SendMessage: "re-run the failed
+   gates") or respawn for a full sweep. Append results to the journal.
+3. Cap at `--max-rounds`; on non-convergence Stop and surface.
 
-1. Send a test request (`--stdin`): "Run the gate sweep against branch `<BRANCH>` @`<sha>` and reply --reply with PASS or the failures."
-2. Wait for `*.<test-agent>.rep.txt` the same way — same receipt + liveness watching as the review loop (these runs take a while — the E2E sweep especially; size the timeout generously, e.g. 45–60 min, re-checking liveness). If the test agent dies, fail over to another live `*test*`-named peer if one exists, else Stop.
-3. **Parse:** PASS → exit. Failures → **you** fix them (the test agent reports; you own the code), commit, resend. Append results to the journal.
-4. Cap at `--max-rounds`; on non-convergence Stop and surface.
-
-(Quick local gates — `pnpm types:check`, the relevant `pnpm test:unit`, lint — are fine to run yourself in-place before sending, to avoid burning a remote round on something you can catch locally.)
+(Quick local gates — type-check, the relevant unit tests, lint — are fine to run yourself in-place before spawning, to avoid burning a full-sweep round on something you can catch locally.)
 
 ## Finish
 
 Once review is green **and** tests pass:
 
 - **Clean run (no blocking questions accumulated):**
-  1. Close the TODO if applicable — use the `todo` skill to move `docs/todos/<ID>.md` → `docs/todos/completed/` with the **work commits** referenced in `commits:` (the merge lands in step 2, so there's no merge SHA yet — same as `/todo done`), then `pnpm gen:todos`. This close lands on the feature branch, so it rides in the diff step 2 merges (close-before-publish, DX-jn-8-009). Skip if no TODO applies.
+  1. Close the TODO if applicable — use the `todo` skill to move `docs/todos/<ID>.md` → `docs/todos/completed/` with the **work commits** referenced in `commits:` (the merge lands in step 2, so there's no merge SHA yet — same as `/todo done`), then regenerate the TODO index. This close lands on the feature branch, so it rides in the diff step 2 merges (close-before-publish). Skip if no TODO applies.
   2. **Land (and optionally publish) through the base skills — never hand-roll the merge or push.**
      - **Default (land local only):** run **`/base-merge up`** — it lands the branch into local `<base>` via `merge_into_branch_local`, no origin touch. The work is then on the local base for you to review + publish on return.
      - **`--publish`:** run **`/base-push`** instead — it does the same local land AND publishes `origin/<base>` with the **non-fast-forward guard** (the protection a raw `git push origin <base>` skips — a guardless push could mutate a frozen `origin/<base>`, e.g. the SHA backing an open PR). This is the one sanctioned origin touch, and only with the explicit `--publish` opt-in.
@@ -160,7 +149,7 @@ Once review is green **and** tests pass:
 
 - **Blocked path (one or more blocking questions accumulated):**
   1. Do **not** merge or publish. Leave the work committed on the branch and landed-ready.
-  2. Notify + final report, with the **blocking questions front and center** — clearly numbered, each with the context and the options you see, so the user can answer fast on return. Note that PR + test already passed on what's implemented.
+  2. Notify + final report, with the **blocking questions front and center** — clearly numbered, each with the context and the options you see, so the user can answer fast on return. Note that review + test already passed on what's implemented.
 
 ## Notify + final report
 
@@ -174,9 +163,9 @@ printf '\a'   # terminal bell
 (If the `claude-notifications` plugin is configured, use it instead/as well.)
 
 The **final report** (terminal + appended to `$JOURNAL`):
-- Outcome: **MERGED (+published?)**, or **STOPPED — needs you** (blocking questions / cap hit / agent unresponsive).
+- Outcome: **MERGED (+published?)**, or **STOPPED — needs you** (blocking questions / cap hit / subagent errors).
 - What was implemented (commits: hashes + subjects).
-- Review: rounds taken, every finding + how it was resolved, final GREEN.
+- Review: rounds taken, every finding + how it was resolved, final GREEN (both reviewers).
 - Tests: rounds, final PASS (or the failure that stopped it).
 - Non-blocking defaults you chose (so the user can veto on return).
 - **Blocking questions**, numbered, if any.
@@ -184,16 +173,23 @@ The **final report** (terminal + appended to `$JOURNAL`):
 
 ## Stop conditions (always notify + report)
 
-- A **blocking question** with no safe default — after PR + test on what's implemented.
+- A **blocking question** with no safe default — after review + test on what's implemented.
 - **Cap reached** (`--max-rounds`) or a loop not converging.
-- The **entire reviewer pool exhausted** — every `--pr` agent (and any discovered review-role fallback) is dead or unresponsive past its timeout.
+- A reviewer or tester spawn **errors twice consecutively** on the same round (respawn once, then stop — something environmental is wrong).
 - A **merge conflict** landing into the base, or any gate you cannot fix within scope.
 - Anything that would require an action the contract forbids (origin write beyond the sanctioned publish, destructive git, out-of-scope change).
 
 ## What this skill will NOT do
 
 - Ask questions for anything with a sensible default (pick it, log it, continue).
-- Loop forever — every loop is capped and every wait has a timeout.
+- Loop forever — every loop is capped.
 - Touch origin except the `/base-push` that runs only when `--publish` was passed (default: land into local base, no origin touch).
-- Broadcast/fan-out, force-push, `--no-verify`, `--amend` published commits, or wander outside the task's scope.
+- Broadcast/fan-out to fleet agents, force-push, `--no-verify`, `--amend` published commits, or wander outside the task's scope.
 - Merge or publish when blocking questions remain — it stops and asks instead.
+
+---
+
+**Skill Version**: 3.0.0
+**Category**: Workflow, Autonomous
+
+_Version history: see [CHANGELOG.md](./CHANGELOG.md)._
